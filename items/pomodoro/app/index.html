@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pomodoro</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; font: 15px/1.4 system-ui, sans-serif; background: #0b0d12; color: #e6e8ef;
+        height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+      }
+      .mode { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: #8b90a0; }
+      .time { font-size: 72px; font-variant-numeric: tabular-nums; font-weight: 600; }
+      .row { display: flex; gap: 10px; }
+      button {
+        border: 1px solid #2a2f45; background: #12151f; color: inherit; border-radius: 8px;
+        padding: 8px 16px; font: inherit; cursor: pointer;
+      }
+      button.primary { background: #2563eb; border-color: #2563eb; }
+      button:hover { filter: brightness(1.15); }
+      .count { font-size: 13px; color: #8b90a0; }
+    </style>
+  </head>
+  <body>
+    <div class="mode" id="mode">Focus</div>
+    <div class="time" id="time">25:00</div>
+    <div class="row">
+      <button class="primary" id="toggle">Start</button>
+      <button id="reset">Reset</button>
+      <button id="skip">Skip</button>
+    </div>
+    <div class="count" id="count">0 focus sessions completed</div>
+
+    <script>
+      (function () {
+        var WORK = 25 * 60, BREAK = 5 * 60;
+        var mode = "work", left = WORK, running = false, completed = 0, tick = null;
+        var $ = function (id) { return document.getElementById(id); };
+
+        function fmt(s) {
+          var m = Math.floor(s / 60), r = s % 60;
+          return (m < 10 ? "0" : "") + m + ":" + (r < 10 ? "0" : "") + r;
+        }
+        function render() {
+          $("time").textContent = fmt(left);
+          $("mode").textContent = mode === "work" ? "Focus" : "Break";
+          $("toggle").textContent = running ? "Pause" : "Start";
+          $("count").textContent = completed + " focus session" + (completed === 1 ? "" : "s") + " completed";
+          document.body.style.background = mode === "work" ? "#0b0d12" : "#0b1210";
+        }
+        function switchMode() {
+          if (mode === "work") { completed++; mode = "break"; left = BREAK; }
+          else { mode = "work"; left = WORK; }
+        }
+        function step() {
+          if (left > 0) { left--; }
+          else { switchMode(); }
+          render();
+        }
+        $("toggle").onclick = function () {
+          running = !running;
+          if (running) tick = setInterval(step, 1000);
+          else clearInterval(tick);
+          render();
+        };
+        $("reset").onclick = function () {
+          clearInterval(tick); running = false; mode = "work"; left = WORK; render();
+        };
+        $("skip").onclick = function () { left = 0; switchMode(); render(); };
+        render();
+      })();
+    </script>
+  </body>
+</html>

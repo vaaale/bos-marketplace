@@ -9,16 +9,36 @@
       "name": "Welcome",
       "description": "A sample item demonstrating an adoptable spec and a sandboxed app.",
       "tags": ["sample", "getting-started"],
-      "app": {
-        "entrypoint": "items/welcome/app",
-        "runtime": "iframe",
-        "version": "0.1.0",
-        "icon": "Store"
-      },
-      "spec": {
-        "path": "items/welcome/spec",
-        "version": "0.1.0"
-      }
+      "app": { "entrypoint": "items/welcome/app", "runtime": "iframe", "version": "0.1.0", "icon": "Store" },
+      "spec": { "path": "items/welcome/spec", "version": "0.1.0" }
+    },
+    {
+      "id": "pomodoro",
+      "name": "Pomodoro",
+      "description": "A focus timer with work/break cycles.",
+      "tags": ["productivity", "timer"],
+      "app": { "entrypoint": "items/pomodoro/app", "runtime": "iframe", "version": "0.1.0", "icon": "Timer" }
+    },
+    {
+      "id": "unit-converter",
+      "name": "Unit Converter",
+      "description": "Convert length, weight, and temperature.",
+      "tags": ["utility"],
+      "app": { "entrypoint": "items/unit-converter/app", "runtime": "iframe", "version": "0.1.0", "icon": "Calculator" }
+    },
+    {
+      "id": "color-palette",
+      "name": "Color Palette",
+      "description": "Generate color palettes (analogous, complementary, triadic, mono).",
+      "tags": ["design", "utility"],
+      "app": { "entrypoint": "items/color-palette/app", "runtime": "iframe", "version": "0.1.0", "icon": "Palette" }
+    },
+    {
+      "id": "bos-app-starter",
+      "name": "BOS App Starter",
+      "description": "An adoptable starter spec for authoring a new sandboxed BrowserOS app.",
+      "tags": ["starter", "spec"],
+      "spec": { "path": "items/bos-app-starter/spec", "version": "0.1.0" }
     }
   ]
 }

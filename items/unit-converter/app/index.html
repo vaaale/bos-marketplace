@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Unit Converter</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #0b0d12; color: #e6e8ef; padding: 20px; }
+      h1 { font-size: 16px; margin: 0 0 16px; }
+      .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+      .tabs button { border: 1px solid #2a2f45; background: #12151f; color: #8b90a0; border-radius: 999px; padding: 4px 12px; font: inherit; cursor: pointer; }
+      .tabs button.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+      .grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; }
+      input, select { border: 1px solid #23273a; background: #12151f; color: inherit; border-radius: 8px; padding: 8px; font: inherit; width: 100%; }
+      .eq { color: #8b90a0; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <h1>Unit Converter</h1>
+    <div class="tabs" id="tabs"></div>
+    <div class="grid">
+      <input id="from" type="number" value="1" />
+      <div class="eq">=</div>
+      <input id="to" type="number" readonly />
+    </div>
+    <div class="grid" style="margin-top:10px">
+      <select id="fromU"></select><div></div><select id="toU"></select>
+    </div>
+
+    <script>
+      (function () {
+        // Each category maps a unit to its factor relative to a base unit.
+        var CATS = {
+          Length: { m: 1, km: 1000, cm: 0.01, mi: 1609.344, ft: 0.3048, in: 0.0254 },
+          Weight: { kg: 1, g: 0.001, lb: 0.453592, oz: 0.0283495 },
+          Temperature: null, // special-cased
+        };
+        var TEMP = ["C", "F", "K"];
+        var cat = "Length";
+        var $ = function (id) { return document.getElementById(id); };
+
+        function toBase(v, u) {
+          if (cat !== "Temperature") return v * CATS[cat][u];
+          return u === "C" ? v : u === "F" ? (v - 32) * 5 / 9 : v - 273.15; // → Celsius
+        }
+        function fromBase(b, u) {
+          if (cat !== "Temperature") return b / CATS[cat][u];
+          return u === "C" ? b : u === "F" ? b * 9 / 5 + 32 : b + 273.15;
+        }
+        function units() { return cat === "Temperature" ? TEMP : Object.keys(CATS[cat]); }
+        function convert() {
+          var v = parseFloat($("from").value) || 0;
+          var out = fromBase(toBase(v, $("fromU").value), $("toU").value);
+          $("to").value = Math.round(out * 1e6) / 1e6;
+        }
+        function fillUnits() {
+          var u = units();
+          [$("fromU"), $("toU")].forEach(function (sel, i) {
+            sel.innerHTML = u.map(function (x) { return "<option>" + x + "</option>"; }).join("");
+            sel.selectedIndex = i === 1 && u.length > 1 ? 1 : 0;
+          });
+          convert();
+        }
+        function fillTabs() {
+          $("tabs").innerHTML = "";
+          Object.keys(CATS).forEach(function (c) {
+            var b = document.createElement("button");
+            b.textContent = c; b.className = c === cat ? "active" : "";
+            b.onclick = function () { cat = c; fillTabs(); fillUnits(); };
+            $("tabs").appendChild(b);
+          });
+        }
+        ["from", "fromU", "toU"].forEach(function (id) { $(id).addEventListener("input", convert); });
+        fillTabs(); fillUnits();
+      })();
+    </script>
+  </body>
+</html>
