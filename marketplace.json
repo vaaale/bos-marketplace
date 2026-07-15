@@ -1,0 +1,24 @@
+{
+  "id": "bos-marketplace",
+  "name": "BrowserOS Marketplace",
+  "version": "0.1.0",
+  "description": "The official BrowserOS marketplace: sandboxed apps and adoptable specs.",
+  "items": [
+    {
+      "id": "welcome",
+      "name": "Welcome",
+      "description": "A sample item demonstrating an adoptable spec and a sandboxed app.",
+      "tags": ["sample", "getting-started"],
+      "app": {
+        "entrypoint": "items/welcome/app",
+        "runtime": "iframe",
+        "version": "0.1.0",
+        "icon": "Store"
+      },
+      "spec": {
+        "path": "items/welcome/spec",
+        "version": "0.1.0"
+      }
+    }
+  ]
+}

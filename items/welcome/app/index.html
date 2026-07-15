@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Welcome</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; font: 15px/1.5 system-ui, sans-serif;
+        background: #0b0d12; color: #e6e8ef; height: 100vh;
+        display: flex; flex-direction: column; gap: 12px; padding: 20px; box-sizing: border-box;
+      }
+      h1 { margin: 0; font-size: 18px; }
+      .muted { color: #8b90a0; font-size: 13px; }
+      textarea {
+        flex: 1; resize: none; border-radius: 8px; border: 1px solid #23273a;
+        background: #12151f; color: inherit; padding: 12px; font: inherit;
+      }
+      .row { display: flex; align-items: center; gap: 8px; }
+      .pill { border-radius: 999px; padding: 2px 8px; font-size: 12px; }
+      .ok { background: #14361f; color: #7ee2a8; }
+      .no { background: #3a1620; color: #f2a7b8; }
+    </style>
+  </head>
+  <body>
+    <h1>Welcome to the BrowserOS Marketplace</h1>
+    <div class="row muted">
+      SDK: <span id="sdk" class="pill no">checking…</span>
+      <span id="persist" class="muted"></span>
+    </div>
+    <p class="muted">
+      This is a sample sandboxed app. Type below — the note is saved via
+      <code>localStorage</code>, which BrowserOS transparently persists per-app
+      when the <code>storage</code> capability is granted.
+    </p>
+    <textarea id="note" placeholder="Type a note…"></textarea>
+
+    <script>
+      (function () {
+        var note = document.getElementById("note");
+        var sdk = document.getElementById("sdk");
+        var persist = document.getElementById("persist");
+        var KEY = "welcome.note";
+
+        function markSdk() {
+          if (window.__bos) {
+            sdk.textContent = "window.__bos present";
+            sdk.className = "pill ok";
+          } else {
+            sdk.textContent = "not injected (standalone)";
+            sdk.className = "pill no";
+          }
+        }
+        // The SDK sets window.__bos before/around load; also listen for its event.
+        window.addEventListener("bos:ready", markSdk);
+        markSdk();
+
+        try {
+          note.value = window.localStorage.getItem(KEY) || "";
+          persist.textContent = "· note persisted across reloads";
+        } catch (e) {
+          persist.textContent = "· storage unavailable";
+        }
+        note.addEventListener("input", function () {
+          try { window.localStorage.setItem(KEY, note.value); } catch (e) {}
+        });
+      })();
+    </script>
+  </body>
+</html>
