@@ -45,7 +45,7 @@
       "name": "Lunar Lander the classic game",
       "description": "Land a lunar lander on the moon",
       "tags": ["game"],
-      "app": { "entrypoint": "items/lunar-lander/app", "runtime": "iframe", "version": "0.1.0", "icon": "Lander" }
+      "app": { "entrypoint": "items/lunar-lander/app/dist", "runtime": "iframe", "version": "0.1.0", "icon": "Lander" }
     }
   ]
 }
