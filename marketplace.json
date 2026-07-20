@@ -39,6 +39,13 @@
       "description": "An adoptable starter spec for authoring a new sandboxed BrowserOS app.",
       "tags": ["starter", "spec"],
       "spec": { "path": "items/bos-app-starter/spec", "version": "0.1.0" }
+    },
+    {
+      "id": "lunar-lander",
+      "name": "Lunar Lander the classic game",
+      "description": "Land a lunar lander on the moon",
+      "tags": ["game"],
+      "spec": { "path": "items/luar-lander/app", "version": "0.1.0" }
     }
   ]
 }

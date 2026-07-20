@@ -1,0 +1,12 @@
+{
+  "id": "lunar-lander",
+  "name": "Lunar Lander",
+  "icon": "Rocket",
+  "createdAt": 1720000000000,
+  "status": "uninstalled",
+  "uninstalledAt": 1783510569971,
+  "entry": "main.tsx",
+  "capabilities": [
+    "window:title"
+  ]
+}
