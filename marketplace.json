@@ -45,7 +45,7 @@
       "name": "Lunar Lander the classic game",
       "description": "Land a lunar lander on the moon",
       "tags": ["game"],
-      "spec": { "path": "items/luar-lander/app", "version": "0.1.0" }
+      "app": { "path": "items/luar-lander/app", "version": "0.1.0" }
     }
   ]
 }
