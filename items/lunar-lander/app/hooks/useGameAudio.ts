@@ -9,6 +9,11 @@ function getCtx(ref: React.MutableRefObject<AudioContext | null>): AudioContext 
   if (!ref.current || ref.current.state === "closed") {
     ref.current = new AudioContext();
   }
+  // Resume if suspended — required in sandboxed iframes where the autoplay
+  // policy suspends the context even after a user gesture inside the frame.
+  if (ref.current.state === "suspended") {
+    void ref.current.resume();
+  }
   return ref.current;
 }
 
