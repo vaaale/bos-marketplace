@@ -1,0 +1,33 @@
+{
+  "id": "terminal",
+  "name": "Terminal Service",
+  "version": "1.0.0",
+  "description": "WebSocket-based shell daemon — the reference/example service for user-specs/002-service-daemons, bundled with its own Terminal app under app/.",
+  "entry": "./index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "port": {
+        "type": "number",
+        "default": 3001,
+        "description": "WebSocket port. Set to 0 to let the OS assign a free port (the actual port is then published to runtime.json)."
+      },
+      "host": {
+        "type": "string",
+        "default": "127.0.0.1",
+        "description": "Interface to bind. Use 0.0.0.0 to allow external connections."
+      },
+      "shell": {
+        "type": "string",
+        "default": "/bin/bash",
+        "description": "Shell executable spawned per connection."
+      }
+    }
+  },
+  "dependencies": [],
+  "settingsRegistration": {
+    "label": "Terminal",
+    "icon": "terminal",
+    "order": 100
+  }
+}

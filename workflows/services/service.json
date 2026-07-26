@@ -1,0 +1,23 @@
+{
+  "id": "workflows",
+  "name": "Workflow Manager",
+  "version": "1.0.0",
+  "description": "DAG-based workflow orchestration \u2014 multi-step automations that delegate to sub-agents. Execution runs on the main BOS process (src/lib/workflows/runner.ts); this service's Start/Stop state gates whether new runs are allowed.",
+  "entry": "index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "defaultMaxConcurrentSteps": {
+        "type": "number",
+        "default": 5,
+        "description": "Default max concurrent steps for workflows that don't set their own maxConcurrentSteps."
+      }
+    }
+  },
+  "dependencies": [],
+  "settingsRegistration": {
+    "label": "Workflows",
+    "icon": "workflow",
+    "order": 110
+  }
+}

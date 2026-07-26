@@ -8,44 +8,114 @@
       "id": "welcome",
       "name": "Welcome",
       "description": "A sample item demonstrating an adoptable spec and a sandboxed app.",
-      "tags": ["sample", "getting-started"],
-      "app": { "entrypoint": "items/welcome/app", "runtime": "iframe", "version": "0.1.0", "icon": "Store" },
-      "spec": { "path": "items/welcome/spec", "version": "0.1.0" }
+      "tags": [
+        "sample",
+        "getting-started"
+      ],
+      "app": {
+        "entrypoint": "items/welcome/app",
+        "runtime": "iframe",
+        "version": "0.1.0",
+        "icon": "Store"
+      },
+      "spec": {
+        "path": "items/welcome/spec",
+        "version": "0.1.0"
+      }
     },
     {
       "id": "pomodoro",
       "name": "Pomodoro",
       "description": "A focus timer with work/break cycles.",
-      "tags": ["productivity", "timer"],
-      "app": { "entrypoint": "items/pomodoro/app", "runtime": "iframe", "version": "0.1.0", "icon": "Timer" }
+      "tags": [
+        "productivity",
+        "timer"
+      ],
+      "app": {
+        "entrypoint": "items/pomodoro/app",
+        "runtime": "iframe",
+        "version": "0.1.0",
+        "icon": "Timer"
+      }
     },
     {
       "id": "unit-converter",
       "name": "Unit Converter",
       "description": "Convert length, weight, and temperature.",
-      "tags": ["utility"],
-      "app": { "entrypoint": "items/unit-converter/app", "runtime": "iframe", "version": "0.1.0", "icon": "Calculator" }
+      "tags": [
+        "utility"
+      ],
+      "app": {
+        "entrypoint": "items/unit-converter/app",
+        "runtime": "iframe",
+        "version": "0.1.0",
+        "icon": "Calculator"
+      }
     },
     {
       "id": "color-palette",
       "name": "Color Palette",
       "description": "Generate color palettes (analogous, complementary, triadic, mono).",
-      "tags": ["design", "utility"],
-      "app": { "entrypoint": "items/color-palette/app", "runtime": "iframe", "version": "0.1.0", "icon": "Palette" }
+      "tags": [
+        "design",
+        "utility"
+      ],
+      "app": {
+        "entrypoint": "items/color-palette/app",
+        "runtime": "iframe",
+        "version": "0.1.0",
+        "icon": "Palette"
+      }
     },
     {
       "id": "bos-app-starter",
       "name": "BOS App Starter",
       "description": "An adoptable starter spec for authoring a new sandboxed BrowserOS app.",
-      "tags": ["starter", "spec"],
-      "spec": { "path": "items/bos-app-starter/spec", "version": "0.1.0" }
+      "tags": [
+        "starter",
+        "spec"
+      ],
+      "spec": {
+        "path": "items/bos-app-starter/spec",
+        "version": "0.1.0"
+      }
     },
     {
       "id": "lunar-lander",
       "name": "Lunar Lander the classic game",
       "description": "Land a lunar lander on the moon",
-      "tags": ["game"],
-      "app": { "entrypoint": "items/lunar-lander/app/dist", "runtime": "iframe", "version": "0.1.0", "icon": "rocket" }
+      "tags": [
+        "game"
+      ],
+      "app": {
+        "entrypoint": "items/lunar-lander/app/dist",
+        "runtime": "iframe",
+        "version": "0.1.0",
+        "icon": "rocket"
+      }
+    },
+    {
+      "id": "terminal",
+      "name": "Terminal Service",
+      "description": "WebSocket-based shell daemon — the reference/example service for user-specs/002-service-daemons, bundled with its own Terminal app under app/.",
+      "app": {
+        "entrypoint": "terminal/app",
+        "runtime": "iframe",
+        "version": "1.0.0"
+      },
+      "services": {
+        "entrypoint": "terminal",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "id": "workflows",
+      "name": "Workflow Manager",
+      "description": "DAG-based workflow orchestration — multi-step automations that delegate to sub-agents. Execution runs on the main BOS process (src/lib/workflows/runner.ts); this service's Start/Stop state gates whether new runs are allowed.",
+      "services": {
+        "entrypoint": "workflows",
+        "version": "1.0.0"
+      }
     }
   ]
 }

@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Workflow Manager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #09090b;
+    --surface: #18181b;
+    --surface-2: #27272a;
+    --border: rgba(255,255,255,0.08);
+    --border-2: rgba(255,255,255,0.14);
+    --text: rgba(255,255,255,0.88);
+    --muted: rgba(255,255,255,0.55);
+    --accent: #3b82f6;
+    --accent-soft: rgba(59,130,246,0.18);
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --slate: rgba(255,255,255,0.18);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow: hidden;
+  }
+  .app { display: grid; grid-template-columns: 240px 1fr; height: 100vh; }
+  .sidebar {
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    display: flex; flex-direction: column;
+  }
+  .sidebar header {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .sidebar header h1 { font-size: 13px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
+  .wf-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .wf-item {
+    padding: 8px 10px; border-radius: 6px; cursor: pointer;
+    border: 1px solid transparent;
+    margin-bottom: 2px;
+  }
+  .wf-item:hover { background: var(--surface-2); }
+  .wf-item.active { background: var(--accent-soft); border-color: rgba(59,130,246,0.35); }
+  .wf-item .name { font-weight: 500; }
+  .wf-item .meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  .main { display: flex; flex-direction: column; min-width: 0; }
+  .tabs {
+    display: flex; gap: 2px; padding: 8px 12px 0;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .tab {
+    padding: 7px 14px; border-radius: 6px 6px 0 0; cursor: pointer;
+    color: var(--muted); font-weight: 500; font-size: 12px;
+    border: 1px solid transparent; border-bottom: none;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--bg); color: var(--text); border-color: var(--border); }
+
+  .tab-body { flex: 1; overflow: auto; padding: 14px; }
+
+  button {
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border-2);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 12px;
+  }
+  button:hover { background: var(--accent-soft); border-color: rgba(59,130,246,0.35); }
+  button.primary { background: var(--accent); border-color: var(--accent); }
+  button.primary:hover { background: #2563eb; }
+  button.danger { background: rgba(239,68,68,0.18); border-color: rgba(239,68,68,0.4); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  textarea {
+    width: 100%; min-height: 320px; background: #050505; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    font: 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; padding: 10px;
+    resize: vertical;
+  }
+  input[type=text] {
+    background: #050505; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px;
+  }
+
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row + .row { margin-top: 8px; }
+  .toolbar { margin-bottom: 12px; }
+
+  .editor-grid { display: grid; grid-template-columns: minmax(320px, 1fr) 1fr; gap: 14px; height: 100%; }
+  .panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; min-height: 0; display: flex; flex-direction: column;
+  }
+  .panel h2 { margin: 0 0 8px 0; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .panel .body { flex: 1; min-height: 0; overflow: auto; }
+
+  /* Status pills */
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+  .pill.queued { background: rgba(255,255,255,0.08); color: var(--muted); }
+  .pill.running { background: rgba(59,130,246,0.18); color: #93c5fd; }
+  .pill.retrying { background: rgba(245,158,11,0.18); color: #fcd34d; }
+  .pill.complete { background: rgba(34,197,94,0.18); color: #86efac; }
+  .pill.failed { background: rgba(239,68,68,0.18); color: #fca5a5; }
+  .pill.cancelled { background: rgba(255,255,255,0.06); color: var(--muted); }
+
+  .step-row {
+    display: grid; grid-template-columns: 1fr auto; gap: 8px;
+    padding: 6px 8px; border-radius: 6px; margin-bottom: 4px;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--border);
+  }
+  .step-row .info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .step-row .info .id { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; }
+  .step-row .info .desc { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .event-log {
+    font: 11.5px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    background: #050505; border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; max-height: 320px; overflow: auto;
+  }
+  .event-log .ev { margin-bottom: 3px; }
+  .event-log .ev.fail { color: #fca5a5; }
+  .event-log .ev.complete { color: #86efac; }
+  .event-log .ev.retry { color: #fcd34d; }
+  .event-log .ev.aguievent { color: #93c5fd; }
+
+  .timeline { display: flex; flex-direction: column; gap: 6px; }
+  .timeline-row {
+    display: grid; grid-template-columns: 160px 1fr 90px; align-items: center; gap: 8px;
+    font-size: 12px;
+  }
+  .timeline-bar-wrap { position: relative; height: 16px; background: rgba(255,255,255,0.04); border-radius: 4px; overflow: hidden; }
+  .timeline-bar { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 4px; }
+  .timeline-bar.failed { background: var(--red); }
+  .timeline-bar.cancelled { background: var(--slate); }
+
+  .mermaid-host { background: #050505; border: 1px solid var(--border); border-radius: 6px; padding: 14px; min-height: 240px; overflow: auto; }
+
+  .empty { color: var(--muted); padding: 40px 20px; text-align: center; }
+
+  details { background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+  details summary { cursor: pointer; font-weight: 500; }
+  details > div { margin-top: 6px; font-family: ui-monospace, Menlo, monospace; white-space: pre-wrap; font-size: 11.5px; color: var(--muted); }
+
+  .agent-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
+  .agent-card .head { display: flex; justify-content: space-between; align-items: center; }
+  .agent-card .head .name { font-weight: 600; }
+  .agent-card .head .type { font-size: 10.5px; padding: 2px 6px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <header>
+      <h1>Workflows</h1>
+      <button id="btn-new" title="New workflow">+ New</button>
+    </header>
+    <div class="wf-list" id="wf-list"></div>
+  </aside>
+
+  <main class="main">
+    <nav class="tabs" id="tabs">
+      <div class="tab active" data-tab="editor">Editor</div>
+      <div class="tab" data-tab="monitor">Monitor</div>
+      <div class="tab" data-tab="agents">Agents</div>
+      <div class="tab" data-tab="timeline">Timeline</div>
+    </nav>
+    <section class="tab-body" id="tab-body">
+      <div class="empty">Select or create a workflow to get started.</div>
+    </section>
+  </main>
+</div>
+
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
+
+const $ = (sel) => document.querySelector(sel);
+const state = {
+  workflows: [],
+  selectedId: null,
+  tab: "editor",
+  status: null,
+  events: [],
+  agUiEvents: [],
+  running: false,
+  abortReader: null,
+};
+
+async function api(path, init) {
+  const res = await fetch(path, init);
+  const ct = res.headers.get("content-type") || "";
+  if (!ct.includes("application/json")) {
+    const txt = await res.text();
+    throw new Error(`Non-JSON response from ${path}: ${txt.slice(0, 120)}`);
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function reloadWorkflows() {
+  try {
+    const data = await api("/api/workflows");
+    state.workflows = data.workflows || [];
+    renderSidebar();
+  } catch (err) {
+    console.warn("reloadWorkflows:", err);
+  }
+}
+
+function renderSidebar() {
+  const root = $("#wf-list");
+  if (state.workflows.length === 0) {
+    root.innerHTML = '<div class="empty" style="padding:24px 8px;">No workflows yet. Click + New.</div>';
+    return;
+  }
+  root.innerHTML = state.workflows.map((w) => `
+    <div class="wf-item ${w.id === state.selectedId ? "active" : ""}" data-id="${w.id}">
+      <div class="name">${escapeHtml(w.name)}</div>
+      <div class="meta">${w.steps?.length ?? 0} steps · ${(w.agents?.length ?? 0)} agents</div>
+    </div>
+  `).join("");
+  for (const el of root.querySelectorAll(".wf-item")) {
+    el.addEventListener("click", () => selectWorkflow(el.dataset.id));
+  }
+}
+
+async function selectWorkflow(id) {
+  state.selectedId = id;
+  await loadStatus();
+  state.events = [];
+  state.agUiEvents = [];
+  renderSidebar();
+  renderTab();
+}
+
+function getSelected() {
+  return state.workflows.find((w) => w.id === state.selectedId);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function setTab(name) {
+  state.tab = name;
+  for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
+  renderTab();
+}
+for (const t of document.querySelectorAll(".tab")) t.addEventListener("click", () => setTab(t.dataset.tab));
+
+$("#btn-new").addEventListener("click", newWorkflow);
+
+async function newWorkflow() {
+  const name = prompt("Workflow name", "New Workflow");
+  if (!name) return;
+  const wf = {
+    name,
+    version: 1,
+    config: { maxConcurrentSteps: 5, defaultRetryLimit: 3, defaultTimeout: 300 },
+    agents: [],
+    steps: [],
+    ui: { type: "ag-ui", spec: "dynamic", description: "" },
+  };
+  try {
+    const data = await api("/api/workflows", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(wf) });
+    state.selectedId = data.workflow.id;
+    await reloadWorkflows();
+    renderTab();
+  } catch (err) {
+    alert("Failed to create workflow: " + err.message);
+  }
+}
+
+function renderTab() {
+  const body = $("#tab-body");
+  const wf = getSelected();
+  if (!wf) {
+    body.innerHTML = '<div class="empty">Select or create a workflow to get started.</div>';
+    return;
+  }
+  if (state.tab === "editor") return renderEditor(body, wf);
+  if (state.tab === "monitor") return renderMonitor(body, wf);
+  if (state.tab === "agents") return renderAgents(body, wf);
+  if (state.tab === "timeline") return renderTimeline(body, wf);
+}
+
+function buildMermaid(wf) {
+  const safe = (s) => String(s).replace(/[^a-zA-Z0-9_]/g, "_");
+  const lines = ["graph TD"];
+  for (const s of wf.steps || []) {
+    const label = `${s.id}\\n[${s.type}]`;
+    lines.push(`  ${safe(s.id)}["${label}"]`);
+  }
+  for (const s of wf.steps || []) {
+    for (const dep of s.dependencies || []) {
+      lines.push(`  ${safe(dep)} --> ${safe(s.id)}`);
+    }
+  }
+  const statusMap = state.status?.steps || {};
+  for (const s of wf.steps || []) {
+    const st = statusMap[s.id]?.status;
+    if (!st) continue;
+    const color =
+      st === "complete" ? "#22c55e" :
+      st === "running" ? "#3b82f6" :
+      st === "retrying" ? "#f59e0b" :
+      st === "failed" ? "#ef4444" :
+      st === "cancelled" ? "#6b7280" : null;
+    if (color) lines.push(`  style ${safe(s.id)} fill:${color}22,stroke:${color}`);
+  }
+  return lines.join("\n");
+}
+
+async function renderMermaid(host, wf) {
+  if ((wf.steps || []).length === 0) {
+    host.innerHTML = '<div class="empty">No steps yet — add some to the JSON to see the DAG.</div>';
+    return;
+  }
+  try {
+    const id = "mmd-" + Math.random().toString(36).slice(2, 8);
+    const { svg } = await mermaid.render(id, buildMermaid(wf));
+    host.innerHTML = svg;
+  } catch (err) {
+    host.innerHTML = `<div class="empty">Mermaid error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderEditor(body, wf) {
+  body.innerHTML = `
+    <div class="toolbar row">
+      <input id="wf-name" type="text" value="${escapeHtml(wf.name)}" style="min-width:220px"/>
+      <button id="btn-save" class="primary">Save</button>
+      <button id="btn-validate">Validate</button>
+      <button id="btn-delete" class="danger">Delete</button>
+      <span id="validate-msg" style="margin-left:8px;color:var(--muted)"></span>
+    </div>
+    <div class="editor-grid">
+      <div class="panel">
+        <h2>Workflow JSON</h2>
+        <div class="body"><textarea id="wf-json"></textarea></div>
+      </div>
+      <div class="panel">
+        <h2>DAG</h2>
+        <div class="body mermaid-host" id="mermaid-host"></div>
+      </div>
+    </div>
+  `;
+  const ta = $("#wf-json");
+  ta.value = JSON.stringify(wf, null, 2);
+  renderMermaid($("#mermaid-host"), wf);
+
+  $("#btn-save").addEventListener("click", async () => {
+    try {
+      const obj = JSON.parse(ta.value);
+      obj.name = $("#wf-name").value || obj.name;
+      obj.id = wf.id;
+      const data = await api("/api/workflows", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) });
+      await reloadWorkflows();
+      state.selectedId = data.workflow.id;
+      renderTab();
+      $("#validate-msg").textContent = "Saved.";
+    } catch (err) {
+      $("#validate-msg").textContent = "Save failed: " + err.message;
+    }
+  });
+  $("#btn-validate").addEventListener("click", async () => {
+    try {
+      const obj = JSON.parse(ta.value);
+      obj.id = wf.id;
+      await api("/api/workflows", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) });
+      const v = await api("/api/workflows/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: wf.id }) });
+      $("#validate-msg").innerHTML = v.ok
+        ? `<span style="color:var(--green)">Valid (${v.warnings.length} warnings)</span>`
+        : `<span style="color:var(--red)">${v.errors.length} errors: ${escapeHtml(v.errors.join("; "))}</span>`;
+      await reloadWorkflows();
+    } catch (err) {
+      $("#validate-msg").textContent = "Validate failed: " + err.message;
+    }
+  });
+  $("#btn-delete").addEventListener("click", async () => {
+    if (!confirm("Delete this workflow?")) return;
+    await api("/api/workflows?id=" + encodeURIComponent(wf.id), { method: "DELETE" });
+    state.selectedId = null;
+    await reloadWorkflows();
+    renderTab();
+  });
+}
+
+function renderMonitor(body, wf) {
+  body.innerHTML = `
+    <div class="toolbar row">
+      <button id="btn-run" class="primary" ${state.running ? "disabled" : ""}>Run</button>
+      <button id="btn-cancel" class="danger" ${state.running ? "" : "disabled"}>Cancel</button>
+      <button id="btn-refresh">Refresh</button>
+      <span style="margin-left:8px;color:var(--muted)">State: <b id="wf-state">${state.status?.state || "—"}</b></span>
+    </div>
+    <div class="editor-grid">
+      <div class="panel">
+        <h2>Steps</h2>
+        <div class="body" id="steps-panel"></div>
+      </div>
+      <div class="panel">
+        <h2>Events</h2>
+        <div class="body">
+          <div class="event-log" id="event-log"></div>
+          <h2 style="margin-top:10px">AG-UI Updates</h2>
+          <div class="event-log" id="agui-log"></div>
+        </div>
+      </div>
+    </div>
+  `;
+  renderStepsPanel(wf);
+  renderEventLog();
+  $("#btn-run").addEventListener("click", () => runWorkflow(wf));
+  $("#btn-cancel").addEventListener("click", () => cancelWorkflow(wf));
+  $("#btn-refresh").addEventListener("click", loadStatus);
+}
+
+function renderStepsPanel(wf) {
+  const root = $("#steps-panel");
+  if (!root) return;
+  const statusMap = state.status?.steps || {};
+  root.innerHTML = (wf.steps || []).map((s) => {
+    const sst = statusMap[s.id] || { status: "queued", attempts: 0 };
+    return `
+      <div class="step-row">
+        <div class="info">
+          <div class="id">${escapeHtml(s.id)} <span style="color:var(--muted)">(${s.type})</span></div>
+          <div class="desc">agent: ${escapeHtml(s.agentId || "—")}${s.toolName ? " · tool: " + escapeHtml(s.toolName) : ""}</div>
+        </div>
+        <div><span class="pill ${sst.status}">${sst.status}${sst.attempts > 1 ? " ×" + sst.attempts : ""}</span></div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderEventLog() {
+  const log = $("#event-log");
+  const agui = $("#agui-log");
+  if (log) log.innerHTML = state.events.slice(-200).map((ev) => formatEvent(ev)).join("");
+  if (agui) agui.innerHTML = state.agUiEvents.slice(-200).map((ev) => `<div class="ev aguievent">[${new Date(ev.ts).toLocaleTimeString()}] ${escapeHtml(ev.stepId || "")}: ${escapeHtml(JSON.stringify(ev.payload))}</div>`).join("");
+}
+
+function formatEvent(ev) {
+  const time = new Date(ev.ts).toLocaleTimeString();
+  const cls =
+    ev.type === "step.fail" || ev.type === "workflow.fail" ? "fail" :
+    ev.type === "step.complete" || ev.type === "workflow.complete" ? "complete" :
+    ev.type === "step.retry" ? "retry" : "";
+  const extra = ev.error ? " — " + escapeHtml(ev.error) : "";
+  return `<div class="ev ${cls}">[${time}] ${escapeHtml(ev.type)} ${ev.stepId ? "· " + escapeHtml(ev.stepId) : ""}${extra}</div>`;
+}
+
+async function runWorkflow(wf) {
+  state.events = [];
+  state.agUiEvents = [];
+  state.running = true;
+  renderTab();
+  try {
+    const res = await fetch("/api/workflows/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: wf.id }) });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt.slice(0, 200));
+    }
+    if (!res.body) throw new Error("No stream body");
+    const reader = res.body.getReader();
+    state.abortReader = reader;
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        const s = line.trim();
+        if (!s) continue;
+        try {
+          const ev = JSON.parse(s);
+          state.events.push(ev);
+          if (ev.type === "ag-ui") state.agUiEvents.push(ev);
+        } catch {}
+      }
+      await loadStatus(false);
+      renderStepsPanel(wf);
+      renderEventLog();
+      const stateEl = document.getElementById("wf-state");
+      if (stateEl && state.status) stateEl.textContent = state.status.state;
+    }
+  } catch (err) {
+    state.events.push({ type: "workflow.fail", workflowId: wf.id, ts: Date.now(), error: err.message });
+    renderEventLog();
+  } finally {
+    state.running = false;
+    state.abortReader = null;
+    await loadStatus();
+    renderTab();
+  }
+}
+
+async function cancelWorkflow(wf) {
+  try {
+    await api("/api/workflows/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: wf.id }) });
+  } catch (err) {
+    alert("Cancel failed: " + err.message);
+  }
+}
+
+async function loadStatus(redraw = true) {
+  if (!state.selectedId) return;
+  try {
+    const data = await api("/api/workflows/status?id=" + encodeURIComponent(state.selectedId));
+    state.status = data.status;
+    if (redraw && state.tab === "monitor") {
+      const wf = getSelected();
+      if (wf) { renderStepsPanel(wf); renderEventLog(); }
+      const stateEl = document.getElementById("wf-state");
+      if (stateEl) stateEl.textContent = state.status?.state || "—";
+    }
+  } catch {}
+}
+
+setInterval(() => {
+  if (state.tab === "monitor" && state.selectedId && state.status?.state === "RUNNING") {
+    loadStatus(true);
+  }
+}, 1000);
+
+function renderAgents(body, wf) {
+  body.innerHTML = `<div id="agents-host"><div class="empty">Loading…</div></div>`;
+  const host = document.getElementById("agents-host");
+  const statusMap = state.status?.steps || {};
+  if (!wf.agents || wf.agents.length === 0) {
+    host.innerHTML = '<div class="empty">No agents defined on this workflow.</div>';
+    return;
+  }
+  host.innerHTML = wf.agents.map((a) => {
+    const owned = (wf.steps || []).filter((s) => s.agentId === a.id);
+    return `
+      <div class="agent-card">
+        <div class="head"><div class="name">${escapeHtml(a.id)}</div><span class="type">${escapeHtml(a.type || "")}</span></div>
+        <div style="color:var(--muted);margin:4px 0 8px;">${escapeHtml(a.description || "")}</div>
+        <div>${owned.length === 0 ? '<span style="color:var(--muted)">No steps owned.</span>' : owned.map((s) => {
+          const sst = statusMap[s.id] || { status: "queued" };
+          const out = sst.output != null ? `<div style="margin-top:4px;font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap;color:var(--muted);font-size:11.5px;max-height:120px;overflow:auto">${escapeHtml(typeof sst.output === "string" ? sst.output : JSON.stringify(sst.output))}</div>` : "";
+          return `<details><summary>${escapeHtml(s.id)} <span class="pill ${sst.status}">${sst.status}</span></summary>${out}</details>`;
+        }).join("")}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderTimeline(body, wf) {
+  const statusMap = state.status?.steps || {};
+  const rows = (wf.steps || []).filter((s) => statusMap[s.id]?.startedAt);
+  if (rows.length === 0) {
+    body.innerHTML = '<div class="empty">No execution history yet — run the workflow to see a timeline.</div>';
+    return;
+  }
+  const starts = rows.map((s) => statusMap[s.id].startedAt);
+  const ends = rows.map((s) => statusMap[s.id].endedAt ?? Date.now());
+  const t0 = Math.min(...starts);
+  const t1 = Math.max(...ends);
+  const span = Math.max(1, t1 - t0);
+  body.innerHTML = `<div class="timeline">${rows.map((s) => {
+    const sst = statusMap[s.id];
+    const left = ((sst.startedAt - t0) / span) * 100;
+    const width = Math.max(1, (((sst.endedAt ?? Date.now()) - sst.startedAt) / span) * 100);
+    const dur = Math.round(((sst.endedAt ?? Date.now()) - sst.startedAt) / 100) / 10;
+    return `
+      <div class="timeline-row">
+        <div style="font-family:ui-monospace,Menlo,monospace;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(s.id)}</div>
+        <div class="timeline-bar-wrap"><div class="timeline-bar ${sst.status === "failed" ? "failed" : sst.status === "cancelled" ? "cancelled" : ""}" style="left:${left}%;width:${width}%"></div></div>
+        <div style="color:var(--muted);text-align:right">${dur}s</div>
+      </div>
+    `;
+  }).join("")}</div>`;
+}
+
+reloadWorkflows();
+</script>
+</body>
+</html>

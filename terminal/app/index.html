@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Terminal</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: #0f1117; color: #d7d7d7; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #status { flex: none; padding: 6px 10px; font-size: 11px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; gap: 8px; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: #666; flex: none; }
+  #dot.connected { background: #4ade80; }
+  #dot.error { background: #f87171; }
+  #output { flex: 1; overflow: auto; padding: 10px; white-space: pre-wrap; word-break: break-all; font-size: 12px; line-height: 1.5; }
+  #inputRow { flex: none; display: flex; border-top: 1px solid rgba(255,255,255,0.1); }
+  #prompt { padding: 8px 4px 8px 10px; color: #7dd3fc; }
+  #input { flex: 1; background: transparent; border: none; color: inherit; font: inherit; font-size: 12px; padding: 8px 10px 8px 0; outline: none; }
+  button { background: rgba(255,255,255,0.08); border: none; color: inherit; font-size: 11px; padding: 4px 8px; border-radius: 4px; cursor: pointer; }
+  button:hover { background: rgba(255,255,255,0.15); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="status">
+    <span id="dot"></span>
+    <span id="statusText">Connecting…</span>
+    <span style="flex:1"></span>
+    <button id="reconnect">Reconnect</button>
+  </div>
+  <div id="output"></div>
+  <div id="inputRow">
+    <span id="prompt">$</span>
+    <input id="input" type="text" autocomplete="off" spellcheck="false" placeholder="type a command and press Enter" />
+  </div>
+</div>
+<script>
+// Terminal app — reference/example UI for user-specs/002-service-daemons,
+// bundled with the Terminal Service in the same item (user-apps/terminal/).
+// Line-oriented, not a full raw-mode terminal (no ANSI/xterm.js) — kept
+// dependency-free and simple, since its purpose is exercising the service
+// daemon lifecycle end to end, not being a production terminal emulator.
+//
+// KNOWN LIMITATION: connects directly to ws(s)://<this page's hostname>:<bound
+// port>, i.e. it assumes the terminal service's OWN port is reachable at that
+// host — true for plain single-host local dev, but NOT generally true behind
+// a reverse proxy (Traefik/nginx/etc., e.g. Dokploy): the proxy usually only
+// exposes BOS's main app port, not a service's internal port, and even if it
+// did, that port has no TLS of its own for a wss:// connection to terminate
+// against. If Terminal (or any service using this same direct-connect
+// pattern) can't connect once deployed behind a reverse proxy, the port
+// likely just isn't reachable/TLS-terminated from the browser at all — the
+// real fix is proxying the WebSocket through BOS's own already-exposed,
+// already-TLS-terminated port rather than connecting to the service's port
+// directly (not yet implemented; see docs/dev/apps/services.md).
+
+const outputEl = document.getElementById("output");
+const inputEl = document.getElementById("input");
+const dotEl = document.getElementById("dot");
+const statusEl = document.getElementById("statusText");
+const reconnectBtn = document.getElementById("reconnect");
+
+let ws = null;
+
+function appendOutput(text) {
+  outputEl.textContent += text;
+  outputEl.scrollTop = outputEl.scrollHeight;
+}
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  dotEl.className = cls || "";
+}
+
+// When installed as a real BOS app (Settings → Apps), this page loads inside
+// an opaque-origin sandboxed iframe (028 marketplace security model) — a
+// direct fetch("/api/services/...") from there fails as a cross-origin
+// request (that API has no CORS headers, on purpose: see
+// docs/dev/apps/services.md). The BOS SDK broker (window.__bos, injected by
+// the app-serving route) is the only channel available then, gated by the
+// "services:read" capability grant. When opened via the ServiceCard "Open
+// App" button instead (a plain new tab, not sandboxed), window.__bos doesn't
+// exist and a direct fetch works fine — this connect() supports both paths.
+async function fetchServiceConfig() {
+  if (window.__bos && window.__bos.services) {
+    try {
+      return await window.__bos.services.getConfig("terminal");
+    } catch (err) {
+      throw new Error(
+        `${err.message} — grant it in Settings → Apps → Terminal Service → Manage capabilities → "Read services".`,
+      );
+    }
+  }
+  const res = await fetch("/api/services/terminal/config");
+  if (!res.ok) throw new Error(`config fetch failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+async function connect() {
+  setStatus("Looking up service…");
+  let runtime, wsPath;
+  try {
+    const data = await fetchServiceConfig();
+    runtime = data.runtime;
+    wsPath = data.wsPath;
+  } catch (err) {
+    setStatus("Could not reach BOS API: " + err.message, "error");
+    return;
+  }
+
+  if (!runtime || typeof runtime.port !== "number") {
+    setStatus("Terminal Service is not running — start it in Settings → Plugins → Services first.", "error");
+    return;
+  }
+
+  // A page loaded over https:// is a secure context — the browser refuses
+  // (mixed-content block, "the operation is insecure") a plain ws:// socket
+  // from it. Match the page's own protocol.
+  const wsScheme = location.protocol === "https:" ? "wss:" : "ws:";
+  // Under the Supervisor (any Docker deployment), the service's own port
+  // isn't reachable directly once behind a reverse proxy — connect through
+  // the Supervisor's own already-exposed, already-TLS-terminated port
+  // instead (see tools/supervisor/supervisor.mjs's proxyServiceUpgrade).
+  // Plain `npm run dev` has no Supervisor in front, so wsPath is absent
+  // there and direct host:port access (which already works) is used.
+  const wsUrl = wsPath
+    ? `${wsScheme}//${location.host}${wsPath}`
+    : `${wsScheme}//${location.hostname}:${runtime.port}`;
+  setStatus(`Connecting to ${wsUrl}…`);
+  try {
+    ws = new WebSocket(wsUrl);
+  } catch (err) {
+    setStatus("Failed to open WebSocket: " + err.message, "error");
+    return;
+  }
+
+  ws.onopen = () => {
+    setStatus(`Connected — ${wsUrl}`, "connected");
+    inputEl.focus();
+  };
+  ws.onmessage = (event) => appendOutput(event.data);
+  ws.onclose = () => setStatus("Disconnected", "");
+  ws.onerror = () => setStatus("Connection error", "error");
+}
+
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const line = inputEl.value;
+  inputEl.value = "";
+  appendOutput(`$ ${line}\n`);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(line + "\n");
+  } else {
+    appendOutput("[not connected]\n");
+  }
+});
+
+reconnectBtn.addEventListener("click", () => {
+  if (ws) ws.close();
+  outputEl.textContent = "";
+  connect();
+});
+
+connect();
+</script>
+</body>
+</html>
