@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live Avatar</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0a0a0f;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #video-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      background: #000;
+    }
+
+    #avatar-video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      background: rgba(0,0,0,0.7);
+    }
+
+    #overlay.hidden { display: none; }
+
+    #status-text { color: rgba(255,255,255,0.7); font-size: 14px; }
+
+    .select-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    select {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px;
+      color: #fff;
+      padding: 6px 10px;
+      font-size: 12px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    select:focus { border-color: rgba(255,255,255,0.35); }
+
+    button {
+      background: #5b8cff;
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 7px 18px;
+      transition: background 0.15s;
+    }
+    button:hover { background: #4a7be8; }
+    button:disabled { background: rgba(91,140,255,0.35); cursor: default; }
+
+    #disconnect-btn {
+      background: transparent;
+      border: 1px solid rgba(255,80,80,0.4);
+      color: #f87171;
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      padding: 4px 12px;
+      font-size: 11px;
+    }
+    #disconnect-btn:hover { background: rgba(255,80,80,0.12); }
+
+    #speaking-dot {
+      position: absolute;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4ade80;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    #speaking-dot.active { opacity: 1; animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    #error-bar {
+      background: rgba(255,80,80,0.15);
+      border-top: 1px solid rgba(255,80,80,0.3);
+      color: #fca5a5;
+      font-size: 11px;
+      padding: 6px 12px;
+      display: none;
+    }
+    #error-bar.visible { display: block; }
+  </style>
+</head>
+<body>
+
+<div id="video-container">
+  <video id="avatar-video" autoplay playsinline muted></video>
+  <audio id="avatar-audio" autoplay></audio>
+
+  <div id="overlay">
+    <div id="status-text">Loading…</div>
+    <div class="select-row">
+      <select id="avatar-select"><option value="">Avatar…</option></select>
+      <select id="bg-select"><option value="">Background…</option></select>
+    </div>
+    <button id="connect-btn" disabled>Connect</button>
+  </div>
+
+  <button id="disconnect-btn" style="display:none">Disconnect</button>
+  <div id="speaking-dot"></div>
+</div>
+
+<div id="error-bar"></div>
+
+<script>
+(async () => {
+  const overlay      = document.getElementById("overlay");
+  const statusText   = document.getElementById("status-text");
+  const avatarSelect = document.getElementById("avatar-select");
+  const bgSelect     = document.getElementById("bg-select");
+  const connectBtn   = document.getElementById("connect-btn");
+  const disconnectBtn= document.getElementById("disconnect-btn");
+  const speakingDot  = document.getElementById("speaking-dot");
+  const errorBar     = document.getElementById("error-bar");
+  const videoEl      = document.getElementById("avatar-video");
+  const audioEl      = document.getElementById("avatar-audio");
+
+  let pc = null;
+
+  function showError(msg) {
+    errorBar.textContent = msg;
+    errorBar.classList.add("visible");
+    setTimeout(() => errorBar.classList.remove("visible"), 6000);
+  }
+
+  function setStatus(msg) { statusText.textContent = msg; }
+
+  // ── Load session info ───────────────────────────────────────────────────────
+  setStatus("Contacting avatar server…");
+  let sessionData;
+  try {
+    const res = await fetch("/api/plugin/live-avatar/session");
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error ?? `HTTP ${res.status}`);
+    }
+    sessionData = await res.json();
+  } catch (e) {
+    setStatus("Could not reach avatar server.");
+    showError(e.message);
+    return;
+  }
+
+  const { avatars = [], backgrounds = [], iceServers = [], iceTransportPolicy = "all" } = sessionData;
+
+  avatars.forEach(id => {
+    const o = document.createElement("option");
+    o.value = id; o.textContent = id;
+    avatarSelect.appendChild(o);
+  });
+  backgrounds.forEach(id => {
+    const o = document.createElement("option");
+    o.value = id; o.textContent = id;
+    bgSelect.appendChild(o);
+  });
+
+  if (avatars.length) avatarSelect.value = avatars[0];
+  if (backgrounds.length) bgSelect.value = backgrounds[0];
+
+  connectBtn.disabled = false;
+  setStatus("Choose an avatar and connect.");
+
+  // ── Connect ─────────────────────────────────────────────────────────────────
+  async function connect() {
+    const avatarId = avatarSelect.value;
+    const backgroundId = bgSelect.value;
+    if (!avatarId || !backgroundId) { showError("Select an avatar and background."); return; }
+
+    connectBtn.disabled = true;
+    setStatus("Establishing WebRTC…");
+
+    pc = new RTCPeerConnection({ iceServers, iceTransportPolicy });
+
+    // Receive-only: avatar video + audio.
+    pc.addTransceiver("audio", { direction: "recvonly" });
+    pc.addTransceiver("video", { direction: "recvonly" });
+
+    pc.ontrack = (ev) => {
+      if (ev.track.kind === "video") videoEl.srcObject = ev.streams[0];
+      if (ev.track.kind === "audio") {
+        audioEl.srcObject = ev.streams[0];
+        audioEl.play().catch(() => {});
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // Wait for ICE gathering — the avatar server doesn't support trickle ICE.
+    await new Promise(resolve => {
+      if (pc.iceGatheringState === "complete") { resolve(); return; }
+      pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === "complete") resolve(); };
+      setTimeout(resolve, 5000); // safety timeout
+    });
+
+    let answer;
+    try {
+      const res = await fetch("/api/plugin/live-avatar/offer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type, avatarId, backgroundId }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      answer = await res.json();
+    } catch (e) {
+      showError(`Offer failed: ${e.message}`);
+      pc.close(); pc = null;
+      connectBtn.disabled = false;
+      setStatus("Connection failed. Retry?");
+      return;
+    }
+
+    await pc.setRemoteDescription(answer);
+    overlay.classList.add("hidden");
+    disconnectBtn.style.display = "";
+    setStatus("Connected");
+
+    // Notify the BOS host that the avatar is ready.
+    window.parent?.postMessage({ type: "bos-avatar-ready", pluginId: "live-avatar" }, "*");
+  }
+
+  connectBtn.addEventListener("click", connect);
+
+  // ── Disconnect ──────────────────────────────────────────────────────────────
+  function disconnect() {
+    if (pc) { pc.close(); pc = null; }
+    videoEl.srcObject = null;
+    audioEl.srcObject = null;
+    overlay.classList.remove("hidden");
+    disconnectBtn.style.display = "none";
+    connectBtn.disabled = false;
+    setStatus("Disconnected. Connect again?");
+    window.parent?.postMessage({ type: "bos-avatar-closed", pluginId: "live-avatar" }, "*");
+  }
+
+  disconnectBtn.addEventListener("click", disconnect);
+
+  // ── postMessage from BOS host ─────────────────────────────────────────────
+  window.addEventListener("message", (ev) => {
+    const data = ev.data;
+    if (!data || data.pluginId !== "live-avatar") return;
+    if (data.type === "avatar-speaking")   speakingDot.classList.add("active");
+    if (data.type === "avatar-idle")       speakingDot.classList.remove("active");
+  });
+})();
+</script>
+</body>
+</html>

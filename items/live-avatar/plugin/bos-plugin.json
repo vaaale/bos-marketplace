@@ -1,0 +1,9 @@
+{
+  "id": "live-avatar",
+  "name": "Live Avatar",
+  "version": "0.1.0",
+  "description": "Lip-synced avatar powered by AVTR-1.",
+  "bosVersion": ">=1.4.0",
+  "sdkVersion": "1",
+  "entry": "index.js"
+}
