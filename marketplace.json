@@ -116,6 +116,23 @@
         "entrypoint": "workflows",
         "version": "1.0.0"
       }
+    },
+    {
+      "id": "live-avatar",
+      "name": "Live Avatar",
+      "description": "Lip-synced avatar powered by AVTR-1. Streams TTS audio to an avatar rendering server and displays the result as a live video in a BOS window.",
+      "tags": ["voice", "avatar", "ai"],
+      "voiceEngine": {
+        "entrypoint": "items/live-avatar/plugin",
+        "version": "0.1.0",
+        "engineId": "live-avatar"
+      },
+      "app": {
+        "entrypoint": "items/live-avatar/plugin",
+        "runtime": "plugin-served",
+        "version": "0.1.0",
+        "icon": "Video"
+      }
     }
   ]
 }
