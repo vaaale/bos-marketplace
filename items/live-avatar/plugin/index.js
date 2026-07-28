@@ -80,7 +80,7 @@ module.exports = function createPlugin(sdk) {
       const ttsRes = await fetch(`http://localhost:${bosPort}/api/voice/tts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, _bypassEngine: "openai-compatible" }),
+        body: JSON.stringify({ text, _bypassEngine: true }),
       });
 
       if (!ttsRes.ok) throw new Error(`TTS fetch failed: ${ttsRes.status}`);
