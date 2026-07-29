@@ -99,12 +99,12 @@
       "name": "Terminal Service",
       "description": "WebSocket-based shell daemon — the reference/example service for user-specs/002-service-daemons, bundled with its own Terminal app under app/.",
       "app": {
-        "entrypoint": "terminal/app",
+        "entrypoint": "items/terminal/app",
         "runtime": "iframe",
         "version": "1.0.0"
       },
       "services": {
-        "entrypoint": "terminal",
+        "entrypoint": "items/terminal",
         "version": "1.0.0"
       }
     },
@@ -113,25 +113,8 @@
       "name": "Workflow Manager",
       "description": "DAG-based workflow orchestration — multi-step automations that delegate to sub-agents. Execution runs on the main BOS process (src/lib/workflows/runner.ts); this service's Start/Stop state gates whether new runs are allowed.",
       "services": {
-        "entrypoint": "workflows",
+        "entrypoint": "items/workflows",
         "version": "1.0.0"
-      }
-    },
-    {
-      "id": "live-avatar",
-      "name": "Live Avatar",
-      "description": "Lip-synced avatar powered by AVTR-1. Streams TTS audio to an avatar rendering server and displays the result as a live video in a BOS window.",
-      "tags": ["voice", "avatar", "ai"],
-      "voiceEngine": {
-        "entrypoint": "items/live-avatar/plugin",
-        "version": "0.1.0",
-        "engineId": "live-avatar"
-      },
-      "app": {
-        "entrypoint": "items/live-avatar/plugin",
-        "runtime": "plugin-served",
-        "version": "0.1.0",
-        "icon": "Video"
       }
     }
   ]
