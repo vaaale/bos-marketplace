@@ -316,6 +316,26 @@
         "path": "skills/gws-shared",
         "version": "0.22.5"
       }
+    },
+    {
+      "id": "recipe-save-email-attachments",
+      "name": "Recipe Save Email Attachments",
+      "description": "Find Gmail messages with attachments and save them to a Google Drive folder.",
+      "tags": ["recipe", "gmail", "drive", "productivity"],
+      "skill": {
+        "path": "skills/recipe-save-email-attachments",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "recipe-save-email-to-doc",
+      "name": "Recipe Save Email To Doc",
+      "description": "Save a Gmail message body into a Google Doc for archival or reference.",
+      "tags": ["recipe", "gmail", "docs", "productivity"],
+      "skill": {
+        "path": "skills/recipe-save-email-to-doc",
+        "version": "0.22.5"
+      }
     }
   ]
 }
