@@ -116,6 +116,106 @@
         "entrypoint": "items/workflows",
         "version": "1.0.0"
       }
+    },
+    {
+      "id": "gws-gmail",
+      "name": "Gmail (gws)",
+      "description": "Gmail: Send, read, and manage email.",
+      "tags": ["google-workspace", "gmail", "productivity"],
+      "skill": {
+        "path": "skills/gws-gmail",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-read",
+      "name": "Gmail Read (gws)",
+      "description": "Gmail: Read a message and extract its body or headers.",
+      "tags": ["google-workspace", "gmail", "productivity"],
+      "skill": {
+        "path": "skills/gws-gmail-read",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-send",
+      "name": "Gmail Send (gws)",
+      "description": "Gmail: Send an email.",
+      "tags": ["google-workspace", "gmail", "productivity"],
+      "skill": {
+        "path": "skills/gws-gmail-send",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-reply",
+      "name": "Gmail Reply (gws)",
+      "description": "Gmail: Reply to a message (handles threading automatically).",
+      "tags": ["google-workspace", "gmail", "productivity"],
+      "skill": {
+        "path": "skills/gws-gmail-reply",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-reply-all",
+      "name": "Gmail Reply All (gws)",
+      "description": "Gmail: Reply-all to a message (handles threading automatically).",
+      "tags": ["google-workspace", "gmail", "productivity"],
+      "skill": {
+        "path": "skills/gws-gmail-reply-all",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-forward",
+      "name": "Gmail Forward (gws)",
+      "description": "Gmail: Forward a message to new recipients.",
+      "tags": ["google-workspace", "gmail", "productivity"],
+      "skill": {
+        "path": "skills/gws-gmail-forward",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-triage",
+      "name": "Gmail Triage (gws)",
+      "description": "Gmail: Show unread inbox summary (sender, subject, date).",
+      "tags": ["google-workspace", "gmail", "productivity"],
+      "skill": {
+        "path": "skills/gws-gmail-triage",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-watch",
+      "name": "Gmail Watch (gws)",
+      "description": "Gmail: Watch for new emails and stream them as NDJSON.",
+      "tags": ["google-workspace", "gmail", "productivity"],
+      "skill": {
+        "path": "skills/gws-gmail-watch",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-drive",
+      "name": "Google Drive (gws)",
+      "description": "Google Drive: Manage files, folders, and shared drives.",
+      "tags": ["google-workspace", "drive", "productivity"],
+      "skill": {
+        "path": "skills/gws-drive",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-drive-upload",
+      "name": "Google Drive Upload (gws)",
+      "description": "Google Drive: Upload a file with automatic metadata.",
+      "tags": ["google-workspace", "drive", "productivity"],
+      "skill": {
+        "path": "skills/gws-drive-upload",
+        "version": "0.22.5"
+      }
     }
   ]
 }
