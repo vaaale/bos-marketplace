@@ -226,6 +226,96 @@
         "path": "skills/gws-drive-upload",
         "version": "0.22.5"
       }
+    },
+    {
+      "id": "gws-calendar",
+      "name": "GWS Calendar",
+      "description": "Google Calendar: Manage calendars and events.",
+      "tags": ["google-workspace", "calendar", "productivity"],
+      "skill": {
+        "path": "skills/gws-calendar",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-calendar-agenda",
+      "name": "GWS Calendar Agenda",
+      "description": "Google Calendar: Show upcoming events across all calendars.",
+      "tags": ["google-workspace", "calendar", "productivity"],
+      "skill": {
+        "path": "skills/gws-calendar-agenda",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-calendar-insert",
+      "name": "GWS Calendar Insert",
+      "description": "Google Calendar: Create a new event.",
+      "tags": ["google-workspace", "calendar", "productivity"],
+      "skill": {
+        "path": "skills/gws-calendar-insert",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-docs",
+      "name": "GWS Docs",
+      "description": "Read and write Google Docs.",
+      "tags": ["google-workspace", "docs", "productivity"],
+      "skill": {
+        "path": "skills/gws-docs",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-docs-write",
+      "name": "GWS Docs Write",
+      "description": "Google Docs: Append text to a document.",
+      "tags": ["google-workspace", "docs", "productivity"],
+      "skill": {
+        "path": "skills/gws-docs-write",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-sheets",
+      "name": "GWS Sheets",
+      "description": "Google Sheets: Read and write spreadsheets.",
+      "tags": ["google-workspace", "sheets", "productivity"],
+      "skill": {
+        "path": "skills/gws-sheets",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-sheets-append",
+      "name": "GWS Sheets Append",
+      "description": "Google Sheets: Append a row to a spreadsheet.",
+      "tags": ["google-workspace", "sheets", "productivity"],
+      "skill": {
+        "path": "skills/gws-sheets-append",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-sheets-read",
+      "name": "GWS Sheets Read",
+      "description": "Google Sheets: Read values from a spreadsheet.",
+      "tags": ["google-workspace", "sheets", "productivity"],
+      "skill": {
+        "path": "skills/gws-sheets-read",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-shared",
+      "name": "GWS Shared",
+      "description": "gws CLI: Shared patterns for authentication, global flags, and output formatting.",
+      "tags": ["google-workspace", "productivity"],
+      "skill": {
+        "path": "skills/gws-shared",
+        "version": "0.22.5"
+      }
     }
   ]
 }
