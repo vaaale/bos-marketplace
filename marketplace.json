@@ -118,8 +118,18 @@
       }
     },
     {
+      "id": "gws-shared",
+      "name": "GWS Shared",
+      "description": "Shared auth, global flags, and security rules.",
+      "tags": ["google-workspace", "gmail", "productivity"],
+      "skill": {
+        "path": "skills/gws-shared",
+        "version": "0.22.5"
+      }
+    },
+    {
       "id": "gws-gmail",
-      "name": "Gmail (gws)",
+      "name": "GWS Gmail",
       "description": "Gmail: Send, read, and manage email.",
       "tags": ["google-workspace", "gmail", "productivity"],
       "skill": {
@@ -129,7 +139,7 @@
     },
     {
       "id": "gws-gmail-read",
-      "name": "Gmail Read (gws)",
+      "name": "GWS Gmail Read",
       "description": "Gmail: Read a message and extract its body or headers.",
       "tags": ["google-workspace", "gmail", "productivity"],
       "skill": {
@@ -139,7 +149,7 @@
     },
     {
       "id": "gws-gmail-send",
-      "name": "Gmail Send (gws)",
+      "name": "GWS Gmail Send",
       "description": "Gmail: Send an email.",
       "tags": ["google-workspace", "gmail", "productivity"],
       "skill": {
@@ -149,7 +159,7 @@
     },
     {
       "id": "gws-gmail-reply",
-      "name": "Gmail Reply (gws)",
+      "name": "GWS Gmail Reply",
       "description": "Gmail: Reply to a message (handles threading automatically).",
       "tags": ["google-workspace", "gmail", "productivity"],
       "skill": {
@@ -159,7 +169,7 @@
     },
     {
       "id": "gws-gmail-reply-all",
-      "name": "Gmail Reply All (gws)",
+      "name": "GWS Gmail Reply All",
       "description": "Gmail: Reply-all to a message (handles threading automatically).",
       "tags": ["google-workspace", "gmail", "productivity"],
       "skill": {
@@ -169,7 +179,7 @@
     },
     {
       "id": "gws-gmail-forward",
-      "name": "Gmail Forward (gws)",
+      "name": "GWS Gmail Forward",
       "description": "Gmail: Forward a message to new recipients.",
       "tags": ["google-workspace", "gmail", "productivity"],
       "skill": {
@@ -179,7 +189,7 @@
     },
     {
       "id": "gws-gmail-triage",
-      "name": "Gmail Triage (gws)",
+      "name": "GWS Gmail Triage",
       "description": "Gmail: Show unread inbox summary (sender, subject, date).",
       "tags": ["google-workspace", "gmail", "productivity"],
       "skill": {
@@ -189,7 +199,7 @@
     },
     {
       "id": "gws-gmail-watch",
-      "name": "Gmail Watch (gws)",
+      "name": "GWS Gmail Watch",
       "description": "Gmail: Watch for new emails and stream them as NDJSON.",
       "tags": ["google-workspace", "gmail", "productivity"],
       "skill": {
@@ -199,7 +209,7 @@
     },
     {
       "id": "gws-drive",
-      "name": "Google Drive (gws)",
+      "name": "GWS Drive",
       "description": "Google Drive: Manage files, folders, and shared drives.",
       "tags": ["google-workspace", "drive", "productivity"],
       "skill": {
@@ -209,7 +219,7 @@
     },
     {
       "id": "gws-drive-upload",
-      "name": "Google Drive Upload (gws)",
+      "name": "GWS Drive Upload",
       "description": "Google Drive: Upload a file with automatic metadata.",
       "tags": ["google-workspace", "drive", "productivity"],
       "skill": {
