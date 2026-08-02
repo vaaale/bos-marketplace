@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WebDAV Service</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #0f1117;
+    color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 20px; }
+  h2 { font-size: 14px; font-weight: 600; margin: 0; }
+  h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: rgba(255,255,255,0.5); margin: 0 0 6px; }
+  h4 { font-size: 12px; font-weight: 500; margin: 0 0 6px; }
+  p { margin: 0; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .header { margin-bottom: 20px; }
+  .header-row { display: flex; align-items: center; gap: 8px; }
+  .subtitle { margin-top: 2px; font-size: 12px; color: rgba(255,255,255,0.5); }
+  .badge { flex-shrink: 0; border-radius: 4px; padding: 1px 6px; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .badge-running { background: rgba(34,197,94,0.25); color: #86efac; }
+  .badge-stopped { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.4); }
+  .badge-crashed { background: rgba(248,113,113,0.25); color: #fca5a5; }
+  .badge-restarting { background: rgba(250,204,21,0.25); color: #fde047; }
+  .badge-corrupted { background: rgba(251,146,60,0.25); color: #fdba74; }
+  .box { border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); border-radius: 6px; padding: 12px; margin-bottom: 8px; }
+  .box.note { border-color: rgba(56,189,248,0.2); background: rgba(56,189,248,0.05); }
+  .box.warn { border-color: rgba(251,191,36,0.2); background: rgba(251,191,36,0.08); }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .row:last-child { margin-bottom: 0; }
+  .muted { color: rgba(255,255,255,0.4); font-size: 11px; }
+  .muted-strong { color: rgba(255,255,255,0.6); }
+  .section { margin-bottom: 16px; }
+  ul.scenarios { list-style: none; margin: 0; padding: 0; }
+  ul.scenarios li { margin-bottom: 8px; font-size: 11px; color: rgba(255,255,255,0.5); }
+  .cmd { border-radius: 4px; background: rgba(0,0,0,0.3); padding: 8px; margin-bottom: 6px; overflow-x: auto; }
+  .cmd code { font-size: 12px; color: rgba(255,255,255,0.75); white-space: pre-wrap; word-break: break-all; }
+  button { cursor: pointer; border: none; border-radius: 4px; font-size: 12px; font-weight: 500; padding: 6px 12px; font-family: inherit; }
+  .btn-primary { background: rgba(139,92,246,0.25); color: #ddd6fe; }
+  .btn-primary:hover { background: rgba(139,92,246,0.35); }
+  .btn-warn { background: rgba(251,191,36,0.2); color: #fde68a; }
+  .btn-warn:hover { background: rgba(251,191,36,0.3); }
+  .btn-icon { background: rgba(255,255,255,0.08); color: #fff; padding: 5px 7px; }
+  .btn-icon:hover { background: rgba(255,255,255,0.15); }
+  .token-value { font-size: 12px; color: rgba(255,255,255,0.8); word-break: break-all; }
+  .security-note { display: flex; align-items: flex-start; gap: 8px; border-bottom: 1px solid rgba(251,191,36,0.2); background: rgba(251,191,36,0.1); padding: 10px 12px; font-size: 12px; color: #fef3c7; border-radius: 6px; }
+  .error { color: #fca5a5; font-size: 12px; }
+  label.field-label { font-size: 12px; color: rgba(255,255,255,0.6); }
+  input[type="number"] {
+    width: 96px;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.3);
+    padding: 4px 8px;
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: rgba(255,255,255,0.8);
+    border: 1px solid rgba(255,255,255,0.15);
+  }
+  input[type="number"]:focus {
+    outline: none;
+    border-color: rgba(139,92,246,0.5);
+    box-shadow: 0 0 0 1px rgba(139,92,246,0.5);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="section header">
+    <div class="header-row">
+      <h2 id="title">WebDAV Service</h2>
+      <span id="statusBadge" class="badge badge-stopped">Loading…</span>
+    </div>
+    <p class="subtitle">Expose your VFS directory tree as a WebDAV server.</p>
+  </div>
+
+  <div class="section">
+    <h3>Server Connection</h3>
+    <div class="box">
+      <div class="row">
+        <label class="field-label" for="portInput">Port:</label>
+        <input type="number" id="portInput" min="0" max="65535" value="0" aria-label="Port number" />
+        <span id="portSaved" class="muted" style="color:#86efac; visibility:hidden;">Saved</span>
+      </div>
+      <p class="muted" style="margin-bottom:10px;">0 (recommended) lets the OS assign an available port; avoid reserved ports. Takes effect on next restart.</p>
+      <div class="row">
+        <span class="muted-strong" style="font-size:12px;">Address:</span>
+        <code id="connectionUrl" class="muted-strong" style="font-size:12px;">discovering…</code>
+      </div>
+      <p class="muted">This is the actual URL for the deployment BOS is currently running under — discovered live from
+        <code>GET /api/services/webdav-vfs-mount/config</code>, never hardcoded.</p>
+    </div>
+    <div class="box note">
+      <h4 style="color:#bae6fd;">What this address resolves to</h4>
+      <p id="scenarioNote" class="muted"></p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>Connection Instructions</h3>
+
+    <div class="box">
+      <h4>Windows</h4>
+      <p class="muted" style="margin-bottom:8px;">In the "Network Drive" wizard (Map Network Drive), enter:</p>
+      <div class="cmd"><code id="cmdWindows">—</code></div>
+      <p class="muted">Use <span class="muted-strong">webdav</span> as the username and your access token as the password.</p>
+    </div>
+
+    <div class="box">
+      <h4>macOS</h4>
+      <p class="muted" style="margin-bottom:8px;">Finder → Go → Connect to Server:</p>
+      <div class="cmd"><code id="cmdMac">—</code></div>
+      <p class="muted">Enter your access token when prompted for the password.</p>
+    </div>
+
+    <div class="box">
+      <h4>Linux (davfs2)</h4>
+      <p class="muted" style="margin-bottom:8px;">Install davfs2, then:</p>
+      <div class="cmd"><code id="cmdLinux">—</code></div>
+      <p class="muted">Replace <span class="muted-strong">YOUR_TOKEN</span> with your generated access token.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>Access Token</h3>
+    <div class="box" id="tokenBox">
+      <p class="muted">Loading…</p>
+    </div>
+  </div>
+
+  <div class="security-note">
+    <span>&#9888;</span>
+    <span><strong>Security:</strong> The access token is the only protection against unauthorized access. Treat it like a
+      password — never share it or commit it to version control.</span>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const SERVICE_ID = "webdav-vfs-mount";
+
+  const el = (id) => document.getElementById(id);
+
+  // ---- Data loading --------------------------------------------------------
+
+  async function fetchJson(url, opts) {
+    const res = await fetch(url, opts);
+    if (!res.ok) {
+      let message = `${url} -> HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        if (body && body.error) message = body.error;
+      } catch {
+        // Non-JSON error body — keep the generic message.
+      }
+      throw new Error(message);
+    }
+    return res.json();
+  }
+
+  const STATE_LABEL = {
+    running: "Active",
+    stopped: "Inactive",
+    restarting: "Restarting",
+    crashed: "Crashed",
+    corrupted: "Corrupted",
+  };
+
+  function renderStatus(service) {
+    const badge = el("statusBadge");
+    const state = (service && service.state) || "stopped";
+    badge.textContent = STATE_LABEL[state] || state;
+    badge.className = "badge badge-" + state;
+  }
+
+  function computeConnectionUrl(cfg) {
+    if (cfg.httpPath) return `${location.origin}${cfg.httpPath}`;
+    if (cfg.runtime && cfg.runtime.port) return `${location.protocol}//${location.hostname}:${cfg.runtime.port}/`;
+    return null;
+  }
+
+  function renderConnection(cfg) {
+    const url = computeConnectionUrl(cfg);
+    el("connectionUrl").textContent = url || "not bound yet — start the service";
+
+    const scenario = cfg.httpPath
+      ? "This BOS instance runs behind the Supervisor (Bastion, or a Supervisor-only deployment). The address above is proxied through the Supervisor's own public port — the service's own bound port is not directly reachable."
+      : cfg.runtime
+        ? "No Supervisor is in front of this BOS instance (plain `npm run dev`, or standalone). The address above connects directly to the service's own OS-assigned port."
+        : "The service hasn't reported a bound port yet — start it from the Services panel, then reload this page.";
+    el("scenarioNote").textContent = scenario;
+
+    const davUrl = url ? url.replace(/^https?:\/\//, "dav://") : "<connection-url>";
+    el("cmdWindows").textContent = url || "<connection-url>";
+    el("cmdMac").textContent = davUrl;
+    el("cmdLinux").textContent =
+      `sudo mount -t davfs -o username=webdav,password=YOUR_TOKEN ${url || "<connection-url>"} /mnt/webdav`;
+  }
+
+  function renderPort(port) {
+    const input = el("portInput");
+    // Don't clobber the value while the user is actively editing it.
+    if (document.activeElement !== input) {
+      input.value = typeof port === "number" ? port : 0;
+    }
+  }
+
+  async function patchConfig(patch) {
+    return fetchJson(`/api/services/${encodeURIComponent(SERVICE_ID)}/config`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: SERVICE_ID, patch }),
+    });
+  }
+
+  // ---- Access token — mint/list/revoke via BOS's own Generic Secrets
+  // surface (docs/dev/features/headless-client-auth.md, "Worker-thread
+  // services"). This page never generates or hashes a token itself anymore —
+  // /api/secrets/<service> does both, and also registers the token with
+  // Bastion's headless-auth routing (credentials-index.json) in the same
+  // step, which a locally-hashed token never did. Requires an authenticated
+  // session (hasSessionScope() on the server side) — this page only ever
+  // runs in one, so that's transparent here.
+
+  function listSecrets() {
+    return fetchJson(`/api/secrets/${encodeURIComponent(SERVICE_ID)}`).then((r) => r.secrets || []);
+  }
+
+  function mintSecret(label) {
+    return fetchJson(`/api/secrets/${encodeURIComponent(SERVICE_ID)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+  }
+
+  function revokeSecret(secretId) {
+    return fetchJson(`/api/secrets/${encodeURIComponent(SERVICE_ID)}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secretId }),
+    });
+  }
+
+  let portSaveTimer = null;
+  function onPortInput() {
+    const input = el("portInput");
+    let n = Number(input.value);
+    if (Number.isNaN(n)) n = 0;
+    if (n < 0) n = 0;
+    if (n > 65535) n = 65535;
+    input.value = n;
+    if (portSaveTimer) clearTimeout(portSaveTimer);
+    portSaveTimer = setTimeout(async () => {
+      try {
+        await patchConfig({ port: n });
+        const saved = el("portSaved");
+        saved.style.visibility = "visible";
+        setTimeout(() => { saved.style.visibility = "hidden"; }, 1500);
+      } catch {
+        // Best-effort — the field still reflects the user's typed value.
+      }
+    }, 500);
+  }
+
+  let showingRawToken = false;
+
+  function renderTokenBox(hasToken) {
+    if (showingRawToken) return;
+    const box = el("tokenBox");
+    if (!hasToken) {
+      box.innerHTML = "";
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.style.marginBottom = "8px";
+      p.textContent = "Generate an access token to authenticate your WebDAV clients.";
+      const btn = document.createElement("button");
+      btn.className = "btn-primary";
+      btn.textContent = "Generate Access Token";
+      btn.onclick = () => void generate(false);
+      box.appendChild(p);
+      box.appendChild(btn);
+      return;
+    }
+    box.innerHTML = "";
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.style.marginBottom = "8px";
+    p.textContent = "A token is configured. Regenerating immediately revokes the old one.";
+    const btn = document.createElement("button");
+    btn.className = "btn-warn";
+    btn.textContent = "Regenerate";
+    btn.onclick = () => void generate(true);
+    box.appendChild(p);
+    box.appendChild(btn);
+  }
+
+  function renderRawToken(token) {
+    showingRawToken = true;
+    const box = el("tokenBox");
+    box.innerHTML = "";
+    const warn = document.createElement("p");
+    warn.className = "muted";
+    warn.style.marginBottom = "8px";
+    warn.textContent = "Copy this now — it will not be shown again:";
+    const row = document.createElement("div");
+    row.className = "row";
+    const code = document.createElement("code");
+    code.className = "token-value";
+    code.textContent = token;
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "btn-icon";
+    copyBtn.textContent = "Copy";
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(token).then(() => {
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => (copyBtn.textContent = "Copy"), 1500);
+      });
+    };
+    row.appendChild(code);
+    row.appendChild(copyBtn);
+    const doneBtn = document.createElement("button");
+    doneBtn.className = "btn-icon";
+    doneBtn.style.marginTop = "8px";
+    doneBtn.textContent = "Done";
+    doneBtn.onclick = () => {
+      showingRawToken = false;
+      renderTokenBox(true);
+    };
+    box.appendChild(warn);
+    box.appendChild(row);
+    box.appendChild(doneBtn);
+  }
+
+  async function generate(isRegenerate) {
+    const box = el("tokenBox");
+    const prevHtml = box.innerHTML;
+    box.innerHTML = '<p class="muted">Generating…</p>';
+    try {
+      if (isRegenerate) {
+        // Revoke every currently-active secret for this service first, so
+        // regenerating actually replaces the old token rather than leaving
+        // it valid alongside the new one (AUTH-004).
+        const existing = await listSecrets();
+        for (const s of existing) {
+          await revokeSecret(s.secretId);
+        }
+      }
+      const created = await mintSecret("WebDAV access token");
+      renderRawToken(created.rawSecret);
+    } catch (err) {
+      box.innerHTML = prevHtml;
+      alert(`Failed to ${isRegenerate ? "regenerate" : "generate"} token: ${err.message}`);
+    }
+  }
+
+  async function load() {
+    try {
+      const [serviceData, configData, secrets] = await Promise.all([
+        fetchJson(`/api/services/${encodeURIComponent(SERVICE_ID)}`),
+        fetchJson(`/api/services/${encodeURIComponent(SERVICE_ID)}/config`),
+        listSecrets(),
+      ]);
+      renderStatus(serviceData.service);
+      renderConnection(configData);
+      const own = (configData.configFiles || []).find((f) => f.name === SERVICE_ID);
+      renderPort(own && own.values ? own.values.port : 0);
+      renderTokenBox(secrets.length > 0);
+    } catch (err) {
+      el("statusBadge").textContent = "Error";
+      el("connectionUrl").textContent = "unavailable";
+      el("tokenBox").innerHTML = `<p class="error">${err.message}</p>`;
+    }
+  }
+
+  el("portInput").addEventListener("input", onPortInput);
+
+  void load();
+  setInterval(load, 5000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,125 @@
+// The single channel between this app and BrowserOS.
+//
+// Installed apps run inside a sandboxed iframe and reach BOS through the SDK
+// (`window.__bos`), which is injected by /apps/[...slug]. Only the capabilities
+// granted in app.json are honoured — this app declares fs:read, fs:write,
+// storage, window:title and notify.
+//
+// The assistant run API has no broker method, so the chat talks to it over
+// same-origin fetch. That works because a user-authored item is served
+// `origin: "local"` (same-origin sandbox); see docs/dev/guides/apps.md §
+// "Trust tiers". Everything else goes through the broker so the app keeps
+// working if it is ever re-served opaque-origin.
+
+import type { VfsEntry } from "../types-vfs";
+
+interface BosApi {
+  fs: {
+    list: (path: string) => Promise<unknown>;
+    read: (path: string) => Promise<unknown>;
+    write: (path: string, content: string) => Promise<unknown>;
+    delete: (path: string) => Promise<unknown>;
+  };
+  settings: { get: () => Promise<unknown> };
+  window: { setTitle: (title: string) => Promise<unknown> };
+  notify: (message: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  storage: {
+    get: (key: string) => Promise<string | null>;
+    set: (key: string, value: string) => Promise<unknown>;
+    remove: (key: string) => Promise<unknown>;
+    keys: () => Promise<string[]>;
+  };
+}
+
+function sdk(): BosApi | null {
+  const w = window as unknown as { __bos?: BosApi };
+  return w.__bos ?? null;
+}
+
+/** Resolve once the SDK has installed itself (it dispatches `bos:ready`). */
+export function whenReady(timeoutMs = 3000): Promise<BosApi | null> {
+  if (sdk()) return Promise.resolve(sdk());
+  return new Promise((resolve) => {
+    const done = (): void => {
+      window.removeEventListener("bos:ready", done);
+      clearTimeout(timer);
+      resolve(sdk());
+    };
+    const timer = setTimeout(done, timeoutMs);
+    window.addEventListener("bos:ready", done);
+  });
+}
+
+// ---------------------------------------------------------------- VFS
+
+/** List a VFS directory. Throws with a readable message on failure. */
+export async function vfsList(path: string): Promise<VfsEntry[]> {
+  const api = await whenReady();
+  if (!api) throw new Error("BrowserOS file access is unavailable.");
+  const entries = await api.fs.list(path);
+  if (!Array.isArray(entries)) throw new Error(`Cannot list ${path}`);
+  return entries as VfsEntry[];
+}
+
+/** Read a text file from the VFS. */
+export async function vfsRead(path: string): Promise<string> {
+  const api = await whenReady();
+  if (!api) throw new Error("BrowserOS file access is unavailable.");
+  const content = await api.fs.read(path);
+  if (typeof content !== "string") throw new Error(`Cannot read ${path}`);
+  return content;
+}
+
+/** Write a text file to the VFS (creates or overwrites). */
+export async function vfsWrite(path: string, content: string): Promise<void> {
+  const api = await whenReady();
+  if (!api) throw new Error("BrowserOS file access is unavailable.");
+  const res = (await api.fs.write(path, content)) as { error?: string } | undefined;
+  if (res && typeof res.error === "string") throw new Error(res.error);
+}
+
+// ---------------------------------------------------------------- misc
+
+export async function setWindowTitle(title: string): Promise<void> {
+  const api = await whenReady();
+  await api?.window.setTitle(title).catch(() => undefined);
+}
+
+export async function notify(message: string): Promise<void> {
+  const api = await whenReady();
+  await api?.notify(message).catch(() => undefined);
+}
+
+// ---------------------------------------------------------------- storage
+//
+// Per-app persistent KV. Falls back to localStorage when the capability is
+// missing so the app still behaves sensibly in a bare preview.
+
+export async function storageGet(key: string): Promise<string | null> {
+  const api = await whenReady();
+  if (api) {
+    const v = await api.storage.get(key).catch(() => undefined);
+    if (v !== undefined) return v;
+  }
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export async function storageSet(key: string, value: string): Promise<void> {
+  const api = await whenReady();
+  if (api) {
+    const ok = await api.storage
+      .set(key, value)
+      .then(() => true)
+      .catch(() => false);
+    if (ok) return;
+  }
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* nothing else we can do */
+  }
+}

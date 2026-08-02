@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live Avatar</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body { height: 100%; background: #000; overflow: hidden; }
+
+    body {
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #stage { position: relative; flex: 1; background: #000; }
+
+    #avatar-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    #status {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px;
+      text-align: center;
+      color: rgba(255,255,255,0.65);
+      background: rgba(0,0,0,0.75);
+    }
+    #status.hidden { display: none; }
+
+    #speaking-dot {
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #4ade80;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    #speaking-dot.active { opacity: 1; animation: pulse 1s infinite; }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  </style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="avatar-video" autoplay playsinline muted></video>
+  <audio id="avatar-audio" autoplay></audio>
+  <div id="status">Connecting…</div>
+  <div id="speaking-dot"></div>
+</div>
+
+<script>
+// BOS presence surface (036). This page renders media and reports what it is
+// doing; it owns no connect/disconnect UI. BOS opens it, tells it to connect,
+// sizes its window from the aspect ratio it reports, and keeps the presence
+// lease alive only while it says it is playing.
+(() => {
+  const PLUGIN_ID = "live-avatar";
+  const videoEl = document.getElementById("avatar-video");
+  const audioEl = document.getElementById("avatar-audio");
+  const statusEl = document.getElementById("status");
+  const speakingDot = document.getElementById("speaking-dot");
+
+  let pc = null;
+  let connecting = false;
+
+  function toHost(message) {
+    window.parent?.postMessage({ ...message, pluginId: PLUGIN_ID }, "*");
+  }
+
+  function setStatus(text) {
+    if (text) { statusEl.textContent = text; statusEl.classList.remove("hidden"); }
+    else statusEl.classList.add("hidden");
+  }
+
+  // Errors are reported, not painted: BOS's presence window owns the chrome and
+  // shows the message together with the "continue with audio only" way out.
+  // Drawing it here too produced the same sentence twice, overlapping.
+  function fail(message) {
+    setStatus("");
+    toHost({ type: "bos-surface-error", message });
+  }
+
+  // The window's shape follows the stream's, so report it as soon as the decoder
+  // knows it — before then BOS is guessing.
+  videoEl.addEventListener("loadedmetadata", () => {
+    const { videoWidth: w, videoHeight: h } = videoEl;
+    if (w > 0 && h > 0) toHost({ type: "bos-surface-aspect", ratio: w / h });
+  });
+
+  videoEl.addEventListener("playing", () => {
+    setStatus("");
+    toHost({ type: "bos-surface-playing" });
+  });
+
+  async function connect() {
+    if (connecting || pc) return;
+    connecting = true;
+    setStatus("Contacting avatar server…");
+
+    let session;
+    try {
+      const res = await fetch(`/api/plugin/${PLUGIN_ID}/session`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+      session = await res.json();
+    } catch (e) {
+      connecting = false;
+      fail(`Avatar server unreachable: ${e.message}`);
+      return;
+    }
+
+    const {
+      avatars = [], backgrounds = [], iceServers = [], iceTransportPolicy = "all",
+      defaultAvatarId = "", defaultBackgroundId = "",
+    } = session;
+    // Configured defaults win; otherwise take what the server offers first. There
+    // is no picker here — choosing an avatar is configuration, not something to
+    // do every time the agent speaks (Settings → Live Avatar).
+    const avatarId = defaultAvatarId || avatars[0];
+    const backgroundId = defaultBackgroundId || backgrounds[0];
+    if (!avatarId || !backgroundId) {
+      connecting = false;
+      fail("The avatar server offers no avatars or backgrounds.");
+      return;
+    }
+
+    setStatus("Establishing WebRTC…");
+    pc = new RTCPeerConnection({ iceServers, iceTransportPolicy });
+    pc.addTransceiver("audio", { direction: "recvonly" });
+    pc.addTransceiver("video", { direction: "recvonly" });
+
+    pc.ontrack = (ev) => {
+      if (ev.track.kind === "video") videoEl.srcObject = ev.streams[0];
+      if (ev.track.kind === "audio") {
+        audioEl.srcObject = ev.streams[0];
+        audioEl.play().catch(() => {});
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (!pc) return;
+      if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+        toHost({ type: "bos-surface-stopped" });
+        fail("The avatar connection dropped.");
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // The avatar server doesn't support trickle ICE — send one complete offer.
+    await new Promise((resolve) => {
+      if (pc.iceGatheringState === "complete") { resolve(); return; }
+      pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === "complete") resolve(); };
+      setTimeout(resolve, 5000);
+    });
+
+    try {
+      const res = await fetch(`/api/plugin/${PLUGIN_ID}/offer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type, avatarId, backgroundId }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+      await pc.setRemoteDescription(await res.json());
+      setStatus("Waiting for video…");
+    } catch (e) {
+      pc.close();
+      pc = null;
+      connecting = false;
+      fail(`Could not start the avatar: ${e.message}`);
+      return;
+    }
+
+    connecting = false;
+  }
+
+  window.addEventListener("message", (ev) => {
+    const data = ev.data;
+    if (!data || data.pluginId !== PLUGIN_ID) return;
+    if (data.type === "bos-surface-connect") void connect();
+    if (data.type === "bos-surface-speaking") speakingDot.classList.toggle("active", !!data.speaking);
+  });
+
+  // Closing the peer connection here is a courtesy; the authority is BOS telling
+  // the plugin the presence session ended, which is what closes the audio socket.
+  window.addEventListener("pagehide", () => { if (pc) { pc.close(); pc = null; } });
+
+  toHost({ type: "bos-surface-ready" });
+})();
+</script>
+</body>
+</html>

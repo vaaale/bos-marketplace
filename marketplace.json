@@ -336,6 +336,53 @@
         "path": "skills/recipe-save-email-to-doc",
         "version": "0.22.5"
       }
+    },
+    {
+      "id": "live-avatar",
+      "name": "Live Avatar",
+      "description": "Lip-synced talking avatar (AVTR-1) — a voice engine with a face. Streams TTS audio to an avatar rendering server; BOS shows the result in the presence window. Not a separate app.",
+      "tags": [
+        "voice",
+        "avatar",
+        "ai"
+      ],
+      "voiceEngine": {
+        "entrypoint": "items/live-avatar/plugin",
+        "version": "0.1.0",
+        "engineId": "live-avatar"
+      }
+    },
+    {
+      "id": "agentic-text-editor",
+      "name": "Agentic Text Editor",
+      "description": "A text editor with integrated AI agent for content manipulation",
+      "tags": [
+        "productivity",
+        "editor",
+        "markdown",
+        "agent"
+      ],
+      "app": {
+        "entrypoint": "items/agentic-text-editor/app",
+        "runtime": "iframe",
+        "version": "1.0.0",
+        "icon": "PenTool"
+      }
+    },
+    {
+      "id": "webdav-vfs-mount",
+      "name": "WebDAV VFS Mount",
+      "description": "Expose your BrowserOS VFS over WebDAV for native mount support (Windows, macOS Finder, Linux davfs2).",
+      "tags": [
+        "vfs",
+        "webdav",
+        "filesystem",
+        "service"
+      ],
+      "services": {
+        "entrypoint": "items/webdav-vfs-mount",
+        "version": "1.0.0"
+      }
     }
   ]
 }

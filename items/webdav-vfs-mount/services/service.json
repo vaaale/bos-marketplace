@@ -1,0 +1,31 @@
+{
+  "id": "webdav-vfs-mount",
+  "name": "WebDAV VFS Mount",
+  "version": "1.0.0",
+  "description": "Expose your BrowserOS VFS over WebDAV for native mount support (Windows, macOS Finder, Linux davfs2).",
+  "entry": "index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "port": {
+        "type": "number",
+        "default": 0,
+        "title": "Port",
+        "description": "HTTP port — 0 lets the OS assign one automatically (recommended; see docs/dev/apps/services.md §3). A fixed port that collides with a reserved BOS port will fail to start."
+      },
+      "host": {
+        "type": "string",
+        "default": "127.0.0.1",
+        "title": "Host",
+        "description": "Interface to bind."
+      }
+    }
+  },
+  "dependencies": [],
+  "settingsRegistration": {
+    "label": "WebDAV Service",
+    "icon": "server",
+    "order": 200,
+    "configApp": "templates/config.html"
+  }
+}
