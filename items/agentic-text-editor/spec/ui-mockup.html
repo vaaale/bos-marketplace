@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agentic Text Editor — Edit vs Preview</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f1117;
+      color: #e0e0e0;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .app-container {
+      display: flex;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    /* ===== LEFT PANE (EDITOR) ===== */
+    .editor-pane {
+      width: 45%;
+      display: flex;
+      flex-direction: column;
+      background: #1a1c24;
+      border-right: 1px solid rgba(255,255,255,0.1);
+    }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      background: #232633;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 5px;
+      background: rgba(255,255,255,0.06);
+      color: #e0e0e0;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      line-height: 1.4;
+    }
+
+    .btn:hover {
+      background: rgba(255,255,255,0.12);
+      border-color: rgba(255,255,255,0.15);
+    }
+
+    .mode-toggle {
+      display: flex;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+
+    .mode-btn {
+      padding: 4px 12px;
+      border: none;
+      background: rgba(255,255,255,0.04);
+      color: rgba(255,255,255,0.5);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .mode-btn.active {
+      background: rgba(139,92,246,0.2);
+      color: #c4b5fd;
+    }
+
+    .mode-btn:hover:not(.active) {
+      background: rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.7);
+    }
+
+    /* Tabs */
+    .tab-bar {
+      display: flex;
+      align-items: flex-end;
+      gap: 1px;
+      padding: 0 6px;
+      background: #1a1c24;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      overflow-x: auto;
+      height: 34px;
+    }
+
+    .tab {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 14px;
+      height: 32px;
+      font-size: 11px;
+      color: rgba(255,255,255,0.45);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+      white-space: nowrap;
+      background: rgba(255,255,255,0.02);
+    }
+
+    .tab:hover {
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.65);
+    }
+
+    .tab.active {
+      background: #1a1c24;
+      color: #e0e0e0;
+      border-bottom-color: #8b5cf6;
+    }
+
+    .tab .close {
+      font-size: 10px;
+      opacity: 0;
+      transition: opacity 0.15s;
+      color: rgba(255,255,255,0.3);
+    }
+
+    .tab:hover .close {
+      opacity: 0.6;
+    }
+
+    .tab .close:hover {
+      opacity: 1;
+      color: #f87171;
+    }
+
+    .tab .dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #f59e0b;
+      display: none;
+    }
+
+    .tab .dot.show {
+      display: block;
+    }
+
+    /* Editor Content */
+    .editor-content {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* EDIT MODE */
+    .edit-mode {
+      display: none;
+      width: 100%;
+      height: 100%;
+    }
+
+    .edit-mode.active {
+      display: flex;
+    }
+
+    .line-numbers {
+      width: 50px;
+      padding: 16px 8px 16px 12px;
+      text-align: right;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      color: rgba(255,255,255,0.2);
+      background: rgba(0,0,0,0.15);
+      user-select: none;
+      overflow: hidden;
+      border-right: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .edit-textarea {
+      flex: 1;
+      border: none;
+      outline: none;
+      resize: none;
+      padding: 16px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 13px;
+      line-height: 1.7;
+      color: #c8d0dc;
+      background: #1a1c24;
+      tab-size: 2;
+    }
+
+    .edit-textarea::placeholder {
+      color: rgba(255,255,255,0.15);
+    }
+
+    /* PREVIEW MODE */
+    .preview-mode {
+      display: none;
+      padding: 24px 28px;
+      overflow-y: auto;
+      height: 100%;
+    }
+
+    .preview-mode.active {
+      display: block;
+    }
+
+    .preview-mode h1 {
+      font-size: 26px;
+      font-weight: 700;
+      color: #f5f5f5;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 2px solid rgba(139,92,246,0.3);
+      letter-spacing: -0.02em;
+    }
+
+    .preview-mode h2 {
+      font-size: 19px;
+      font-weight: 600;
+      color: #d0d0d0;
+      margin: 24px 0 12px;
+      padding-left: 8px;
+      border-left: 3px solid #8b5cf6;
+    }
+
+    .preview-mode p {
+      font-size: 14px;
+      line-height: 1.8;
+      color: #c8d0dc;
+      margin-bottom: 16px;
+    }
+
+    .preview-mode strong {
+      color: #f5f5f5;
+      font-weight: 600;
+    }
+
+    .preview-mode em {
+      color: #a0a0b0;
+      font-style: italic;
+    }
+
+    .preview-mode code {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 12.5px;
+      background: rgba(139,92,246,0.15);
+      border: 1px solid rgba(139,92,246,0.25);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #c4b5fd;
+    }
+
+    .preview-mode pre {
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 16px 0;
+      overflow-x: auto;
+    }
+
+    .preview-mode pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: #c8d0dc;
+      font-size: 12.5px;
+      line-height: 1.65;
+    }
+
+    .preview-mode ul {
+      padding-left: 24px;
+      margin: 14px 0;
+    }
+
+    .preview-mode li {
+      font-size: 14px;
+      line-height: 1.75;
+      color: #c8d0dc;
+      margin-bottom: 6px;
+      list-style-type: disc;
+    }
+
+    .preview-mode blockquote {
+      border-left: 4px solid #8b5cf6;
+      margin: 18px 0;
+      padding: 12px 18px;
+      background: rgba(139,92,246,0.08);
+      color: #b0b0c0;
+      font-style: italic;
+      border-radius: 0 8px 8px 0;
+    }
+
+    /* Status Bar */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 3px 10px;
+      background: #8b5cf6;
+      color: white;
+      font-size: 10.5px;
+      font-weight: 500;
+    }
+
+    .status-bar .left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-bar .right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: rgba(255,255,255,0.75);
+    }
+
+    /* ===== RESIZER ===== */
+    .resizer {
+      width: 6px;
+      cursor: col-resize;
+      background: #1a1c24;
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+
+    .resizer:hover {
+      background: #8b5cf6;
+    }
+
+    /* ===== RIGHT PANE (CHAT) ===== */
+    .chat-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #15171e;
+      min-width: 400px;
+    }
+
+    .chat-header {
+      padding: 10px 16px;
+      background: #1e2028;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .chat-header .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+      box-shadow: 0 0 8px rgba(34,197,94,0.4);
+    }
+
+    .chat-header h2 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #c0c0d0;
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .chat-input-area {
+      padding: 12px 16px;
+      background: #1e2028;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .chat-input-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(0,0,0,0.2);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      padding: 6px 6px 6px 14px;
+      transition: border-color 0.2s;
+    }
+
+    .chat-input-wrap:focus-within {
+      border-color: rgba(139,92,246,0.4);
+      box-shadow: 0 0 0 3px rgba(139,92,246,0.1);
+    }
+
+    .chat-input {
+      flex: 1;
+      border: none;
+      outline: none;
+      background: transparent;
+      color: #e0e0e0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .chat-input::placeholder {
+      color: rgba(255,255,255,0.25);
+    }
+
+    .send-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: none;
+      background: rgba(139,92,246,0.25);
+      color: #c4b5fd;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .send-btn:hover {
+      background: rgba(139,92,246,0.4);
+      transform: scale(1.05);
+    }
+
+    /* Messages */
+    .message {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-width: 80%;
+    }
+
+    .message.user {
+      align-self: flex-end;
+    }
+
+    .message.agent {
+      align-self: flex-start;
+    }
+
+    .msg-bubble {
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .message.user .msg-bubble {
+      background: rgba(139,92,246,0.2);
+      border: 1px solid rgba(139,92,246,0.25);
+      color: #e0d6fc;
+      border-bottom-right-radius: 4px;
+    }
+
+    .message.agent .msg-bubble {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      color: #d0d0d0;
+      border-bottom-left-radius: 4px;
+    }
+
+    .msg-time {
+      font-size: 10px;
+      color: rgba(255,255,255,0.3);
+      padding: 0 4px;
+    }
+
+    .message.user .msg-time {
+      text-align: right;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.15);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255,255,255,0.25);
+    }
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <!-- EDITOR PANE -->
+    <div class="editor-pane">
+      <!-- Toolbar with Open, Save, and Mode Toggle -->
+      <div class="toolbar">
+        <div class="toolbar-group">
+          <button class="btn" onclick="openFile()">📂 Open</button>
+          <button class="btn" onclick="saveFile()">💾 Save</button>
+        </div>
+        <div class="mode-toggle">
+          <button class="mode-btn active" onclick="setMode('edit')">Edit</button>
+          <button class="mode-btn" onclick="setMode('preview')">Preview</button>
+        </div>
+        <div class="toolbar-group"></div>
+      </div>
+
+      <!-- Tab Bar -->
+      <div class="tab-bar">
+        <div class="tab active" onclick="switchTab('notes.md', this)">
+          <span class="dot show"></span>
+          notes.md
+          <span class="close" onclick="closeTab(event)">✕</span>
+        </div>
+        <div class="tab" onclick="switchTab('README.md', this)">
+          <span class="dot"></span>
+          README.md
+          <span class="close" onclick="closeTab(event)">✕</span>
+        </div>
+        <div class="tab" onclick="switchTab('draft.md', this)">
+          <span class="dot"></span>
+          draft.md
+          <span class="close" onclick="closeTab(event)">✕</span>
+        </div>
+      </div>
+
+      <!-- Editor Content -->
+      <div class="editor-content">
+        <!-- EDIT MODE -->
+        <div class="edit-mode active" id="edit-mode">
+          <div class="line-numbers" id="line-numbers">
+            1<br>2<br>3<br>4<br>5<br>6<br>7<br>8<br>9<br>10<br>11<br>12<br>13<br>14<br>15<br>16<br>17<br>18<br>19<br>20<br>21<br>22<br>23<br>24<br>25<br>26<br>27
+          </div>
+          <textarea class="edit-textarea" id="editor" spellcheck="false" oninput="updateLineNumbers()"># Meeting Notes
+
+Discussed Q4 roadmap and key deliverables. Action items assigned to each team lead.
+
+```javascript
+const config = await loadConfig();
+if (config.enabled) {
+  await startService(config);
+}
+```
+
+- Review PR #142 by Friday
+- Deploy staging environment
+- Schedule retro for next week
+
+**Next meeting:** Monday 10am — bring updated timelines.</textarea>
+        </div>
+
+        <!-- PREVIEW MODE -->
+        <div class="preview-mode" id="preview-mode">
+          <h1>Meeting Notes</h1>
+          <p>Discussed Q4 roadmap and key deliverables. Action items assigned to each team lead.</p>
+          <pre><code>const config = await loadConfig();
+if (config.enabled) {
+  await startService(config);
+}</code></pre>
+          <ul>
+            <li>Review PR #142 by Friday</li>
+            <li>Deploy staging environment</li>
+            <li>Schedule retro for next week</li>
+          </ul>
+          <p><strong>Next meeting:</strong> Monday 10am — bring updated timelines.</p>
+        </div>
+      </div>
+
+      <!-- Status Bar -->
+      <div class="status-bar">
+        <div class="left">
+          <span id="current-file">notes.md</span>
+          <span>•</span>
+          <span id="change-status">No changes</span>
+        </div>
+        <div class="right">
+          <span id="cursor-pos">Ln 1, Col 1</span>
+          <span>UTF-8</span>
+          <span>Markdown</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- RESIZER -->
+    <div class="resizer" id="resizer"></div>
+
+    <!-- CHAT PANE -->
+    <div class="chat-pane">
+      <div class="chat-header">
+        <div class="status-dot"></div>
+        <h2>Chat with Agent</h2>
+      </div>
+      
+      <div class="chat-messages" id="chat-messages">
+        <div class="message agent">
+          <div class="msg-bubble">
+            Hi! I'm ready to help you edit your document. What would you like me to work on?
+          </div>
+          <div class="msg-time">2:30 PM</div>
+        </div>
+        
+        <div class="message user">
+          <div class="msg-bubble">
+            Add a section about the action items and deadlines
+          </div>
+          <div class="msg-time">2:31 PM</div>
+        </div>
+        
+        <div class="message agent">
+          <div class="msg-bubble">
+            I'll add an action items section with deadlines. Should I include specific dates for each item, or keep it general like "by Friday"?
+          </div>
+          <div class="msg-time">2:31 PM</div>
+        </div>
+      </div>
+      
+      <div class="chat-input-area">
+        <div class="chat-input-wrap">
+          <input type="text" class="chat-input" placeholder="Type your message..." />
+          <button class="send-btn" onclick="sendMessage()">➤</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Mode Toggle
+    function setMode(mode) {
+      const editMode = document.getElementById('edit-mode');
+      const previewMode = document.getElementById('preview-mode');
+      const buttons = document.querySelectorAll('.mode-btn');
+      
+      buttons.forEach(btn => btn.classList.remove('active'));
+      
+      if (mode === 'edit') {
+        editMode.classList.add('active');
+        previewMode.classList.remove('active');
+        buttons[0].classList.add('active');
+      } else {
+        editMode.classList.remove('active');
+        previewMode.classList.add('active');
+        buttons[1].classList.add('active');
+      }
+    }
+
+    // Line numbers update
+    const editor = document.getElementById('editor');
+    const lineNumbers = document.getElementById('line-numbers');
+    const cursorPos = document.getElementById('cursor-pos');
+    const changeStatus = document.getElementById('change-status');
+
+    function updateLineNumbers() {
+      const lines = editor.value.split('\n').length;
+      lineNumbers.innerHTML = Array.from({length: lines}, (_, i) => i + 1).join('<br>');
+      
+      // Update cursor position
+      const pos = editor.selectionStart;
+      const before = editor.value.substring(0, pos);
+      const lineNum = before.split('\n').length;
+      const colNum = before.split('\n').pop().length + 1;
+      cursorPos.textContent = `Ln ${lineNum}, Col ${colNum}`;
+      
+      // Mark as changed
+      if (changeStatus.textContent !== 'No changes') {
+        changeStatus.textContent = 'Unsaved changes';
+        changeStatus.style.color = '#f59e0b';
+      }
+    }
+
+    editor.addEventListener('input', updateLineNumbers);
+    editor.addEventListener('keyup', updateLineNumbers);
+    editor.addEventListener('click', updateLineNumbers);
+
+    // Tab switching
+    function switchTab(filename, tabEl) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tabEl.classList.add('active');
+      document.getElementById('current-file').textContent = filename;
+    }
+
+    // Close tab
+    function closeTab(event) {
+      event.stopPropagation();
+      const tab = event.currentTarget.parentElement;
+      if (document.querySelectorAll('.tab').length > 1) {
+        tab.remove();
+      }
+    }
+
+    // Open file (mock)
+    function openFile() {
+      alert('Open file dialog would appear here');
+    }
+
+    // Save file (mock)
+    function saveFile() {
+      changeStatus.textContent = 'Saved';
+      changeStatus.style.color = '#22c55e';
+      setTimeout(() => {
+        changeStatus.textContent = 'No changes';
+        changeStatus.style.color = '#e0e0e0';
+      }, 2000);
+    }
+
+    // Chat send (mock)
+    function sendMessage() {
+      const input = document.querySelector('.chat-input');
+      if (input.value.trim()) {
+        const chatMessages = document.getElementById('chat-messages');
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        
+        // Add user message
+        const userMsg = document.createElement('div');
+        userMsg.className = 'message user';
+        userMsg.innerHTML = `<div class="msg-bubble">${input.value}</div><div class="msg-time">${now}</div>`;
+        chatMessages.appendChild(userMsg);
+        
+        input.value = '';
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+        
+        // Simulate agent response
+        setTimeout(() => {
+          const agentMsg = document.createElement('div');
+          agentMsg.className = 'message agent';
+          agentMsg.innerHTML = `<div class="msg-bubble">I can help with that!</div><div class="msg-time">${now}</div>`;
+          chatMessages.appendChild(agentMsg);
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+        }, 600);
+      }
+    }
+
+    // Enter key to send chat
+    document.querySelector('.chat-input').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') sendMessage();
+    });
+
+    // Resize
+    const resizer = document.getElementById('resizer');
+    const editorPane = document.querySelector('.editor-pane');
+    let isResizing = false;
+
+    resizer.addEventListener('mousedown', () => {
+      isResizing = true;
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const container = document.querySelector('.app-container');
+      const rect = container.getBoundingClientRect();
+      const width = ((e.clientX - rect.left) / rect.width) * 100;
+      const clamped = Math.max(30, Math.min(60, width));
+      editorPane.style.width = clamped + '%';
+    });
+
+    document.addEventListener('mouseup', () => {
+      isResizing = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebDAV Service — Settings UI Mockup</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #0f1117; }
+  </style>
+</head>
+<body class="bg-[#0f1117] text-white font-sans">
+
+  <!-- Outer chrome: Settings / Plugins / Services sidebar + detail panel -->
+  <div class="flex h-screen">
+
+    <!-- Left sidebar: Plugin list + Services -->
+    <div class="w-[260px] shrink-0 flex flex-col overflow-y-auto border-r border-white/10 bg-white/[0.02]">
+      <!-- Plugin Pipeline header -->
+      <div class="shrink-0 border-b border-white/10 bg-white/5 px-3 py-2.5">
+        <h2 class="text-[11px] font-semibold uppercase tracking-wide text-white/40">Plugin Pipeline</h2>
+      </div>
+
+      <!-- Plugin items -->
+      <div class="p-2 space-y-1">
+        <!-- Item 1 -->
+        <div class="mb-1 flex items-stretch rounded-md border border-transparent hover:border-white/20 hover:bg-white/5">
+          <div class="flex items-center px-1.5 text-white/20 hover:text-white/40">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="2" y="2" width="20" height="20" rx="2"/></svg>
+          </div>
+          <button class="min-w-0 flex-1 py-2 pr-2 text-left">
+            <div class="mb-0.5 flex items-center gap-2">
+              <span class="min-w-0 flex-1 truncate text-xs font-medium text-white">Chat</span>
+              <span class="shrink-0 cursor-pointer rounded px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide bg-white/10 text-white/40">Inactive</span>
+            </div>
+            <p class="line-clamp-2 text-[11px] leading-snug text-white/50">Interactive chat assistant for your browser.</p>
+          </button>
+        </div>
+
+        <!-- Item 2: SELECTED -->
+        <div class="mb-1 flex items-stretch rounded-md border border-violet-500/70 bg-white/10">
+          <div class="flex items-center px-1.5 text-white/20 hover:text-white/40">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          </div>
+          <button class="min-w-0 flex-1 py-2 pr-2 text-left">
+            <div class="mb-0.5 flex items-center gap-2">
+              <span class="min-w-0 flex-1 truncate text-xs font-medium text-white">WebDAV Service</span>
+              <span class="shrink-0 cursor-pointer rounded px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide bg-green-500/25 text-green-300 hover:bg-green-500/40">Active</span>
+            </div>
+            <p class="line-clamp-2 text-[11px] leading-snug text-white/50">Expose VFS over WebDAV for native mount support.</p>
+          </button>
+        </div>
+
+        <!-- Item 3 -->
+        <div class="mb-1 flex items-stretch rounded-md border border-transparent hover:border-white/20 hover:bg-white/5">
+          <div class="flex items-center px-1.5 text-white/20 hover:text-white/40">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          </div>
+          <button class="min-w-0 flex-1 py-2 pr-2 text-left">
+            <div class="mb-0.5 flex items-center gap-2">
+              <span class="min-w-0 flex-1 truncate text-xs font-medium text-white">Scheduler</span>
+              <span class="shrink-0 cursor-pointer rounded px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide bg-green-500/25 text-green-300 hover:bg-green-500/40">Active</span>
+            </div>
+            <p class="line-clamp-2 text-[11px] leading-snug text-white/50">Periodic task runner with cron-like scheduling.</p>
+          </button>
+        </div>
+      </div>
+
+      <!-- Services section (below plugin list) -->
+      <div class="shrink-0 border-t border-white/10">
+        <!-- WebDAV Service entry, with config expanded -->
+        <div class="px-2 pb-1">
+          <button class="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-[11px] text-white/40 hover:bg-white/5 transition-colors">
+            <span class="font-semibold uppercase tracking-wide text-white/40">Services</span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="rotate-180"><path d="m 6 9 6 6 6 -6" /></svg>
+          </button>
+          <div class="px-1 space-y-0.5 mt-0.5">
+            <!-- WebDAV Service — Config (selected) -->
+            <button class="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs transition-colors bg-white/15 text-white">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="shrink-0"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6m11-7.5a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Z"/></svg>
+              Config
+            </button>
+            <!-- WebDAV Service — Logs (not selected) -->
+            <button class="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="shrink-0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M10 13H8"/><path d="M10 17h4"/></svg>
+              Logs
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Detail panel — WebDAV Service Config -->
+    <div class="flex min-h-0 flex-1 flex-col">
+      <!-- Scrollable body -->
+      <div class="min-h-0 flex-1 overflow-auto p-5">
+        <div class="max-w-2xl">
+
+          <!-- Header / Title with status indicator -->
+          <div class="mb-5">
+            <div class="flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="shrink-0"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              <h2 class="text-sm font-semibold text-white">WebDAV Service</h2>
+              <span class="shrink-0 rounded px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide bg-green-500/25 text-green-300">Active</span>
+            </div>
+            <p class="mt-0.5 text-xs text-white/50">Expose your VFS directory tree as a WebDAV server.</p>
+          </div>
+
+          <!-- Server Connection Info -->
+          <h3 class="mb-1.5 text-xs font-semibold uppercase tracking-wide text-white/50">Server Connection</h3>
+          <div class="rounded border border-white/10 bg-white/5 p-3 mb-2">
+            <!-- Port field — first item in the section -->
+            <div class="flex items-center gap-2 mb-1.5">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="shrink-0 text-white/40"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10Z"/></svg>
+              <label class="text-xs text-white/60">Port:</label>
+              <input
+                type="number"
+                value="0"
+                min="0"
+                max="65535"
+                class="w-24 rounded bg-black/30 px-2 py-1 text-xs text-white/80 font-mono border border-white/15 focus:border-violet-500/50 focus:outline-none focus:ring-1 focus:ring-violet-500/50 transition-colors"
+                oninput="if(this.value < 0) this.value = 0; if(this.value > 65535) this.value = 65535;"
+                aria-label="Port number"
+              />
+            </div>
+            <p class="text-[11px] text-white/40 mb-2">
+              0 (recommended) lets the OS assign an available port; avoid reserved ports.
+            </p>
+            <!-- Address row — original, now second item -->
+            <div class="flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="shrink-0 text-white/40"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10Z"/></svg>
+              <span class="text-xs text-white/60">Address:</span>
+              <code class="text-xs text-white/80 font-mono">&lt;your-connection-url&gt;</code>
+            </div>
+            <p class="text-[11px] text-white/40">
+              The real page fills this in automatically from <code class="font-mono text-white/50">GET /api/services/webdav-vfs-mount/config</code> — the actual value differs by deployment (see below). This mockup deliberately does NOT hardcode a URL/port: an earlier draft did (<code class="font-mono text-white/50">localhost:9876</code>), which was wrong for every real deployment.
+            </p>
+          </div>
+
+          <!-- Deployment scenarios note -->
+          <div class="rounded border border-sky-400/20 bg-sky-400/5 p-3 mb-4">
+            <h4 class="text-xs font-medium text-sky-200 mb-1.5">What "&lt;your-connection-url&gt;" resolves to</h4>
+            <ul class="space-y-1.5 text-[11px] text-white/50">
+              <li><span class="text-white/70">Multi-user Bastion deployment:</span><br><code class="font-mono text-white/60">https://&lt;your-bos-hostname&gt;/__supervisor/services/webdav-vfs-mount/</code></li>
+              <li><span class="text-white/70">Supervisor-only (no Bastion, e.g. self-hosted Dokploy):</span><br><code class="font-mono text-white/60">http://&lt;your-host&gt;:&lt;public-port&gt;/__supervisor/services/webdav-vfs-mount/</code> — <code class="font-mono text-white/50">&lt;public-port&gt;</code> is whatever the operator set (default 8080)</li>
+              <li><span class="text-white/70">Standalone (no Supervisor, e.g. plain <code class="font-mono">npm run dev</code>):</span><br><code class="font-mono text-white/60">http://localhost:&lt;dynamic-port&gt;/</code> — a different OS-assigned port every restart</li>
+            </ul>
+            <p class="mt-1.5 text-[10px] text-white/30">See <code class="font-mono">docs/dev/apps/services.md</code> §11 for the full mechanism.</p>
+          </div>
+
+          <!-- Connection Instructions -->
+          <h3 class="mb-1.5 text-xs font-semibold uppercase tracking-wide text-white/50">Connection Instructions</h3>
+
+          <!-- Windows -->
+          <div class="rounded border border-white/10 bg-white/5 p-3 mb-3">
+            <h4 class="text-xs font-medium text-white mb-1.5">Windows</h4>
+            <p class="text-[11px] text-white/50 mb-2">In the "Network Drive" wizard, enter the URL shown above:</p>
+            <div class="rounded bg-black/30 p-2 mb-1.5">
+              <code class="text-xs text-white/70 font-mono">&lt;your-connection-url&gt;</code>
+            </div>
+            <p class="text-[11px] text-white/40">Use <span class="text-white/60">webdav</span> as the username and your access token as the password.</p>
+          </div>
+
+          <!-- macOS -->
+          <div class="rounded border border-white/10 bg-white/5 p-3 mb-3">
+            <h4 class="text-xs font-medium text-white mb-1.5">macOS</h4>
+            <p class="text-[11px] text-white/50 mb-2">Open Finder → <span class="text-white/60">Go → Connect to Server</span>, using the URL shown above (with <code class="font-mono">dav://</code> in place of <code class="font-mono">http://</code>/<code class="font-mono">https://</code>):</p>
+            <div class="rounded bg-black/30 p-2 mb-1.5">
+              <code class="text-xs text-white/70 font-mono">dav://&lt;your-connection-host-and-path&gt;/</code>
+            </div>
+            <p class="text-[11px] text-white/40">Enter your access token when prompted for the password.</p>
+          </div>
+
+          <!-- Linux -->
+          <div class="rounded border border-white/10 bg-white/5 p-3 mb-4">
+            <h4 class="text-xs font-medium text-white mb-1.5">Linux (davfs2)</h4>
+            <p class="text-[11px] text-white/50 mb-2">Install davfs2, then mount the share using the URL shown above:</p>
+            <div class="rounded bg-black/30 p-2 mb-1.5">
+              <code class="text-xs text-white/70 font-mono">sudo mount -t davfs -o username=webdav,password=YOUR_TOKEN &lt;your-connection-url&gt; /mnt/webdav</code>
+            </div>
+            <p class="text-[11px] text-white/40">Replace <span class="text-white/60">YOUR_TOKEN</span> with your generated access token.</p>
+          </div>
+
+          <!-- Access Token -->
+          <h3 class="mb-1.5 text-xs font-semibold uppercase tracking-wide text-white/50">Access Token</h3>
+          <div class="rounded border border-white/10 bg-white/5 p-3 mb-4">
+            <!-- State: No token (default) -->
+            <p class="text-xs text-white/50 mb-2">Generate an access token to authenticate your WebDAV clients.</p>
+            <button class="rounded bg-violet-500/25 px-3 py-1.5 text-xs font-medium text-violet-200 hover:bg-violet-500/35 transition-colors">
+              Generate Access Token
+            </button>
+          </div>
+
+          <!-- Security Note -->
+          <div class="flex shrink-0 items-center gap-2 border-b border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="shrink-0"><path d="m21.73 18.94-1.41-1.41A5.98 5.98 0 0 0 2.62 4.73a6.23 6.23 0 0 1 17.11 14.21Z"/><path d="M10.29 10.29a2.82 2.82 0 0 1 0 3.93l-1.54 1.55 1.54 1.55"/><path d="M8.75 8.75a6.23 6.23 0 0 0 0 6.46"/></svg>
+            <span class="flex-1"><strong>Security:</strong> The access token is the only protection against unauthorized access. Treat it like a password — never share it or commit it to version control.</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Toggle between "no token" and "existing token" states for demo
+    const container = document.querySelector('.bg-white/5.p-3.mb-4');
+    if (container) {
+      const hint = document.createElement('div');
+      hint.className = 'fixed bottom-3 right-3 rounded bg-white/5 border border-white/10 px-3 py-1.5 text-[11px] text-white/40';
+      hint.innerHTML = 'Click <a href="#" onclick="toggleState(); return false" class="text-violet-300 hover:text-violet-200 underline">here</a> to see the existing-token state';
+      document.body.appendChild(hint);
+    }
+
+    function toggleState() {
+      if (container.querySelector('.bg-violet-500/25')) {
+        container.innerHTML = `
+          <div class="flex items-center gap-2 mb-1.5">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="shrink-0 text-white/40"><rect width="16" height="16" x="2" y="4" rx="2"/><path d="M6 8h4"/><path d="M6 12h8"/></svg>
+            <span class="text-xs text-white/50">Access Token:</span>
+            <code class="text-xs text-white/70 font-mono">a3f8c9...e5d1</code>
+            <button class="rounded p-1.5 hover:bg-white/10 transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="shrink-0"><rect width="14" height="14" x="4" y="4" rx="1.5"/><path d="M8 9h3"/><path d="M8 15h3"/><path d="M13 9h3"/><path d="M13 15h3"/></svg>
+            </button>
+          </div>
+          <button class="rounded bg-amber-400/20 px-2 py-1 text-xs font-medium text-amber-100 hover:bg-amber-400/30 transition-colors">
+            Regenerate
+          </button>
+        `;
+      } else {
+        container.innerHTML = `
+          <p class="text-xs text-white/50 mb-2">Generate an access token to authenticate your WebDAV clients.</p>
+          <button class="rounded bg-violet-500/25 px-3 py-1.5 text-xs font-medium text-violet-200 hover:bg-violet-500/35 transition-colors">
+            Generate Access Token
+          </button>
+        `;
+      }
+    }
+  </script>
+</body>
+</html>
