@@ -118,16 +118,6 @@
       }
     },
     {
-      "id": "gws-shared",
-      "name": "GWS Shared",
-      "description": "Shared auth, global flags, and security rules.",
-      "tags": ["google-workspace", "gmail", "productivity"],
-      "skill": {
-        "path": "skills/gws-shared",
-        "version": "0.22.5"
-      }
-    },
-    {
       "id": "gws-gmail",
       "name": "GWS Gmail",
       "description": "Gmail: Send, read, and manage email.",
