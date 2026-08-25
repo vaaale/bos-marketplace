@@ -1,0 +1,40 @@
+{
+  "id": "okf-knowledge-base",
+  "name": "OKF Knowledge Base",
+  "version": "1.0.0",
+  "description": "Durable, human-readable knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Exposes okf_* tools natively to the BOS assistant and a REST bridge for its config UI.",
+  "entry": "index.js",
+  "deploymentMode": "tools",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "bundleRoot": {
+        "type": "string",
+        "default": "/KnowledgeBase",
+        "description": "Absolute BOS VFS path (e.g. /KnowledgeBase, visible in the Files app) under which OKF bundles (directories of Markdown + YAML frontmatter) are stored."
+      },
+      "port": {
+        "type": "number",
+        "default": 0,
+        "description": "HTTP port for the REST bridge used by the config UI. 0 lets the OS assign one automatically (recommended — never give this a fixed non-zero default)."
+      },
+      "maxDepth": {
+        "type": "number",
+        "default": 1,
+        "description": "Ingest reference-crawl depth: how many hops of references to follow beyond the seed source. 0 = seed source only. Overridable per okf_ingest call."
+      },
+      "maxWorkers": {
+        "type": "number",
+        "default": 3,
+        "description": "How many references an ingest run ingests concurrently. Real parallelism: agent_delegate is parallel-safe, so sub-agent fan-out in one turn genuinely runs at once. Overridable per okf_ingest call."
+      }
+    }
+  },
+  "dependencies": [],
+  "settingsRegistration": {
+    "label": "OKF Knowledge Base",
+    "icon": "book-open",
+    "order": 100,
+    "configApp": "app/config-app/index.html"
+  }
+}

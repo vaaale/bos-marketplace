@@ -111,9 +111,33 @@
     {
       "id": "workflows",
       "name": "Workflow Manager",
-      "description": "DAG-based workflow orchestration — multi-step automations that delegate to sub-agents. Execution runs on the main BOS process (src/lib/workflows/runner.ts); this service's Start/Stop state gates whether new runs are allowed.",
+      "description": "Service-owned workflow engine: node model (agent source x output type), dynamic routing, parallel scheduling, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get).",
+      "app": {
+        "entrypoint": "items/workflows/app",
+        "runtime": "iframe",
+        "version": "2.0.0",
+        "icon": "Puzzle"
+      },
       "services": {
         "entrypoint": "items/workflows",
+        "version": "2.0.0"
+      }
+    },
+    {
+      "id": "knowledge-base",
+      "name": "Knowledge Base",
+      "description": "Create and manage knowledge bases (uploaded documents, Google Drive folders, websites); ingests content into a Graphiti knowledge graph and exposes kb_search/kb_retrieve tools to agents over MCP.",
+      "services": {
+        "entrypoint": "items/knowledge-base",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "id": "okf-knowledge-base",
+      "name": "OKF Knowledge Base",
+      "description": "Durable, human-readable knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Exposes okf_* tools natively to the BOS assistant and a REST bridge for its config UI.",
+      "services": {
+        "entrypoint": "items/okf-knowledge-base",
         "version": "1.0.0"
       }
     },

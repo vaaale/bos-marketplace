@@ -1,0 +1,242 @@
+<!-- DEFERRED / ARCHIVED — per-agent access assignment was removed from spec 038 (Revision 3, 2026-08-06). This mockup is NOT part of the implemented scope. Do not implement. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!--
+    BOS KB-assignment Settings page mockup (feature: 038-knowledge-base)
+    Settings → Agents → [Assistant] → Knowledge bases
+    Static visual proxy of the per-agent knowledge-base access assignment UI,
+    mirroring the real per-agent Skills grid (Settings → Agents → [Assistant] → Skills).
+  -->
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Knowledge bases — Settings</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    html, body { color-scheme: dark; }
+    body { background: #0f1117; }
+  </style>
+</head>
+<body>
+  <!-- Window frame -->
+  <div class="flex h-screen flex-col">
+    <div class="flex min-h-0 flex-1 bg-[#15171e]">
+
+      <!-- Settings left nav sidebar (exact pattern from src/apps/settings/index.tsx) -->
+      <nav class="w-44 shrink-0 overflow-auto border-r border-white/10 bg-white/[0.02] p-2">
+        <h2 class="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-white/40">Settings</h2>
+
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+          Appearance
+        </button>
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors bg-white/15 text-white">
+          Agents
+        </button>
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+          Skills
+        </button>
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+          Tools
+        </button>
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+          Apps
+        </button>
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+          Integrations
+        </button>
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+          MCP Servers
+        </button>
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+          Build Studio
+        </button>
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+          Logs
+        </button>
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+          Voice
+        </button>
+        <button class="mt-0.5 block w-full truncate rounded px-2 py-1.5 text-left text-xs transition-colors text-white/70 hover:bg-white/10">
+          Plugins
+        </button>
+      </nav>
+
+      <!-- Settings content pane -->
+      <div class="flex flex-1 flex-col overflow-hidden p-5">
+        <h3 class="mb-3 shrink-0 text-base font-semibold text-white">Agents</h3>
+        <div class="min-h-0 flex-1 overflow-auto">
+
+          <!-- Agents top-level tab shell (AgentsTab.tsx): Agents / Default Agent -->
+          <div class="flex min-h-0 flex-1 flex-col">
+            <div class="flex shrink-0 items-center gap-1 border-b border-white/10 px-2">
+              <button class="relative px-3 py-2 text-xs font-medium transition-colors text-white">
+                Agents
+                <span class="absolute inset-x-2 -bottom-px h-px bg-white"></span>
+              </button>
+              <button class="relative px-3 py-2 text-xs font-medium transition-colors text-white/60 hover:text-white/90">
+                Default Agent
+                <span class="absolute inset-x-2 -bottom-px h-px bg-transparent"></span>
+              </button>
+            </div>
+
+            <!-- Master-detail: AgentList (left) + AgentDetails (right) -->
+            <div class="flex h-full">
+
+              <!-- AgentList: left master pane -->
+              <div class="flex w-[260px] shrink-0 flex-col border-r border-white/10 bg-white/[0.02]">
+                <div class="shrink-0 border-b border-white/10 bg-white/5 px-3 py-2.5">
+                  <h2 class="mb-2 text-[11px] font-semibold uppercase tracking-wide text-white/40">Agent Personalities</h2>
+                  <button class="flex w-full items-center justify-center gap-1 rounded bg-white/10 px-2.5 py-1.5 text-xs font-medium hover:bg-white/15">
+                    <i data-lucide="plus" class="h-3 w-3 shrink-0"></i>
+                    New Agent
+                  </button>
+                </div>
+                <div class="min-h-0 flex-1 overflow-y-auto p-2">
+                  <!-- Assistant: selected + active -->
+                  <button class="mb-1 block w-full rounded-md border border-violet-500/70 bg-white/10 px-2.5 py-2 text-left transition-colors">
+                    <div class="mb-0.5 flex items-center gap-2">
+                      <span class="min-w-0 flex-1 truncate text-xs font-medium text-white">Assistant</span>
+                      <span class="shrink-0 rounded bg-violet-500/25 px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide text-violet-200">Active</span>
+                    </div>
+                    <p class="line-clamp-2 text-[11px] leading-snug text-white/50">
+                      The built-in assistant agent with the default BOS personality.
+                    </p>
+                  </button>
+                  <!-- Research Agent: unselected -->
+                  <button class="mb-1 block w-full rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-white/20 hover:bg-white/5">
+                    <div class="mb-0.5 flex items-center gap-2">
+                      <span class="min-w-0 flex-1 truncate text-xs font-medium text-white">Research Agent</span>
+                    </div>
+                    <p class="line-clamp-2 text-[11px] leading-snug text-white/50">
+                      Deep multi-step research across web and local sources.
+                    </p>
+                  </button>
+                  <!-- Coding Agent: unselected -->
+                  <button class="mb-1 block w-full rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-white/20 hover:bg-white/5">
+                    <div class="mb-0.5 flex items-center gap-2">
+                      <span class="min-w-0 flex-1 truncate text-xs font-medium text-white">Coding Agent</span>
+                    </div>
+                    <p class="line-clamp-2 text-[11px] leading-snug text-white/50">
+                      Focused on writing and refactoring code in the workspace.
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              <!-- AgentDetails: right details pane -->
+              <div class="flex min-h-0 flex-1 flex-col">
+                <!-- Sub-tab bar: Instructions / Skills / Tools / MCP / Knowledge bases -->
+                <div class="flex shrink-0 items-center gap-1 border-b border-white/10 px-2">
+                  <button class="relative px-3 py-2 text-xs font-medium transition-colors text-white/60 hover:text-white/90">
+                    Instructions
+                    <span class="absolute inset-x-2 -bottom-px h-px bg-transparent"></span>
+                  </button>
+                  <button class="relative px-3 py-2 text-xs font-medium transition-colors text-white/60 hover:text-white/90">
+                    Skills
+                    <span class="absolute inset-x-2 -bottom-px h-px bg-transparent"></span>
+                  </button>
+                  <button class="relative px-3 py-2 text-xs font-medium transition-colors text-white/60 hover:text-white/90">
+                    Tools
+                    <span class="absolute inset-x-2 -bottom-px h-px bg-transparent"></span>
+                  </button>
+                  <button class="relative px-3 py-2 text-xs font-medium transition-colors text-white/60 hover:text-white/90">
+                    MCP
+                    <span class="absolute inset-x-2 -bottom-px h-px bg-transparent"></span>
+                  </button>
+                  <button class="relative px-3 py-2 text-xs font-medium transition-colors text-white">
+                    Knowledge bases
+                    <span class="absolute inset-x-2 -bottom-px h-px bg-white"></span>
+                  </button>
+                  <div class="ml-auto pr-2 flex items-center gap-1.5 text-[11px] text-white/40">
+                    <i data-lucide="check-circle" class="h-3.5 w-3.5 text-emerald-400/80"></i>
+                    Saved
+                  </div>
+                </div>
+
+                <!-- Tab body: KnowledgeBaseGrid -->
+                <div class="min-h-0 flex-1 overflow-y-auto p-4">
+                  <div class="mb-3">
+                    <p class="text-xs text-white/70">
+                      Knowledge bases this agent can query.
+                    </p>
+                    <p class="mt-0.5 text-[11px] text-white/40">
+                      Enable the bases the assistant should search when answering questions. Assignments take effect immediately.
+                    </p>
+                  </div>
+
+                  <!-- Grid mirrors SkillsGrid.tsx card recipe -->
+                  <div class="grid gap-1.5" style="gridTemplateColumns: repeat(auto-fill, minmax(180px, 1fr))">
+
+                    <!-- Engineering Docs — checked ON -->
+                    <label class="flex cursor-pointer flex-col items-start rounded-md border border-white/10 bg-white/5 p-2 transition-colors hover:border-white/20 hover:bg-white/10">
+                      <div class="mb-1 flex w-full items-center">
+                        <input type="checkbox" checked class="mr-1.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-violet-500" />
+                        <span class="min-w-0 flex-1 truncate text-[11px] font-medium text-white">Engineering Docs</span>
+                      </div>
+                      <span class="block text-[10px] leading-snug text-white/50">
+                        Architecture, API contracts, and design notes for the BOS codebase.
+                      </span>
+                      <span class="mt-1 font-mono text-[10px] text-white/40">3 sources</span>
+                    </label>
+
+                    <!-- Customer Support Playbook — checked ON -->
+                    <label class="flex cursor-pointer flex-col items-start rounded-md border border-white/10 bg-white/5 p-2 transition-colors hover:border-white/20 hover:bg-white/10">
+                      <div class="mb-1 flex w-full items-center">
+                        <input type="checkbox" checked class="mr-1.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-violet-500" />
+                        <span class="min-w-0 flex-1 truncate text-[11px] font-medium text-white">Customer Support Playbook</span>
+                      </div>
+                      <span class="block text-[10px] leading-snug text-white/50">
+                        Escalation paths, troubleshooting, and standard replies.
+                      </span>
+                      <span class="mt-1 font-mono text-[10px] text-white/40">2 sources</span>
+                    </label>
+
+                    <!-- Legal & Compliance — unchecked OFF -->
+                    <label class="flex cursor-pointer flex-col items-start rounded-md border border-white/10 bg-white/5 p-2 transition-colors hover:border-white/20 hover:bg-white/10">
+                      <div class="mb-1 flex w-full items-center">
+                        <input type="checkbox" class="mr-1.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-violet-500" />
+                        <span class="min-w-0 flex-1 truncate text-[11px] font-medium text-white">Legal &amp; Compliance</span>
+                      </div>
+                      <span class="block text-[10px] leading-snug text-white/50">
+                        Company policies, data protection, and regulatory requirements.
+                      </span>
+                      <span class="mt-1 font-mono text-[10px] text-white/40">1 source</span>
+                    </label>
+
+                    <!-- Product Research — unchecked OFF -->
+                    <label class="flex cursor-pointer flex-col items-start rounded-md border border-white/10 bg-white/5 p-2 transition-colors hover:border-white/20 hover:bg-white/10">
+                      <div class="mb-1 flex w-full items-center">
+                        <input type="checkbox" class="mr-1.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-violet-500" />
+                        <span class="min-w-0 flex-1 truncate text-[11px] font-medium text-white">Product Research</span>
+                      </div>
+                      <span class="block text-[10px] leading-snug text-white/50">
+                        User interviews, feature discovery, and competitive analysis.
+                      </span>
+                      <span class="mt-1 font-mono text-[10px] text-white/40">No sources yet</span>
+                    </label>
+
+                  </div>
+
+                  <!-- Footnote -->
+                  <div class="mt-4 flex items-start gap-1.5 rounded border border-white/10 bg-white/[0.02] px-3 py-2 text-[11px] text-white/40">
+                    <i data-lucide="info" class="mt-0.5 h-3.5 w-3.5 shrink-0 text-white/40"></i>
+                    <span class="leading-snug">
+                      Changes apply immediately. Revoking access clears this agent&rsquo;s cached results from those knowledge bases.
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    lucide.createIcons();
+  </script>
+</body>
+</html>

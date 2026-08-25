@@ -1,23 +1,34 @@
 {
   "id": "workflows",
   "name": "Workflow Manager",
-  "version": "1.0.0",
-  "description": "DAG-based workflow orchestration \u2014 multi-step automations that delegate to sub-agents. Execution runs on the main BOS process (src/lib/workflows/runner.ts); this service's Start/Stop state gates whether new runs are allowed.",
+  "version": "2.0.0",
+  "description": "Service-owned workflow engine: node model (agent source x output type), dynamic routing, parallel scheduling, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get).",
   "entry": "index.js",
+  "deploymentMode": "tools",
   "configSchema": {
     "type": "object",
     "properties": {
-      "defaultMaxConcurrentSteps": {
+      "port": {
+        "type": "number",
+        "default": 0,
+        "description": "HTTP port for the app-facing REST bridge (list/read/run/etc.) used by the Workflow Manager app. 0 lets the OS assign one automatically — never give this a fixed non-zero default."
+      },
+      "host": {
+        "type": "string",
+        "default": "127.0.0.1",
+        "description": "Bind host for the REST bridge."
+      },
+      "maxConcurrentSteps": {
         "type": "number",
         "default": 5,
-        "description": "Default max concurrent steps for workflows that don't set their own maxConcurrentSteps."
+        "description": "Default cap on independent ready branches / Research-node fan-out that run concurrently for a workflow that does not set its own config.maxConcurrentSteps."
       }
     }
   },
   "dependencies": [],
   "settingsRegistration": {
-    "label": "Workflows",
+    "label": "Workflow Manager",
     "icon": "workflow",
-    "order": 110
+    "order": 100
   }
 }

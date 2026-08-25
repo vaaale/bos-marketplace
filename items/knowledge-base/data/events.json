@@ -1,0 +1,103 @@
+{
+  "events": [
+    {
+      "id": "evt_cbd2e3f7f254fb6e0e",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_72442a7e020e697137",
+      "level": "error",
+      "title": "s41467-024-45107-3.pdf failed to extract",
+      "message": "Episode \"s41467-024-45107-3.pdf (part 3/21)\" was queued in Graphiti but wasn't confirmed landed after 449 check(s) over 900s. It may still be processing (entity extraction + embedding can take a while) — check http://wingman.akhbar.lan:5051/mcp and its logs, then Retry once it's had time to finish.",
+      "at": "2026-08-06T21:54:59.863Z"
+    },
+    {
+      "id": "evt_0487c9d5bfec72fb87",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_72442a7e020e697137",
+      "level": "error",
+      "title": "s41467-024-45107-3.pdf failed to extract",
+      "message": "Episode \"s41467-024-45107-3.pdf (part 2/21)\" was queued in Graphiti but wasn't confirmed landed after 61 check(s) over 121s. It may still be processing (entity extraction + embedding can take a while) — check http://wingman.akhbar.lan:5051/mcp and its logs, then Retry once it's had time to finish.",
+      "at": "2026-08-06T21:15:40.780Z"
+    },
+    {
+      "id": "evt_21fd51d49fbd3d7bf8",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_72442a7e020e697137",
+      "level": "error",
+      "title": "s41467-024-45107-3.pdf failed to extract",
+      "message": "Episode \"s41467-024-45107-3.pdf (part 2/21)\" was queued in Graphiti but wasn't confirmed landed after 61 check(s) over 121s. It may still be processing (entity extraction + embedding can take a while) — check http://wingman.akhbar.lan:5051/mcp and its logs, then Retry once it's had time to finish.",
+      "at": "2026-08-06T21:05:16.710Z"
+    },
+    {
+      "id": "evt_6f21157723be7f26f8",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_1579ea4505c5bdae74",
+      "level": "success",
+      "title": "01_Legacy_to_Consolidated_Mapping.md synced",
+      "message": "1 item(s) indexed · 1 added since last refresh.",
+      "at": "2026-08-06T21:03:12.909Z"
+    },
+    {
+      "id": "evt_10e07c5c485927262b",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_1579ea4505c5bdae74",
+      "level": "error",
+      "title": "01_Legacy_to_Consolidated_Mapping.md failed to extract",
+      "message": "Episode \"01_Legacy_to_Consolidated_Mapping.md\" was queued in Graphiti but did not verifiably land after 21 check(s) over 20s — check the Graphiti server and its embeddings backend at http://wingman.akhbar.lan:5051/mcp",
+      "at": "2026-08-06T20:47:01.777Z"
+    },
+    {
+      "id": "evt_fb44df8cd939b36621",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_72442a7e020e697137",
+      "level": "error",
+      "title": "s41467-024-45107-3.pdf failed to extract",
+      "message": "Episode \"s41467-024-45107-3.pdf (part 1/21)\" was queued in Graphiti but did not verifiably land after 21 check(s) over 20s — check the Graphiti server and its embeddings backend at http://wingman.akhbar.lan:5051/mcp",
+      "at": "2026-08-06T20:37:06.922Z"
+    },
+    {
+      "id": "evt_bf9653a31d13b8e7da",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_3ce0e55b72b3dccd0a",
+      "level": "error",
+      "title": "Claude Agent Trace.txt failed to extract",
+      "message": "Episode \"Claude Agent Trace.txt (part 1/16)\" was queued in Graphiti but did not verifiably land after 21 check(s) over 20s — check the Graphiti server and its embeddings backend at http://wingman.akhbar.lan:5051/mcp",
+      "at": "2026-08-06T20:32:50.592Z"
+    },
+    {
+      "id": "evt_8a5c8b66ae3da1502b",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_3ce0e55b72b3dccd0a",
+      "level": "error",
+      "title": "Claude Agent Trace.txt failed to extract",
+      "message": "Episode \"Claude Agent Trace.txt (part 1/16)\" was queued in Graphiti (uuid 2051ffec-d132-4933-8011-9e85e85d9121) but did not verifiably land after 21 check(s) over 20s — check the Graphiti server and its embeddings backend at http://wingman.akhbar.lan:5051/mcp",
+      "at": "2026-08-06T20:17:09.823Z"
+    },
+    {
+      "id": "evt_9554de3342f47f6444",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_3ce0e55b72b3dccd0a",
+      "level": "error",
+      "title": "Claude Agent Trace.txt failed to extract",
+      "message": "Episode \"Claude Agent Trace.txt (part 1/16)\" was queued in Graphiti (uuid f681b216-adf3-4e35-82f9-fa6b8f7d7069) but did not verifiably land after 21 check(s) over 20s — check the Graphiti server and its embeddings backend at http://wingman.akhbar.lan:5051/mcp",
+      "at": "2026-08-06T20:14:44.696Z"
+    },
+    {
+      "id": "evt_d69c59e81841ce4710",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_68df6627ab6d295a52",
+      "level": "error",
+      "title": "Claude Agent Trace.txt failed to extract",
+      "message": "Episode \"Claude Agent Trace.txt (part 1/16)\" was queued in Graphiti (uuid 037f4dbe-6bbe-448e-aaba-83b8abbb564b) but did not verifiably land after 21 check(s) over 20s — check the Graphiti server and its embeddings backend at http://wingman.akhbar.lan:5051/mcp",
+      "at": "2026-08-06T19:48:34.425Z"
+    },
+    {
+      "id": "evt_ed187dc2b7d1b130ff",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "sourceId": "src_68df6627ab6d295a52",
+      "level": "error",
+      "title": "Claude Agent Trace.txt failed to extract",
+      "message": "Episode \"Claude Agent Trace.txt (part 1/16)\" was queued in Graphiti (uuid cb5523c4-f13f-4725-be5a-1f7eead54b4f) but did not verifiably land after 21 check(s) over 20s — check the Graphiti server and its embeddings backend at http://wingman.akhbar.lan:5051/mcp",
+      "at": "2026-08-06T19:46:50.550Z"
+    }
+  ]
+}

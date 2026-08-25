@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en" style="color-scheme: dark">
+<head>
+<!--
+  CHANGES MADE TO THIS MOCKUP
+  --------------------------
+  Revision 4 (2026-08-06) — Graphiti MCP endpoint setting:
+    Added a service-level "Graphiti MCP endpoint" connection setting. A
+    settings (gear) button in the window titlebar opens a "Connection
+    settings" modal where the URL of the externally-deployed (Dokploy)
+    Graphiti MCP server can be set, saved, and applies immediately to all
+    Graphiti calls.
+
+  Revision 3 (2026-08-06) — Access removed from scope:
+    The per-agent "Access" tab on the KB detail screen and the
+    Settings → Agents → Knowledge bases access-assignment flow were removed
+    from spec 038. The KB detail screen now has only Sources and Health tabs.
+    The Settings screen, its navigation wiring, and all "Manage access in
+    Settings" affordances are gone. Per-agent access assignment is NOT part of
+    the implemented feature.
+-->
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Knowledge Base — UI Mockup</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+  body { background:#0f1117; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .mockup-screen { display:none; }
+  .mockup-screen.active { display:block; }
+  .detail-tab { display:none; }
+  .detail-tab.active { display:block; }
+  .modal { display:none; }
+  .modal.active { display:flex; }
+</style>
+</head>
+<body class="p-6 text-white/90 antialiased select-none">
+
+  <!-- Mockup screen switcher (review tool, not part of the app) -->
+  <div class="mb-4 flex flex-wrap items-center gap-2">
+    <span class="text-[11px] uppercase tracking-wide text-white/40">Mockup screens:</span>
+    <button onclick="showScreen('list-empty')" class="rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20">Empty KB list</button>
+    <button onclick="showScreen('list')" class="rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20">KB list (populated)</button>
+    <button onclick="showScreen('detail')" class="rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20">KB detail · Sources</button>
+    <button onclick="openModal('add-source')" class="rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20">Add Source chooser</button>
+    <button onclick="openModal('upload')" class="rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20">Upload dialog</button>
+    <button onclick="openModal('gdrive')" class="rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20">Drive connect flow</button>
+    <button onclick="openModal('website')" class="rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20">Website flow</button>
+    <button onclick="openModal('new-kb')" class="rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20">New KB dialog</button>
+    <button onclick="openModal('conn-settings')" class="rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20">Connection settings</button>
+  </div>
+
+  <!-- ================================================================ -->
+  <!-- WINDOW CHROME (implies a BOS window titlebar)                   -->
+  <!-- ================================================================ -->
+  <div class="mx-auto max-w-[980px] overflow-hidden rounded-xl border border-white/10 shadow-2xl backdrop-blur-sm bg-[#15171e]">
+    <div class="flex h-9 shrink-0 items-center gap-2 border-b border-white/10 bg-white/5 px-3">
+      <div class="flex shrink-0 gap-1.5">
+        <span class="h-3 w-3 rounded-full bg-[#ff5f57]"></span>
+        <span class="h-3 w-3 rounded-full bg-[#febc2e]"></span>
+        <span class="h-3 w-3 rounded-full bg-[#28c840]"></span>
+      </div>
+      <div class="mx-auto flex items-center gap-1.5 text-[11px] text-white/50">
+        <i data-lucide="library" class="h-3.5 w-3.5 text-violet-300"></i>
+        Knowledge Base
+      </div>
+      <div class="flex shrink-0 items-center gap-1">
+        <button onclick="openModal('conn-settings')" title="Connection settings" class="rounded p-1.5 hover:bg-white/10"><i data-lucide="settings-2" class="h-3.5 w-3.5"></i></button>
+        <button class="rounded p-1.5 hover:bg-white/10"><i data-lucide="search" class="h-3.5 w-3.5"></i></button>
+      </div>
+    </div>
+
+    <div class="flex h-[560px]">
+      <!-- ======================================================== -->
+      <!-- SCREEN: EMPTY KB LIST                                     -->
+      <!-- ======================================================== -->
+      <div id="screen-list-empty" class="mockup-screen w-full">
+        <div class="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+          <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-500/15">
+            <i data-lucide="library-big" class="h-7 w-7 text-violet-300"></i>
+          </div>
+          <h2 class="text-sm font-semibold text-white">No knowledge bases yet</h2>
+          <p class="max-w-[34ch] text-xs leading-relaxed text-white/50">
+            Knowledge bases are named collections of documents, folders, or sites that your agents can query.
+            Create one to start adding content.
+          </p>
+          <button onclick="openModal('new-kb')" class="flex items-center gap-1.5 rounded bg-violet-500/30 px-3 py-1.5 text-xs font-medium text-violet-100 hover:bg-violet-500/40">
+            <i data-lucide="plus" class="h-3.5 w-3.5"></i> New knowledge base
+          </button>
+        </div>
+      </div>
+
+      <!-- ======================================================== -->
+      <!-- SCREEN: KB LIST (populated) — master-detail               -->
+      <!-- ======================================================== -->
+      <div id="screen-list" class="mockup-screen flex w-full">
+        <!-- master list -->
+        <div class="flex w-[280px] shrink-0 flex-col border-r border-white/10 bg-white/[0.02]">
+          <div class="shrink-0 border-b border-white/10 bg-white/5 px-3 py-2.5">
+            <h2 class="mb-2 text-[11px] font-semibold uppercase tracking-wide text-white/40">Knowledge Bases</h2>
+            <button onclick="openModal('new-kb')" class="flex w-full items-center justify-center gap-1 rounded bg-white/10 px-2.5 py-1.5 text-xs font-medium hover:bg-white/15">
+              <i data-lucide="plus" class="h-3 w-3 shrink-0"></i> New knowledge base
+            </button>
+          </div>
+          <div class="min-h-0 flex-1 overflow-y-auto p-2">
+            <!-- KB 1: selected -->
+            <button onclick="showDetail()" class="mb-1 block w-full rounded-md border border-violet-500/70 bg-white/10 px-2.5 py-2 text-left transition-colors">
+              <div class="flex items-center gap-2">
+                <i data-lucide="library" class="h-4 w-4 shrink-0 text-violet-300"></i>
+                <span class="min-w-0 flex-1 truncate text-xs font-medium text-white">Engineering Docs</span>
+              </div>
+              <div class="mt-1.5 flex items-center justify-between">
+                <span class="text-[11px] text-white/50">3 sources</span>
+                <span class="flex items-center gap-1 rounded bg-amber-400/15 px-1.5 py-[1px] text-[10px] font-medium text-amber-200"><i data-lucide="alert-triangle" class="h-2.5 w-2.5"></i> Needs attention</span>
+              </div>
+            </button>
+            <!-- KB 2 -->
+            <button onclick="showDetail()" class="mb-1 block w-full rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-white/20 hover:bg-white/5">
+              <div class="flex items-center gap-2">
+                <i data-lucide="library" class="h-4 w-4 shrink-0 text-violet-300"></i>
+                <span class="min-w-0 flex-1 truncate text-xs font-medium text-white">Customer Support Playbook</span>
+              </div>
+              <div class="mt-1.5 flex items-center justify-between">
+                <span class="text-[11px] text-white/50">2 sources</span>
+                <span class="flex items-center gap-1 rounded bg-emerald-400/15 px-1.5 py-[1px] text-[10px] font-medium text-emerald-200"><i data-lucide="check-circle" class="h-2.5 w-2.5"></i> Healthy</span>
+              </div>
+            </button>
+            <!-- KB 3 -->
+            <button onclick="showDetail()" class="mb-1 block w-full rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-white/20 hover:bg-white/5">
+              <div class="flex items-center gap-2">
+                <i data-lucide="library" class="h-4 w-4 shrink-0 text-violet-300"></i>
+                <span class="min-w-0 flex-1 truncate text-xs font-medium text-white">Legal &amp; Compliance</span>
+              </div>
+              <div class="mt-1.5 flex items-center justify-between">
+                <span class="text-[11px] text-white/50">1 source</span>
+                <span class="flex items-center gap-1 rounded bg-white/10 px-1.5 py-[1px] text-[10px] font-medium text-white/70"><i data-lucide="clock" class="h-2.5 w-2.5"></i> Indexing</span>
+              </div>
+            </button>
+            <!-- KB 4 -->
+            <button onclick="showDetail()" class="mb-1 block w-full rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-white/20 hover:bg-white/5">
+              <div class="flex items-center gap-2">
+                <i data-lucide="library" class="h-4 w-4 shrink-0 text-violet-300"></i>
+                <span class="min-w-0 flex-1 truncate text-xs font-medium text-white">Product Research</span>
+              </div>
+              <div class="mt-1.5 flex items-center justify-between">
+                <span class="text-[11px] text-white/50">0 sources</span>
+                <span class="flex items-center gap-1 rounded bg-white/10 px-1.5 py-[1px] text-[10px] font-medium text-white/60"><i data-lucide="file-question" class="h-2.5 w-2.5"></i> Empty</span>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- detail placeholder for list view -->
+        <div class="flex min-h-0 flex-1 flex-col">
+          <div class="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-2.5">
+            <div class="flex items-center gap-2">
+              <i data-lucide="library" class="h-4 w-4 text-violet-300"></i>
+              <span class="text-sm font-semibold">Engineering Docs</span>
+              <span class="flex items-center gap-1 rounded bg-amber-400/15 px-1.5 py-[1px] text-[10px] font-medium text-amber-200"><i data-lucide="alert-triangle" class="h-2.5 w-2.5"></i> Needs attention</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button onclick="showDetail()" class="flex items-center gap-1 rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20"><i data-lucide="settings-2" class="h-3 w-3"></i> Manage</button>
+              <button onclick="showDetail()" class="flex items-center gap-1 rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20"><i data-lucide="trash-2" class="h-3 w-3"></i> Delete</button>
+            </div>
+          </div>
+          <div class="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-xs text-white/40">
+            Select a knowledge base on the left to open its sources and ingestion health.
+          </div>
+        </div>
+      </div>
+
+      <!-- ======================================================== -->
+      <!-- SCREEN: KB DETAIL — master-detail with tabs               -->
+      <!-- ======================================================== -->
+      <div id="screen-detail" class="mockup-screen flex w-full">
+        <!-- master list (same as above, collapsed for space) -->
+        <div class="flex w-[220px] shrink-0 flex-col border-r border-white/10 bg-white/[0.02]">
+          <div class="shrink-0 border-b border-white/10 bg-white/5 px-3 py-2">
+            <h2 class="text-[11px] font-semibold uppercase tracking-wide text-white/40">Knowledge Bases</h2>
+          </div>
+          <div class="min-h-0 flex-1 overflow-y-auto p-2">
+            <button onclick="showList()" class="mb-1 flex w-full items-center gap-1.5 rounded bg-violet-500/25 px-2 py-1.5 text-left text-[11px] text-violet-100">
+              <i data-lucide="library" class="h-3.5 w-3.5 shrink-0"></i>
+              <span class="truncate">Engineering Docs</span>
+            </button>
+            <button onclick="showList()" class="mb-1 flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-[11px] text-white/70 hover:bg-white/10">
+              <i data-lucide="library" class="h-3.5 w-3.5 shrink-0"></i>
+              <span class="truncate">Customer Support Playbook</span>
+            </button>
+            <button onclick="showList()" class="mb-1 flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-[11px] text-white/70 hover:bg-white/10">
+              <i data-lucide="library" class="h-3.5 w-3.5 shrink-0"></i>
+              <span class="truncate">Legal &amp; Compliance</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- detail -->
+        <div class="flex min-h-0 flex-1 flex-col">
+          <!-- header -->
+          <div class="flex shrink-0 items-center justify-between border-b border-white/10 bg-white/[0.02] px-4 py-2.5">
+            <div class="flex min-w-0 items-center gap-2">
+              <i data-lucide="library" class="h-4 w-4 shrink-0 text-violet-300"></i>
+              <span class="truncate text-sm font-semibold">Engineering Docs</span>
+              <span class="shrink-0 rounded bg-white/10 px-1.5 py-[1px] font-mono text-[10px] text-white/50">kb_engdocs</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button onclick="openModal('new-kb')" class="flex items-center gap-1 rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20"><i data-lucide="pencil" class="h-3 w-3"></i> Rename</button>
+              <button onclick="showList()" class="flex items-center gap-1 rounded bg-white/10 px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/15"><i data-lucide="trash-2" class="h-3 w-3"></i> Delete</button>
+            </div>
+          </div>
+
+          <!-- tab nav -->
+          <div class="flex shrink-0 items-center gap-1 border-b border-white/10 px-3">
+            <button onclick="setDetailTab('sources')" class="detail-nav relative px-3 py-2 text-xs font-medium text-white" data-tab="sources">Sources</button>
+            <button onclick="setDetailTab('health')" class="detail-nav relative px-3 py-2 text-xs font-medium text-white/60 hover:text-white/90" data-tab="health">Health</button>
+          </div>
+
+          <!-- SOURCES TAB -->
+          <div id="tab-sources" class="detail-tab min-h-0 flex-1 overflow-auto p-4 active">
+            <div class="flex items-center justify-between">
+              <p class="text-xs text-white/50">3 sources · 2 of 3 fully indexed</p>
+              <button onclick="openModal('add-source')" class="flex items-center gap-1 rounded bg-violet-500/30 px-2.5 py-1.5 text-xs font-medium text-violet-100 hover:bg-violet-500/40">
+                <i data-lucide="plus" class="h-3.5 w-3.5"></i> Add source
+              </button>
+            </div>
+
+            <div class="mt-4 space-y-3">
+              <!-- Upload source 1: indexed -->
+              <div class="flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/10"><i data-lucide="file-up" class="h-5 w-5 text-violet-300"></i></span>
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-xs font-medium text-white/85">architecture.md</div>
+                  <div class="truncate font-mono text-[11px] text-white/40">~/Knowledge/Engineering/architecture.md</div>
+                </div>
+                <div class="shrink-0 text-right">
+                  <span class="flex items-center justify-end gap-1 text-[11px] font-medium text-emerald-300"><i data-lucide="check-circle" class="h-3 w-3"></i> Indexed</span>
+                  <div class="mt-0.5 text-[10px] text-white/40">214 chunks · 1.2 MB</div>
+                </div>
+              </div>
+              <!-- Upload source 2: indexing -->
+              <div class="flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/10"><i data-lucide="file-up" class="h-5 w-5 text-violet-300"></i></span>
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-xs font-medium text-white/85">api-spec.pdf</div>
+                  <div class="truncate font-mono text-[11px] text-white/40">~/Knowledge/Engineering/api-spec.pdf</div>
+                </div>
+                <div class="shrink-0 text-right">
+                  <span class="flex items-center justify-end gap-1 text-[11px] font-medium text-sky-300"><i data-lucide="loader" class="h-3 w-3 animate-spin"></i> Indexing</span>
+                  <div class="mt-0.5 text-[10px] text-white/40">Extracting &amp; embedding…</div>
+                </div>
+              </div>
+              <!-- Upload source 3: error -->
+              <div class="flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] p-3">
+                <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/10"><i data-lucide="file-up" class="h-5 w-5 text-violet-300"></i></span>
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-xs font-medium text-white/85">onboarding.docx</div>
+                  <div class="truncate font-mono text-[11px] text-white/40">~/Knowledge/Engineering/onboarding.docx</div>
+                </div>
+                <div class="shrink-0 text-right">
+                  <span class="flex items-center justify-end gap-1 text-[11px] font-medium text-red-300"><i data-lucide="alert-triangle" class="h-3 w-3"></i> Failed</span>
+                  <button class="mt-1 rounded bg-white/10 px-2 py-0.5 text-[10px] text-white/80 hover:bg-white/20">Retry</button>
+                </div>
+              </div>
+              <!-- Drive source: indexed, refreshable -->
+              <div class="flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/10"><i data-lucide="folder" class="h-5 w-5 text-violet-300"></i></span>
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-xs font-medium text-white/85">Shared/Engineering</div>
+                  <div class="truncate font-mono text-[11px] text-white/40">Google Drive folder</div>
+                </div>
+                <div class="shrink-0 text-right">
+                  <span class="flex items-center justify-end gap-1 text-[11px] font-medium text-emerald-300"><i data-lucide="check-circle" class="h-3 w-3"></i> Indexed</span>
+                  <div class="mt-0.5 text-[10px] text-white/40">48 files · 2 h ago</div>
+                </div>
+                <button class="flex shrink-0 items-center gap-1 rounded bg-white/10 px-2 py-1 text-[11px] text-white/80 hover:bg-white/20"><i data-lucide="refresh-cw" class="h-3 w-3"></i> Refresh</button>
+              </div>
+              <!-- Website source: crawling -->
+              <div class="flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/10"><i data-lucide="globe" class="h-5 w-5 text-violet-300"></i></span>
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-xs font-medium text-white/85">docs.acme.dev</div>
+                  <div class="truncate font-mono text-[11px] text-white/40">https://docs.acme.dev</div>
+                </div>
+                <div class="shrink-0 text-right">
+                  <span class="flex items-center justify-end gap-1 text-[11px] font-medium text-sky-300"><i data-lucide="loader" class="h-3 w-3 animate-spin"></i> Crawling</span>
+                  <div class="mt-0.5 text-[10px] text-white/40">37 / 120 pages</div>
+                </div>
+                <button class="flex shrink-0 items-center gap-1 rounded bg-white/10 px-2 py-1 text-[11px] text-white/80 hover:bg-white/20"><i data-lucide="refresh-cw" class="h-3 w-3"></i> Refresh</button>
+              </div>
+            </div>
+          </div>
+
+
+          <!-- HEALTH TAB -->
+          <div id="tab-health" class="detail-tab min-h-0 flex-1 overflow-auto p-4">
+            <div class="grid grid-cols-3 gap-2">
+              <div class="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                <div class="text-[11px] uppercase tracking-wide text-white/40">Indexed</div>
+                <div class="mt-1 text-lg font-semibold text-emerald-300">2</div>
+                <div class="text-[11px] text-white/50">of 3 sources</div>
+              </div>
+              <div class="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                <div class="text-[11px] uppercase tracking-wide text-white/40">In progress</div>
+                <div class="mt-1 text-lg font-semibold text-sky-300">2</div>
+                <div class="text-[11px] text-white/50">indexing / crawling</div>
+              </div>
+              <div class="rounded-lg border border-amber-400/20 bg-amber-400/[0.06] p-3">
+                <div class="text-[11px] uppercase tracking-wide text-amber-200/80">Needs attention</div>
+                <div class="mt-1 text-lg font-semibold text-amber-200">1</div>
+                <div class="text-[11px] text-white/50">actionable error</div>
+              </div>
+            </div>
+
+            <div class="mt-4 space-y-2">
+              <!-- actionable error -->
+              <div class="flex items-start gap-2 rounded-lg border border-amber-400/25 bg-amber-400/10 p-3">
+                <i data-lucide="alert-triangle" class="mt-[1px] h-4 w-4 shrink-0 text-amber-300"></i>
+                <div class="flex-1">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-medium text-amber-100">onboarding.docx failed to extract</span>
+                    <span class="text-[10px] text-white/50">just now</span>
+                  </div>
+                  <p class="mt-0.5 text-[11px] leading-snug text-white/70">The file appears corrupt or uses an unsupported format. The rest of the knowledge base remains queryable.</p>
+                  <div class="mt-2 flex gap-2">
+                    <button class="rounded bg-white/10 px-2 py-1 text-[11px] text-white hover:bg-white/20">Retry</button>
+                    <button class="rounded bg-white/10 px-2 py-1 text-[11px] text-white/70 hover:bg-white/20">Replace file</button>
+                    <button class="rounded bg-white/10 px-2 py-1 text-[11px] text-white/70 hover:bg-white/20">Remove source</button>
+                  </div>
+                </div>
+              </div>
+              <!-- informational -->
+              <div class="flex items-start gap-2 rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                <i data-lucide="info" class="mt-[1px] h-4 w-4 shrink-0 text-sky-300"></i>
+                <div class="flex-1">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-medium text-white/85">docs.acme.dev crawling</span>
+                    <span class="text-[10px] text-white/50">running</span>
+                  </div>
+                  <p class="mt-0.5 text-[11px] leading-snug text-white/70">37 of ~120 pages indexed so far. Incremental crawl — the app stays responsive.</p>
+                </div>
+              </div>
+              <!-- success -->
+              <div class="flex items-start gap-2 rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] p-3">
+                <i data-lucide="check-circle" class="mt-[1px] h-4 w-4 shrink-0 text-emerald-300"></i>
+                <div class="flex-1">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-medium text-emerald-100">Shared/Engineering synced</span>
+                    <span class="text-[10px] text-white/50">2 h ago</span>
+                  </div>
+                  <p class="mt-0.5 text-[11px] leading-snug text-white/70">48 files indexed · 3 added · 1 removed since last refresh.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <!-- MODALS                                                           -->
+  <!-- ================================================================ -->
+
+  <!-- NEW KB -->
+  <div id="modal-new-kb" class="modal fixed inset-0 z-[200000] items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="w-[460px] max-w-[92vw] rounded-2xl border border-white/10 bg-[#15171e] p-6 text-sm shadow-2xl">
+      <h2 class="mb-1 text-base font-semibold">New knowledge base</h2>
+      <p class="mb-4 text-xs text-white/50">A named collection of content your agents can query.</p>
+      <div class="space-y-3">
+        <div>
+          <label class="mb-1 block text-xs text-white/60">Name</label>
+          <input value="Engineering Docs" class="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-xs outline-none focus:border-white/30" />
+        </div>
+        <div>
+          <label class="mb-1 block text-xs text-white/60">Description <span class="text-white/30">(optional)</span></label>
+          <input placeholder="What lives in this knowledge base?" class="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-xs outline-none focus:border-white/30" />
+        </div>
+      </div>
+      <div class="mt-5 flex justify-end gap-2">
+        <button onclick="closeModal('new-kb')" class="rounded px-3 py-1.5 text-xs text-white/60 hover:bg-white/10">Cancel</button>
+        <button onclick="closeModal('new-kb'); showScreen('list')" class="rounded bg-violet-500/30 px-4 py-1.5 text-xs font-medium text-violet-100 hover:bg-violet-500/40">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADD SOURCE CHOOSER -->
+  <div id="modal-add-source" class="modal fixed inset-0 z-[200000] items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="w-[520px] max-w-[92vw] rounded-2xl border border-white/10 bg-[#15171e] p-6 text-sm shadow-2xl">
+      <div class="mb-1 flex items-center justify-between">
+        <h2 class="text-base font-semibold">Add source</h2>
+        <button onclick="closeModal('add-source')" class="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white"><i data-lucide="x" class="h-4 w-4"></i></button>
+      </div>
+      <p class="mb-4 text-xs text-white/50">Add content to <span class="text-white/80">Engineering Docs</span> from one of these source types.</p>
+      <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <button onclick="openModal('upload')" class="group flex flex-col items-start gap-2 rounded-lg border border-white/10 bg-white/[0.02] p-4 text-left transition-colors hover:border-violet-500/50 hover:bg-white/[0.05]">
+          <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-white/10"><i data-lucide="file-up" class="h-5 w-5 text-violet-300"></i></span>
+          <span class="text-xs font-medium text-white/85">Upload documents</span>
+          <span class="text-[11px] leading-snug text-white/45">PDF, TXT, MD, DOCX and similar text-extractable files.</span>
+        </button>
+        <button onclick="openModal('gdrive')" class="group flex flex-col items-start gap-2 rounded-lg border border-white/10 bg-white/[0.02] p-4 text-left transition-colors hover:border-violet-500/50 hover:bg-white/[0.05]">
+          <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-white/10"><i data-lucide="folder" class="h-5 w-5 text-violet-300"></i></span>
+          <span class="text-xs font-medium text-white/85">Google Drive folder</span>
+          <span class="text-[11px] leading-snug text-white/45">Connect via OAuth and pick a folder to index.</span>
+        </button>
+        <button onclick="openModal('website')" class="group flex flex-col items-start gap-2 rounded-lg border border-white/10 bg-white/[0.02] p-4 text-left transition-colors hover:border-violet-500/50 hover:bg-white/[0.05]">
+          <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-white/10"><i data-lucide="globe" class="h-5 w-5 text-violet-300"></i></span>
+          <span class="text-xs font-medium text-white/85">Website URL</span>
+          <span class="text-[11px] leading-snug text-white/45">Crawl a site and index its pages.</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- UPLOAD DIALOG -->
+  <div id="modal-upload" class="modal fixed inset-0 z-[200000] items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="w-[520px] max-w-[92vw] rounded-2xl border border-white/10 bg-[#15171e] p-6 text-sm shadow-2xl">
+      <div class="mb-1 flex items-center justify-between">
+        <h2 class="text-base font-semibold">Upload documents</h2>
+        <button onclick="closeModal('upload')" class="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white"><i data-lucide="x" class="h-4 w-4"></i></button>
+      </div>
+      <p class="mb-4 text-xs text-white/50">Add files to <span class="text-white/80">Engineering Docs</span>. Text-extractable formats are indexed.</p>
+      <!-- dropzone -->
+      <div class="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-white/15 bg-black/20 p-6 text-center transition-colors hover:border-violet-500/50 hover:bg-black/30">
+        <i data-lucide="cloud-upload" class="h-6 w-6 text-white/40"></i>
+        <p class="text-xs text-white/70">Drag &amp; drop files here, or <span class="text-violet-300">browse</span></p>
+        <p class="text-[11px] text-white/40">PDF · TXT · MD · DOCX · up to 50 MB each</p>
+      </div>
+      <!-- staged files -->
+      <div class="mt-4 space-y-1.5">
+        <div class="flex items-center gap-2 rounded border border-white/10 bg-white/[0.03] px-2.5 py-2">
+          <i data-lucide="file-text" class="h-4 w-4 shrink-0 text-white/60"></i>
+          <span class="min-w-0 flex-1 truncate text-xs text-white/85">architecture.md</span>
+          <span class="flex items-center gap-1 text-[10px] font-medium text-emerald-300"><i data-lucide="check-circle" class="h-3 w-3"></i> Indexed</span>
+        </div>
+        <div class="flex items-center gap-2 rounded border border-white/10 bg-white/[0.03] px-2.5 py-2">
+          <i data-lucide="file-text" class="h-4 w-4 shrink-0 text-white/60"></i>
+          <span class="min-w-0 flex-1 truncate text-xs text-white/85">api-spec.pdf</span>
+          <span class="flex items-center gap-1 text-[10px] font-medium text-sky-300"><i data-lucide="loader" class="h-3 w-3 animate-spin"></i> Indexing</span>
+        </div>
+        <div class="flex items-center gap-2 rounded border border-white/10 bg-white/[0.03] px-2.5 py-2">
+          <i data-lucide="file-text" class="h-4 w-4 shrink-0 text-white/60"></i>
+          <span class="min-w-0 flex-1 truncate text-xs text-white/85">onboarding.docx</span>
+          <span class="flex items-center gap-1 text-[10px] font-medium text-red-300"><i data-lucide="alert-triangle" class="h-3 w-3"></i> Failed · Retry</span>
+        </div>
+      </div>
+      <div class="mt-5 flex justify-end gap-2">
+        <button onclick="closeModal('upload')" class="rounded px-3 py-1.5 text-xs text-white/60 hover:bg-white/10">Done</button>
+        <button onclick="closeModal('upload')" class="rounded bg-violet-500/30 px-4 py-1.5 text-xs font-medium text-violet-100 hover:bg-violet-500/40">Add 3 files</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- GOOGLE DRIVE FLOW -->
+  <div id="modal-gdrive" class="modal fixed inset-0 z-[200000] items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="w-[520px] max-w-[92vw] rounded-2xl border border-white/10 bg-[#15171e] p-6 text-sm shadow-2xl">
+      <div class="mb-1 flex items-center justify-between">
+        <h2 class="text-base font-semibold">Connect Google Drive</h2>
+        <button onclick="closeModal('gdrive')" class="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white"><i data-lucide="x" class="h-4 w-4"></i></button>
+      </div>
+      <p class="mb-4 text-xs text-white/50">Step 1 of 2 — authorize access to select a folder.</p>
+
+      <!-- connected state (already authorized) -->
+      <div class="flex items-center gap-2 rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2.5">
+        <i data-lucide="check-circle" class="h-4 w-4 shrink-0 text-emerald-300"></i>
+        <div class="flex-1">
+          <div class="text-xs font-medium text-emerald-100">Connected as you@example.com</div>
+          <div class="text-[11px] text-white/60">Access granted to Google Drive. No re-auth needed.</div>
+        </div>
+        <button class="rounded bg-white/10 px-2 py-1 text-[11px] text-white/70 hover:bg-white/20">Reconnect</button>
+      </div>
+
+      <!-- folder picker -->
+      <label class="mb-1 mt-4 block text-xs text-white/60">Folder</label>
+      <div class="flex items-center gap-2 rounded border border-white/10 bg-black/30 px-2 py-1.5">
+        <i data-lucide="folder" class="h-4 w-4 shrink-0 text-white/40"></i>
+        <input value="Shared/Engineering" class="flex-1 bg-transparent text-xs outline-none" placeholder="Select a folder…" />
+        <button class="rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/20">Browse</button>
+      </div>
+      <p class="mt-1.5 text-[11px] text-white/40">Files inside this folder (and subfolders) will be indexed. Refresh picks up changes.</p>
+
+      <div class="mt-5 flex justify-end gap-2">
+        <button onclick="closeModal('gdrive')" class="rounded px-3 py-1.5 text-xs text-white/60 hover:bg-white/10">Cancel</button>
+        <button onclick="closeModal('gdrive')" class="rounded bg-violet-500/30 px-4 py-1.5 text-xs font-medium text-violet-100 hover:bg-violet-500/40">Add folder</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- WEBSITE FLOW -->
+  <div id="modal-website" class="modal fixed inset-0 z-[200000] items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="w-[520px] max-w-[92vw] rounded-2xl border border-white/10 bg-[#15171e] p-6 text-sm shadow-2xl">
+      <div class="mb-1 flex items-center justify-between">
+        <h2 class="text-base font-semibold">Add website</h2>
+        <button onclick="closeModal('website')" class="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white"><i data-lucide="x" class="h-4 w-4"></i></button>
+      </div>
+      <p class="mb-4 text-xs text-white/50">Crawl a site and index its pages into <span class="text-white/80">Engineering Docs</span>.</p>
+
+      <label class="mb-1 block text-xs text-white/60">Website URL</label>
+      <input value="https://docs.acme.dev" class="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 font-mono text-xs outline-none focus:border-white/30" />
+
+      <div class="mt-4 space-y-3">
+        <div>
+          <label class="mb-1 flex items-center justify-between text-xs text-white/60">
+            Crawl scope <span class="font-normal text-white/30">same-domain subtree</span>
+          </label>
+          <input type="text" value="docs.acme.dev/** (max depth 4)" class="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-xs outline-none focus:border-white/30" />
+        </div>
+        <div>
+          <label class="mb-1 flex items-center justify-between text-xs text-white/60">
+            Page limit <span class="font-normal text-white/30">prevents runaway crawls</span>
+          </label>
+          <input type="number" value="200" class="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-xs outline-none focus:border-white/30" />
+        </div>
+      </div>
+      <p class="mt-2 text-[11px] text-white/40">Robots-disallowed or unreachable pages are skipped with a crawl note.</p>
+
+      <div class="mt-5 flex justify-end gap-2">
+        <button onclick="closeModal('website')" class="rounded px-3 py-1.5 text-xs text-white/60 hover:bg-white/10">Cancel</button>
+        <button onclick="closeModal('website')" class="rounded bg-violet-500/30 px-4 py-1.5 text-xs font-medium text-violet-100 hover:bg-violet-500/40">Start crawl</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONNECTION SETTINGS (Graphiti MCP endpoint) -->
+  <div id="modal-conn-settings" class="modal fixed inset-0 z-[200000] items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="w-[460px] max-w-[92vw] rounded-2xl border border-white/10 bg-[#15171e] p-6 text-sm shadow-2xl">
+      <div class="mb-1 flex items-center justify-between">
+        <h2 class="text-base font-semibold">Connection settings</h2>
+        <button onclick="closeModal('conn-settings')" class="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white"><i data-lucide="x" class="h-4 w-4"></i></button>
+      </div>
+      <p class="mb-4 text-xs text-white/50">Service-level connection used for all Graphiti calls.</p>
+
+      <label class="mb-1 block text-xs text-white/60">Graphiti MCP endpoint</label>
+      <div class="flex items-center gap-2 rounded border border-white/10 bg-black/30 px-2 py-1.5 focus-within:border-white/30">
+        <i data-lucide="plug-zap" class="h-4 w-4 shrink-0 text-violet-300"></i>
+        <input id="graphiti-endpoint" value="http://127.0.0.1:8020/mcp/" class="flex-1 bg-transparent font-mono text-xs outline-none" />
+      </div>
+      <p class="mt-1.5 text-[11px] text-white/40">URL of your Graphiti MCP server (deployed externally in Dokploy). Used for every Graphiti call.</p>
+
+      <div class="mt-2 flex items-center gap-1.5 text-[11px] text-emerald-300" id="conn-saved-hint" style="display:none">
+        <i data-lucide="check-circle" class="h-3 w-3"></i> Saved — applies immediately
+      </div>
+
+      <div class="mt-5 flex justify-end gap-2">
+        <button onclick="closeModal('conn-settings')" class="rounded px-3 py-1.5 text-xs text-white/60 hover:bg-white/10">Cancel</button>
+        <button onclick="saveConnSettings()" class="rounded bg-violet-500/30 px-4 py-1.5 text-xs font-medium text-violet-100 hover:bg-violet-500/40">Save</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // lucide icons
+  lucide.createIcons();
+
+  // screen switching
+  function showScreen(id) {
+    document.querySelectorAll('.mockup-screen').forEach(el => el.classList.remove('active'));
+    document.getElementById('screen-' + id).classList.add('active');
+    closeAllModals();
+    setDetailTab('sources');
+  }
+  function showList() { showScreen('list'); }
+  function showDetail() { showScreen('detail'); setDetailTab('sources'); }
+
+  // detail tabs
+  function setDetailTab(tab) {
+    document.querySelectorAll('.detail-tab').forEach(el => el.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    document.querySelectorAll('.detail-nav').forEach(el => {
+      const isActive = el.dataset.tab === tab;
+      el.classList.toggle('text-white', isActive);
+      el.classList.toggle('text-white/60', !isActive);
+      el.style.boxShadow = isActive ? 'inset 0 -2px 0 0 #fff' : 'none';
+    });
+  }
+
+  // modals
+  function openModal(id) {
+    closeAllModals();
+    document.getElementById('modal-' + id).classList.add('active');
+  }
+  function closeModal(id) { document.getElementById('modal-' + id).classList.remove('active'); }
+  function closeAllModals() {
+    document.querySelectorAll('.modal').forEach(el => el.classList.remove('active'));
+  }
+
+  // connection settings save (Graphiti MCP endpoint)
+  function saveConnSettings() {
+    const hint = document.getElementById('conn-saved-hint');
+    hint.style.display = 'flex';
+    hint.style.opacity = '0';
+    setTimeout(() => { hint.style.transition = 'opacity .2s'; hint.style.opacity = '1'; }, 10);
+  }
+
+  // default: populated list
+  showScreen('list');
+</script>
+
+</body>
+</html>

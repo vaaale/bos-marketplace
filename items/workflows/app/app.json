@@ -1,6 +1,7 @@
 {
   "id": "workflows",
-  "name": "Workflow Manager",
+  "name": "workflows",
   "icon": "Puzzle",
-  "createdAt": 1785062593222
+  "createdAt": 1787299702608,
+  "entry": "src/main.tsx"
 }

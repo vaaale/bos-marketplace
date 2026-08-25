@@ -1,0 +1,51 @@
+{
+  "sources": [
+    {
+      "id": "src_72442a7e020e697137",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "type": "upload",
+      "name": "s41467-024-45107-3.pdf",
+      "reference": "/KnowledgeBase/kb_b3c5700da95ba5030e/s41467-024-45107-3.pdf",
+      "status": "failed",
+      "statusMessage": "Episode \"s41467-024-45107-3.pdf (part 3/21)\" was queued in Graphiti but wasn't confirmed landed after 449 check(s) over 900s. It may still be processing (entity extraction + embedding can take a while) — check http://wingman.akhbar.lan:5051/mcp and its logs, then Retry once it's had time to finish.",
+      "stats": {
+        "episodes": 0,
+        "itemsTotal": null,
+        "itemsDone": 0,
+        "sizeBytes": 0
+      },
+      "lastSyncedAt": null,
+      "createdAt": "2026-08-06T20:36:46.438Z",
+      "updatedAt": "2026-08-06T21:54:59.862Z",
+      "extra": {}
+    },
+    {
+      "id": "src_1579ea4505c5bdae74",
+      "kbId": "kb_b3c5700da95ba5030e",
+      "type": "upload",
+      "name": "01_Legacy_to_Consolidated_Mapping.md",
+      "reference": "/KnowledgeBase/kb_b3c5700da95ba5030e/01_Legacy_to_Consolidated_Mapping.md",
+      "status": "indexed",
+      "statusMessage": null,
+      "stats": {
+        "episodes": 1,
+        "itemsTotal": 1,
+        "itemsDone": 1,
+        "sizeBytes": 2266
+      },
+      "lastSyncedAt": "2026-08-06T21:03:12.908Z",
+      "createdAt": "2026-08-06T20:46:41.577Z",
+      "updatedAt": "2026-08-06T21:03:12.908Z",
+      "extra": {
+        "itemIndex": {
+          "/KnowledgeBase/kb_b3c5700da95ba5030e/01_Legacy_to_Consolidated_Mapping.md": {
+            "name": "01_Legacy_to_Consolidated_Mapping.md",
+            "episodeIds": [
+              "752e8532-660e-4ca3-b09e-1d64067e75ff"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

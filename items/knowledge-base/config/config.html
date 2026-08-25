@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Knowledge Base</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1117;
+    --panel: #15171e;
+    --border: rgba(255,255,255,.1);
+    --violet: #c4b5fd;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: rgba(255,255,255,.9);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    -webkit-user-select: none;
+    user-select: none;
+    display: flex;
+    flex-direction: column;
+  }
+  input, textarea { user-select: text; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .hidden { display: none !important; }
+
+  .icon-btn { background: none; border: none; color: rgba(255,255,255,.8); padding: 6px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; }
+  .icon-btn:hover { background: rgba(255,255,255,.1); }
+
+  .topbar { flex-shrink: 0; display: flex; align-items: center; justify-content: flex-end; padding: 4px 8px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,.03); }
+
+  .body { display: flex; flex: 1; min-height: 0; }
+
+  .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; }
+  .empty-state .icon-wrap { width: 56px; height: 56px; border-radius: 16px; background: rgba(139,92,246,.15); display: flex; align-items: center; justify-content: center; color: var(--violet); }
+  .empty-state h2 { margin: 0; font-size: 13px; font-weight: 600; color: #fff; }
+  .empty-state p { margin: 0; max-width: 34ch; font-size: 12px; line-height: 1.5; color: rgba(255,255,255,.5); }
+
+  .sidebar { width: 270px; flex-shrink: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: rgba(255,255,255,.02); }
+  .sidebar-header { flex-shrink: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,.05); }
+  .sidebar-header h2 { margin: 0 0 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: rgba(255,255,255,.4); }
+  .kb-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
+  .kb-item { display: block; width: 100%; text-align: left; border: 1px solid transparent; border-radius: 6px; padding: 8px 10px; margin-bottom: 4px; background: none; color: inherit; cursor: pointer; font: inherit; }
+  .kb-item:hover { border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.05); }
+  .kb-item.selected { border-color: rgba(139,92,246,.7); background: rgba(255,255,255,.1); }
+  .kb-item-row { display: flex; align-items: center; gap: 8px; }
+  .kb-item-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; color: #fff; }
+  .kb-item-meta { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+  .kb-item-meta .count { font-size: 11px; color: rgba(255,255,255,.5); }
+  .empty-list-note { padding: 10px; font-size: 11px; color: rgba(255,255,255,.35); font-style: italic; }
+
+  .badge { display: inline-flex; align-items: center; gap: 3px; border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 500; white-space: nowrap; }
+  .badge svg { width: 9px; height: 9px; }
+  .badge-neutral { background: rgba(255,255,255,.1); color: rgba(255,255,255,.65); }
+  .badge-good { background: rgba(52,211,153,.15); color: #6ee7b7; }
+  .badge-warn { background: rgba(251,191,36,.15); color: #fde68a; }
+  .badge-progress { background: rgba(56,189,248,.15); color: #7dd3fc; }
+  .badge-bad { background: rgba(248,113,113,.15); color: #fca5a5; }
+
+  .detail { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .detail-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; font-size: 12px; color: rgba(255,255,255,.4); }
+  .detail-header { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,.02); padding: 10px 16px; }
+  .detail-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .detail-title .name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .detail-title .kbid { flex-shrink: 0; font-family: ui-monospace, monospace; font-size: 10px; color: rgba(255,255,255,.5); background: rgba(255,255,255,.1); border-radius: 4px; padding: 1px 6px; }
+  .detail-actions { flex-shrink: 0; display: flex; gap: 8px; }
+
+  button.btn { border: none; border-radius: 6px; font-size: 11px; font-weight: 500; padding: 5px 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; background: rgba(255,255,255,.1); color: #fff; font-family: inherit; white-space: nowrap; }
+  button.btn:hover { background: rgba(255,255,255,.2); }
+  button.btn:disabled { opacity: .5; cursor: default; }
+  button.btn-danger { color: #fca5a5; }
+  button.btn-danger:hover { background: rgba(239,68,68,.15); }
+  button.btn-primary { background: rgba(139,92,246,.3); color: #ede9fe; }
+  button.btn-primary:hover { background: rgba(139,92,246,.4); }
+  button.btn-ghost { background: none; color: rgba(255,255,255,.6); padding: 4px; }
+  button.btn-ghost:hover { background: rgba(255,255,255,.1); color: #fff; }
+
+  .tabs { flex-shrink: 0; display: flex; gap: 4px; border-bottom: 1px solid var(--border); padding: 0 12px; }
+  .tab { background: none; border: none; color: rgba(255,255,255,.6); font-size: 12px; font-weight: 500; padding: 9px 10px; cursor: pointer; font-family: inherit; }
+  .tab:hover { color: rgba(255,255,255,.9); }
+  .tab.active { color: #fff; box-shadow: inset 0 -2px 0 0 #fff; }
+
+  .tab-panel { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+  .panel-toprow { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .panel-toprow .summary { font-size: 11px; color: rgba(255,255,255,.5); }
+
+  .source-card { display: flex; align-items: center; gap: 12px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,.02); padding: 12px; margin-bottom: 10px; }
+  .source-card.error { border-color: rgba(251,191,36,.25); background: rgba(251,191,36,.06); }
+  .source-icon { flex-shrink: 0; width: 36px; height: 36px; border-radius: 8px; background: rgba(255,255,255,.1); display: flex; align-items: center; justify-content: center; color: var(--violet); }
+  .source-info { flex: 1; min-width: 0; user-select: text; }
+  .source-name { font-size: 12px; font-weight: 500; color: rgba(255,255,255,.85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .source-ref { font-family: ui-monospace, monospace; font-size: 11px; color: rgba(255,255,255,.4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .source-status { flex-shrink: 0; max-width: 45%; text-align: right; user-select: text; }
+  .source-status-line { display: flex; align-items: center; justify-content: flex-end; gap: 4px; font-size: 11px; font-weight: 500; }
+  .source-status-sub { margin-top: 2px; font-size: 10px; color: rgba(255,255,255,.4); white-space: normal; overflow-wrap: break-word; word-break: break-word; }
+  .source-actions { flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
+  .spin { animation: kb-spin 1s linear infinite; }
+  @keyframes kb-spin { to { transform: rotate(360deg); } }
+  .tone-good { color: #6ee7b7; }
+  .tone-progress { color: #7dd3fc; }
+  .tone-bad { color: #fca5a5; }
+  .tone-muted { color: rgba(255,255,255,.5); }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
+  .stat-card { border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,.02); padding: 12px; }
+  .stat-card.warn { border-color: rgba(251,191,36,.2); background: rgba(251,191,36,.06); }
+  .stat-card .label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: rgba(255,255,255,.4); }
+  .stat-card.warn .label { color: rgba(253,230,138,.8); }
+  .stat-card .value { margin-top: 4px; font-size: 18px; font-weight: 600; }
+  .stat-card .sub { font-size: 11px; color: rgba(255,255,255,.5); }
+
+  .event-card { display: flex; align-items: flex-start; gap: 8px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,.02); padding: 10px; margin-bottom: 8px; }
+  .event-card.error { border-color: rgba(251,191,36,.25); background: rgba(251,191,36,.1); }
+  .event-card.success { border-color: rgba(52,211,153,.2); background: rgba(52,211,153,.06); }
+  .event-card .evt-icon { flex-shrink: 0; margin-top: 1px; }
+  .event-card .evt-body { flex: 1; min-width: 0; }
+  .event-card .evt-toprow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .event-card .evt-title { font-size: 12px; font-weight: 500; }
+  .event-card .evt-time { flex-shrink: 0; font-size: 10px; color: rgba(255,255,255,.5); }
+  .event-card .evt-msg { margin-top: 2px; font-size: 11px; line-height: 1.4; color: rgba(255,255,255,.7); }
+  .event-card .evt-actions { margin-top: 8px; display: flex; gap: 8px; }
+
+  .empty-note { font-size: 12px; font-style: italic; color: rgba(255,255,255,.3); }
+
+  /* Modals */
+  .modal-overlay { display: none; position: fixed; inset: 0; z-index: 200000; align-items: center; justify-content: center; background: rgba(0,0,0,.6); }
+  .modal-overlay.active { display: flex; }
+  .modal { width: 480px; max-width: 92vw; border-radius: 16px; border: 1px solid var(--border); background: var(--panel); padding: 22px; font-size: 13px; }
+  .modal.wide { width: 540px; }
+  .modal h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  .modal .subtitle { margin: 0 0 16px; font-size: 12px; color: rgba(255,255,255,.5); }
+  .modal .subtitle strong { color: rgba(255,255,255,.8); font-weight: 500; }
+  .modal-close { position: absolute; }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; margin-bottom: 4px; font-size: 12px; color: rgba(255,255,255,.6); }
+  .field input, .field select {
+    width: 100%; border-radius: 6px; border: 1px solid var(--border); background: rgba(0,0,0,.3);
+    padding: 7px 8px; font-size: 12px; color: #fff; outline: none; font-family: inherit;
+  }
+  .field input:focus, .field select:focus { border-color: rgba(255,255,255,.3); }
+  .field .hint { margin-top: 4px; font-size: 11px; color: rgba(255,255,255,.4); }
+  .field-row { display: flex; align-items: center; gap: 8px; border-radius: 6px; border: 1px solid var(--border); background: rgba(0,0,0,.3); padding: 6px 8px; }
+  .field-row input { flex: 1; background: none; border: none; color: #fff; font-size: 12px; outline: none; font-family: inherit; }
+  .field-row.icon { color: var(--violet); }
+  .modal-actions { margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px; }
+
+  .source-type-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .source-type-card { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,.02); padding: 14px; text-align: left; cursor: pointer; color: inherit; font-family: inherit; }
+  .source-type-card:hover { border-color: rgba(139,92,246,.5); background: rgba(255,255,255,.05); }
+  .source-type-card .icon-wrap { width: 34px; height: 34px; border-radius: 8px; background: rgba(255,255,255,.1); display: flex; align-items: center; justify-content: center; color: var(--violet); }
+  .source-type-card .title { font-size: 12px; font-weight: 500; color: rgba(255,255,255,.85); }
+  .source-type-card .desc { font-size: 11px; line-height: 1.4; color: rgba(255,255,255,.45); }
+
+  .dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border-radius: 8px; border: 1px dashed rgba(255,255,255,.15); background: rgba(0,0,0,.2); padding: 26px; text-align: center; cursor: pointer; }
+  .dropzone:hover, .dropzone.drag-active { border-color: rgba(139,92,246,.5); background: rgba(0,0,0,.3); }
+  .dropzone p { margin: 0; font-size: 12px; color: rgba(255,255,255,.7); }
+  .dropzone .browse { color: var(--violet); }
+  .dropzone .hint { font-size: 11px; color: rgba(255,255,255,.4); }
+
+  .staged-files { margin-top: 14px; max-height: 180px; overflow-y: auto; }
+  .staged-file { display: flex; align-items: center; gap: 8px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,255,255,.03); padding: 7px 10px; margin-bottom: 6px; }
+  .staged-file .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: rgba(255,255,255,.85); }
+  .staged-file .status { flex-shrink: 0; display: flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 500; }
+
+  .connected-box { display: flex; align-items: center; gap: 8px; border-radius: 8px; border: 1px solid rgba(52,211,153,.2); background: rgba(52,211,153,.06); padding: 10px 12px; }
+  .connected-box .info { flex: 1; }
+  .connected-box .info .title { font-size: 12px; font-weight: 500; color: #a7f3d0; }
+  .connected-box .info .sub { font-size: 11px; color: rgba(255,255,255,.6); }
+  .disconnected-box { display: flex; align-items: center; gap: 10px; justify-content: space-between; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,.03); padding: 12px; }
+
+  .folder-list { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; margin-top: 6px; }
+  .folder-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; cursor: pointer; font-size: 12px; }
+  .folder-row:hover { background: rgba(255,255,255,.06); }
+  .folder-row.selected { background: rgba(139,92,246,.2); }
+
+  .error-text { color: #fca5a5; font-size: 11px; margin-top: 6px; }
+  .saved-hint { display: none; align-items: center; gap: 5px; margin-top: 8px; font-size: 11px; color: #6ee7b7; }
+  .saved-hint.show { display: flex; }
+  .conn-status-line { margin-top: 10px; display: flex; align-items: center; gap: 6px; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <button class="icon-btn" id="btnConnSettings" title="Connection settings"></button>
+</div>
+
+<div class="body">
+  <div id="emptyState" class="empty-state hidden">
+    <div class="icon-wrap" id="emptyStateIcon"></div>
+    <h2>No knowledge bases yet</h2>
+    <p>Knowledge bases are named collections of documents, folders, or sites that your agents can query. Create one to start adding content.</p>
+    <button class="btn btn-primary" id="btnNewKbEmpty"></button>
+  </div>
+
+  <div id="mainLayout" class="hidden" style="display:flex; flex:1; min-width:0;">
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <h2>Knowledge Bases</h2>
+        <button class="btn" id="btnNewKbSidebar" style="width:100%; justify-content:center;"></button>
+      </div>
+      <div class="kb-list" id="kbList"></div>
+    </div>
+
+    <div class="detail" id="detailPane">
+      <div class="detail-placeholder">Select a knowledge base on the left to open its sources and ingestion health.</div>
+    </div>
+  </div>
+</div>
+
+<!-- NEW KB MODAL -->
+<div class="modal-overlay" id="modal-new-kb">
+  <div class="modal">
+    <h2 id="newKbTitle">New knowledge base</h2>
+    <p class="subtitle" id="newKbSubtitle">A named collection of content your agents can query.</p>
+    <div class="field">
+      <label>Name</label>
+      <input id="newKbName" placeholder="e.g. Engineering Docs" />
+    </div>
+    <div class="field">
+      <label>Description <span style="color:rgba(255,255,255,.3)">(optional)</span></label>
+      <input id="newKbDescription" placeholder="What lives in this knowledge base?" />
+    </div>
+    <div class="error-text hidden" id="newKbError"></div>
+    <div class="modal-actions">
+      <button class="btn" data-close="new-kb">Cancel</button>
+      <button class="btn btn-primary" id="btnCreateKb">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADD SOURCE CHOOSER -->
+<div class="modal-overlay" id="modal-add-source">
+  <div class="modal wide">
+    <div class="modal-header">
+      <h2>Add source</h2>
+      <button class="icon-btn" data-close="add-source" id="closeAddSource"></button>
+    </div>
+    <p class="subtitle">Add content to <strong id="addSourceKbName"></strong> from one of these source types.</p>
+    <div class="source-type-grid">
+      <button class="source-type-card" data-open="upload">
+        <span class="icon-wrap" id="typeIconUpload"></span>
+        <span class="title">Upload documents</span>
+        <span class="desc">PDF, TXT, MD, DOCX and similar text-extractable files — individually or as a whole folder.</span>
+      </button>
+      <button class="source-type-card" data-open="gdrive">
+        <span class="icon-wrap" id="typeIconDrive"></span>
+        <span class="title">Google Drive folder</span>
+        <span class="desc">Connect via OAuth and pick a folder to index.</span>
+      </button>
+      <button class="source-type-card" data-open="website">
+        <span class="icon-wrap" id="typeIconWebsite"></span>
+        <span class="title">Website URL</span>
+        <span class="desc">Crawl a site and index its pages.</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- UPLOAD MODAL -->
+<div class="modal-overlay" id="modal-upload">
+  <div class="modal wide">
+    <div class="modal-header">
+      <h2>Upload documents or a folder</h2>
+      <button class="icon-btn" data-close="upload" id="closeUpload"></button>
+    </div>
+    <p class="subtitle">Add files or a whole folder to <strong id="uploadKbName"></strong>. Text-extractable formats are indexed.</p>
+    <div class="dropzone" id="dropzone">
+      <span id="cloudUploadIcon"></span>
+      <p>Drag &amp; drop files or a folder here, or <span class="browse">browse</span></p>
+      <p class="hint">PDF · TXT · MD · DOCX · XLSX · PPTX · up to 50 MB each · or <span class="browse" id="browseFolderLink">select a folder</span></p>
+    </div>
+    <input type="file" id="fileInput" multiple class="hidden" accept=".pdf,.txt,.md,.markdown,.docx,.xlsx,.xls,.pptx,.html,.htm" />
+    <input type="file" id="folderInput" webkitdirectory directory multiple class="hidden" />
+    <div class="error-text hidden" id="uploadDropError"></div>
+    <div class="staged-files" id="stagedFiles"></div>
+    <div class="modal-actions">
+      <button class="btn" data-close="upload" id="btnUploadDone">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- GOOGLE DRIVE MODAL -->
+<div class="modal-overlay" id="modal-gdrive">
+  <div class="modal wide">
+    <div class="modal-header">
+      <h2>Connect Google Drive</h2>
+      <button class="icon-btn" data-close="gdrive" id="closeGdrive"></button>
+    </div>
+    <p class="subtitle" id="gdriveStep">Step 1 of 2 — authorize access to select a folder.</p>
+
+    <div id="gdriveConnected" class="connected-box hidden">
+      <span id="gdriveConnectedIcon"></span>
+      <div class="info">
+        <div class="title" id="gdriveEmail">Connected</div>
+        <div class="sub">Access granted to Google Drive. No re-auth needed.</div>
+      </div>
+      <button class="btn" id="btnReconnectDrive">Reconnect</button>
+    </div>
+    <div id="gdriveDisconnected" class="disconnected-box hidden">
+      <div class="info" style="font-size:12px; color:rgba(255,255,255,.6);">Not connected to Google Drive yet.</div>
+      <button class="btn btn-primary" id="btnConnectDrive">Connect</button>
+    </div>
+
+    <div id="gdriveFolderPicker" class="hidden" style="margin-top:14px;">
+      <label style="display:block; margin-bottom:4px; font-size:12px; color:rgba(255,255,255,.6);">Folder</label>
+      <div class="field-row icon">
+        <span id="folderFieldIcon"></span>
+        <input id="gdriveFolderName" placeholder="Select a folder…" readonly />
+        <button class="btn" id="btnBrowseFolders">Browse</button>
+      </div>
+      <div class="folder-list hidden" id="folderList"></div>
+      <p class="field hint" style="margin-top:6px;">Files inside this folder (and subfolders) will be indexed. Refresh picks up changes.</p>
+    </div>
+
+    <div class="error-text hidden" id="gdriveError"></div>
+    <div class="modal-actions">
+      <button class="btn" data-close="gdrive">Cancel</button>
+      <button class="btn btn-primary" id="btnAddFolder" disabled>Add folder</button>
+    </div>
+  </div>
+</div>
+
+<!-- WEBSITE MODAL -->
+<div class="modal-overlay" id="modal-website">
+  <div class="modal wide">
+    <div class="modal-header">
+      <h2>Add website</h2>
+      <button class="icon-btn" data-close="website" id="closeWebsite"></button>
+    </div>
+    <p class="subtitle">Crawl a site and index its pages into <strong id="websiteKbName"></strong>.</p>
+
+    <div class="field">
+      <label>Website URL</label>
+      <input id="websiteUrl" class="mono" placeholder="https://docs.example.com" />
+    </div>
+    <div class="field">
+      <label>Max crawl depth <span style="color:rgba(255,255,255,.3)">same-domain subtree</span></label>
+      <input id="websiteMaxDepth" type="number" value="4" min="1" max="10" />
+    </div>
+    <div class="field">
+      <label>Page limit <span style="color:rgba(255,255,255,.3)">prevents runaway crawls</span></label>
+      <input id="websitePageLimit" type="number" value="200" min="1" max="5000" />
+    </div>
+    <p class="field hint">Robots-disallowed or unreachable pages are skipped with a crawl note.</p>
+    <div class="error-text hidden" id="websiteError"></div>
+    <div class="modal-actions">
+      <button class="btn" data-close="website">Cancel</button>
+      <button class="btn btn-primary" id="btnStartCrawl">Start crawl</button>
+    </div>
+  </div>
+</div>
+
+<!-- CONNECTION SETTINGS MODAL -->
+<div class="modal-overlay" id="modal-conn-settings">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Connection settings</h2>
+      <button class="icon-btn" data-close="conn-settings" id="closeConnSettings"></button>
+    </div>
+    <p class="subtitle">Service-level connection used for all Graphiti calls.</p>
+
+    <label style="display:block; margin-bottom:4px; font-size:12px; color:rgba(255,255,255,.6);">Graphiti MCP endpoint</label>
+    <div class="field-row icon">
+      <span id="plugIcon"></span>
+      <input id="graphitiEndpointInput" class="mono" />
+    </div>
+    <p class="field hint">URL of your Graphiti MCP server (deployed externally in Dokploy). Used for every Graphiti call.</p>
+
+    <label style="display:block; margin-bottom:4px; margin-top:14px; font-size:12px; color:rgba(255,255,255,.6);">Episode verification timeout (seconds)</label>
+    <div class="field-row icon">
+      <span id="timeoutIcon"></span>
+      <input id="verifyTimeoutInput" type="number" min="10" step="10" class="mono" />
+    </div>
+    <p class="field hint">How long to wait for a queued episode to verifiably land in Graphiti before marking a source failed. Raise this if large documents (many chunks) or your LLM/embeddings backend routinely need longer. Default 300s (5 min); automatically doubled while a second source is indexing at the same time.</p>
+
+    <div class="conn-status-line" id="connStatusLine"></div>
+    <div class="saved-hint" id="connSavedHint"></div>
+
+    <div class="modal-actions">
+      <button class="btn" data-close="conn-settings">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveConnSettings">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- Icons (inline SVG, lucide-style — no CDN/network) -----------------
+  var ICONS = {
+    library: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>',
+    plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    "check-circle": '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+    "alert-triangle": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+    "file-question": '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9.1 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
+    "settings-2": '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+    "trash-2": '<path d="M3 6h18"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
+    pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
+    "file-up": '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M12 12v6"/><path d="m9 15 3-3 3 3"/>',
+    folder: '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>',
+    globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/><path d="M2 12h20"/>',
+    loader: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+    "refresh-cw": '<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>',
+    info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    "cloud-upload": '<path d="M12 13v8"/><path d="m8 17 4-4 4 4"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>',
+    "file-text": '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+    "plug-zap": '<path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z"/><path d="m2 22 3-3"/><path d="M7.5 13.5 10 11"/><path d="M10.5 16.5 13 14"/><path d="m18 3-4 4h6l-4 4"/>',
+    search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'
+  };
+  function icon(name, opts) {
+    opts = opts || {};
+    var size = opts.size || 14;
+    var cls = opts.className ? ' class="' + opts.className + '"' : "";
+    return '<svg' + cls + ' width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (ICONS[name] || "") + "</svg>";
+  }
+
+  // ---- DOM helpers ---------------------------------------------------------
+  var el = function (id) { return document.getElementById(id); };
+  function setHtml(id, html) { el(id).innerHTML = html; }
+  function on(idOrEl, evt, fn) { (typeof idOrEl === "string" ? el(idOrEl) : idOrEl).addEventListener(evt, fn); }
+
+  // Static icon slots.
+  setHtml("btnConnSettings", icon("settings-2"));
+  setHtml("emptyStateIcon", icon("library", { size: 26 }));
+  setHtml("btnNewKbEmpty", icon("plus") + " New knowledge base");
+  setHtml("btnNewKbSidebar", icon("plus") + " New knowledge base");
+  setHtml("closeAddSource", icon("x"));
+  setHtml("typeIconUpload", icon("file-up", { size: 18 }));
+  setHtml("typeIconDrive", icon("folder", { size: 18 }));
+  setHtml("typeIconWebsite", icon("globe", { size: 18 }));
+  setHtml("closeUpload", icon("x"));
+  setHtml("cloudUploadIcon", icon("cloud-upload", { size: 22, className: "tone-muted" }));
+  setHtml("closeGdrive", icon("x"));
+  setHtml("gdriveConnectedIcon", icon("check-circle", { className: "tone-good" }));
+  setHtml("folderFieldIcon", icon("folder", { className: "tone-muted" }));
+  setHtml("closeWebsite", icon("x"));
+  setHtml("closeConnSettings", icon("x"));
+  setHtml("plugIcon", icon("plug-zap", { className: "tone-progress" }));
+  setHtml("timeoutIcon", icon("clock", { className: "tone-progress" }));
+  setHtml("connSavedHint", icon("check-circle") + " Saved — applies immediately");
+
+  // ---- Backend base URL discovery ------------------------------------------
+  // Mirrors docs/dev/apps/services.md §11 — prefer the server-provided
+  // httpPath (present whenever a Supervisor fronts BOS; same-origin, no
+  // CORS concerns) and fall back to the worker's own OS-assigned port
+  // directly (plain `npm run dev`, no Supervisor in front).
+  var SERVICE_ID = "knowledge-base";
+  var apiBase = null; // resolved once, lazily, before the first call
+
+  function computeBaseUrl(cfg) {
+    if (cfg.httpPath) return location.origin + cfg.httpPath.replace(/\/$/, "");
+    if (cfg.runtime && cfg.runtime.port) return location.protocol + "//" + location.hostname + ":" + cfg.runtime.port;
+    return null;
+  }
+
+  async function fetchJson(url, opts) {
+    var res = await fetch(url, opts);
+    var raw = await res.text();
+    var body = null;
+    if (raw) {
+      try {
+        body = JSON.parse(raw);
+      } catch (e) {
+        console.error("[knowledge-base] non-JSON response body for " + url, { status: res.status, raw: raw, parseError: e.message });
+      }
+    }
+    if (!res.ok) throw new Error((body && body.error) || raw || (url + " -> HTTP " + res.status));
+    return body;
+  }
+
+  async function ensureBaseUrl() {
+    if (apiBase) return apiBase;
+    var cfg = await fetchJson("/api/services/" + encodeURIComponent(SERVICE_ID) + "/config");
+    apiBase = computeBaseUrl(cfg);
+    if (!apiBase) throw new Error("Service not bound yet — start it from Settings → Plugins → Services.");
+    return apiBase;
+  }
+
+  async function api(path, opts) {
+    var base = await ensureBaseUrl();
+    return fetchJson(base + path, opts);
+  }
+  function apiJson(method, path, body) {
+    return api(path, { method: method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  }
+
+  // ---- Application state ---------------------------------------------------
+  var state = { kbs: [], selectedKbId: null, detail: null, activeTab: "sources", addSourceKbId: null };
+
+  function selectedKb() {
+    return state.kbs.find(function (k) { return k.id === state.selectedKbId; });
+  }
+
+  // ---- Rendering -------------------------------------------------------------
+
+  function healthBadge(health) {
+    var toneClass = { neutral: "badge-neutral", good: "badge-good", warn: "badge-warn", progress: "badge-progress", bad: "badge-bad" }[health.tone] || "badge-neutral";
+    var iconName = { Empty: "file-question", Healthy: "check-circle", Indexing: "clock", "Needs attention": "alert-triangle" }[health.label] || "clock";
+    return '<span class="badge ' + toneClass + '">' + icon(iconName) + " " + health.label + "</span>";
+  }
+
+  function renderSidebar() {
+    if (state.kbs.length === 0) {
+      setHtml("kbList", '<p class="empty-list-note">No knowledge bases yet.</p>');
+      return;
+    }
+    var html = state.kbs.map(function (kb) {
+      var selected = kb.id === state.selectedKbId ? " selected" : "";
+      return (
+        '<button class="kb-item' + selected + '" data-kb="' + kb.id + '">' +
+        '<div class="kb-item-row">' + icon("library", { size: 15, className: "tone-progress" }) + '<span class="name">' + escapeHtml(kb.name) + "</span></div>" +
+        '<div class="kb-item-meta"><span class="count">' + kb.sourceCount + (kb.sourceCount === 1 ? " source" : " sources") + "</span>" + healthBadge(kb.health) + "</div>" +
+        "</button>"
+      );
+    }).join("");
+    setHtml("kbList", html);
+    document.querySelectorAll("#kbList .kb-item").forEach(function (node) {
+      node.addEventListener("click", function () { selectKb(node.getAttribute("data-kb")); });
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  var SOURCE_ICON = { upload: "file-up", drive: "folder", website: "globe", folder: "folder" };
+
+  var STATUS_META = {
+    pending: { label: "Pending", tone: "tone-muted", icon: "clock" },
+    indexing: { label: "Indexing", tone: "tone-progress", icon: "loader", spin: true },
+    crawling: { label: "Crawling", tone: "tone-progress", icon: "loader", spin: true },
+    connecting: { label: "Connecting", tone: "tone-progress", icon: "loader", spin: true },
+    indexed: { label: "Indexed", tone: "tone-good", icon: "check-circle" },
+    failed: { label: "Failed", tone: "tone-bad", icon: "alert-triangle" },
+    needs_reauth: { label: "Needs re-auth", tone: "tone-bad", icon: "alert-triangle" }
+  };
+
+  function fmtBytes(n) {
+    if (!n) return "0 B";
+    var units = ["B", "KB", "MB", "GB"];
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+  }
+
+  function sourceSubline(source) {
+    var stats = source.stats || {};
+    if (source.status === "indexing" || source.status === "crawling" || source.status === "connecting") {
+      if (stats.itemsTotal) return stats.itemsDone + " / " + stats.itemsTotal + (source.type === "website" ? " pages" : " items");
+      return source.type === "website" ? "Crawling…" : source.type === "drive" ? "Connecting…" : "Extracting & embedding…";
+    }
+    if (source.status === "indexed") {
+      var parts = [];
+      if (stats.episodes) parts.push(stats.episodes + " chunks");
+      if (source.type !== "upload" && stats.itemsTotal) parts.push(stats.itemsTotal + (source.type === "website" ? " pages" : " files"));
+      if (stats.sizeBytes) parts.push(fmtBytes(stats.sizeBytes));
+      if (source.lastSyncedAt) parts.push(timeAgo(source.lastSyncedAt));
+      return parts.join(" · ");
+    }
+    if (source.status === "failed") return source.statusMessage || "Failed";
+    return "";
+  }
+
+  function timeAgo(iso) {
+    var ms = Date.now() - new Date(iso).getTime();
+    var mins = Math.round(ms / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return mins + " min ago";
+    var hrs = Math.round(mins / 60);
+    if (hrs < 24) return hrs + " h ago";
+    return Math.round(hrs / 24) + " d ago";
+  }
+
+  function renderSourceCard(source) {
+    var meta = STATUS_META[source.status] || STATUS_META.pending;
+    var errorClass = source.status === "failed" || source.status === "needs_reauth" ? " error" : "";
+    var iconSpin = meta.spin ? " spin" : "";
+    var actions = "";
+    if (source.type === "drive" || source.type === "website" || source.type === "folder") {
+      actions += '<button class="btn btn-ghost" data-action="refresh" data-source="' + source.id + '" title="Refresh">' + icon("refresh-cw") + "</button>";
+    }
+    if (source.status === "failed" || source.status === "needs_reauth") {
+      actions += '<button class="btn" data-action="retry" data-source="' + source.id + '">Retry</button>';
+    }
+    actions += '<button class="btn btn-ghost" data-action="remove" data-source="' + source.id + '" title="Remove source">' + icon("trash-2") + "</button>";
+
+    return (
+      '<div class="source-card' + errorClass + '">' +
+      '<span class="source-icon">' + icon(SOURCE_ICON[source.type] || "file-text", { size: 18 }) + "</span>" +
+      '<div class="source-info"><div class="source-name">' + escapeHtml(source.name) + '</div><div class="source-ref">' + escapeHtml(source.reference) + "</div></div>" +
+      '<div class="source-status"><div class="source-status-line ' + meta.tone + '">' + icon(meta.icon, { className: iconSpin }) + " " + meta.label + '</div><div class="source-status-sub">' + escapeHtml(sourceSubline(source)) + "</div></div>" +
+      '<div class="source-actions">' + actions + "</div>" +
+      "</div>"
+    );
+  }
+
+  function renderSourcesTab(detail) {
+    var indexedCount = detail.sources.filter(function (s) { return s.status === "indexed"; }).length;
+    var summary = detail.sources.length === 0
+      ? "No sources yet."
+      : detail.sources.length + " source(s) · " + indexedCount + " of " + detail.sources.length + " fully indexed";
+    var cards = detail.sources.length === 0
+      ? '<p class="empty-note">Add a source to start indexing content into this knowledge base.</p>'
+      : detail.sources.map(renderSourceCard).join("");
+    return (
+      '<div class="panel-toprow"><p class="summary">' + summary + '</p>' +
+      '<button class="btn btn-primary" id="btnAddSource">' + icon("plus") + " Add source</button></div>" +
+      "<div>" + cards + "</div>"
+    );
+  }
+
+  var EVENT_ICON = { info: "info", success: "check-circle", warn: "alert-triangle", error: "alert-triangle" };
+
+  function renderHealthTab(detail) {
+    var h = detail.health;
+    var statGrid =
+      '<div class="stat-grid">' +
+      '<div class="stat-card"><div class="label">Indexed</div><div class="value tone-good">' + h.indexed + '</div><div class="sub">of ' + h.total + " sources</div></div>" +
+      '<div class="stat-card"><div class="label">In progress</div><div class="value tone-progress">' + h.inProgress + '</div><div class="sub">indexing / crawling</div></div>' +
+      '<div class="stat-card' + (h.failed > 0 ? " warn" : "") + '"><div class="label">Needs attention</div><div class="value" style="color:' + (h.failed > 0 ? "#fde68a" : "#fff") + '">' + h.failed + '</div><div class="sub">actionable error' + (h.failed === 1 ? "" : "s") + "</div></div>" +
+      "</div>";
+
+    var events = h.events.length === 0
+      ? '<p class="empty-note">No health events yet.</p>'
+      : h.events.map(function (e) {
+          var cardClass = e.level === "error" || e.level === "warn" ? " error" : e.level === "success" ? " success" : "";
+          var iconTone = e.level === "error" || e.level === "warn" ? "tone-bad" : e.level === "success" ? "tone-good" : "tone-progress";
+          var actions = "";
+          if (e.level === "error" && e.sourceId) {
+            actions =
+              '<div class="evt-actions">' +
+              '<button class="btn" data-action="retry" data-source="' + e.sourceId + '">Retry</button>' +
+              '<button class="btn" data-action="replace" data-source="' + e.sourceId + '">Replace file</button>' +
+              '<button class="btn" data-action="remove" data-source="' + e.sourceId + '">Remove source</button>' +
+              "</div>";
+          }
+          return (
+            '<div class="event-card' + cardClass + '"><span class="evt-icon ' + iconTone + '">' + icon(EVENT_ICON[e.level] || "info") + "</span>" +
+            '<div class="evt-body"><div class="evt-toprow"><span class="evt-title">' + escapeHtml(e.title) + '</span><span class="evt-time">' + timeAgo(e.at) + "</span></div>" +
+            '<p class="evt-msg">' + escapeHtml(e.message) + "</p>" + actions + "</div></div>"
+          );
+        }).join("");
+
+    return statGrid + events;
+  }
+
+  function renderDetail() {
+    var kb = selectedKb();
+    if (!kb || !state.detail) {
+      setHtml("detailPane", '<div class="detail-placeholder">Select a knowledge base on the left to open its sources and ingestion health.</div>');
+      return;
+    }
+    var detail = state.detail;
+    var panelHtml = state.activeTab === "health" ? renderHealthTab(detail) : renderSourcesTab(detail);
+
+    setHtml(
+      "detailPane",
+      '<div class="detail-header">' +
+        '<div class="detail-title">' + icon("library", { size: 16, className: "tone-progress" }) + '<span class="name">' + escapeHtml(kb.name) + '</span><span class="kbid mono">' + escapeHtml(kb.id) + "</span></div>" +
+        '<div class="detail-actions">' +
+        '<button class="btn" id="btnRenameKb">' + icon("pencil") + " Rename</button>" +
+        '<button class="btn btn-danger" id="btnDeleteKb">' + icon("trash-2") + " Delete</button>" +
+        "</div></div>" +
+        '<div class="tabs">' +
+        '<button class="tab' + (state.activeTab === "sources" ? " active" : "") + '" data-tab="sources">Sources</button>' +
+        '<button class="tab' + (state.activeTab === "health" ? " active" : "") + '" data-tab="health">Health</button>' +
+        "</div>" +
+        '<div class="tab-panel">' + panelHtml + "</div>",
+    );
+
+    document.querySelectorAll("#detailPane .tab").forEach(function (t) {
+      t.addEventListener("click", function () { state.activeTab = t.getAttribute("data-tab"); renderDetail(); });
+    });
+    on("btnRenameKb", "click", function () { openRenameModal(kb); });
+    on("btnDeleteKb", "click", function () { deleteKb(kb); });
+    var addBtn = el("btnAddSource");
+    if (addBtn) addBtn.addEventListener("click", function () { openAddSource(kb); });
+
+    document.querySelectorAll('[data-action="refresh"]').forEach(function (b) { b.addEventListener("click", function () { sourceAction("refresh", b.getAttribute("data-source")); }); });
+    document.querySelectorAll('[data-action="retry"]').forEach(function (b) { b.addEventListener("click", function () { sourceAction("retry", b.getAttribute("data-source")); }); });
+    document.querySelectorAll('[data-action="remove"]').forEach(function (b) { b.addEventListener("click", function () { removeSource(b.getAttribute("data-source")); }); });
+    document.querySelectorAll('[data-action="replace"]').forEach(function (b) { b.addEventListener("click", function () { replaceSourceFile(b.getAttribute("data-source")); }); });
+  }
+
+  function render() {
+    if (state.kbs.length === 0) {
+      el("emptyState").classList.remove("hidden");
+      el("mainLayout").classList.add("hidden");
+      return;
+    }
+    el("emptyState").classList.add("hidden");
+    el("mainLayout").classList.remove("hidden");
+    renderSidebar();
+    renderDetail();
+  }
+
+  // ---- Data loading ----------------------------------------------------------
+
+  async function loadKbs() {
+    var res = await api("/api/kbs");
+    state.kbs = res.kbs;
+    if (state.selectedKbId && !state.kbs.some(function (k) { return k.id === state.selectedKbId; })) {
+      state.selectedKbId = null;
+      state.detail = null;
+    }
+  }
+
+  async function loadDetail(kbId) {
+    state.detail = await api("/api/kbs/" + encodeURIComponent(kbId));
+  }
+
+  async function selectKb(kbId) {
+    state.selectedKbId = kbId;
+    state.activeTab = "sources";
+    render();
+    await loadDetail(kbId);
+    render();
+  }
+
+  async function refreshAll() {
+    try {
+      await loadKbs();
+      if (state.selectedKbId) await loadDetail(state.selectedKbId);
+      render();
+    } catch (err) {
+      console.error("[knowledge-base] refresh failed", err);
+    }
+  }
+
+  // ---- Modal plumbing ----------------------------------------------------
+
+  function openModal(name) { el("modal-" + name).classList.add("active"); }
+  function closeModal(name) { el("modal-" + name).classList.remove("active"); }
+  document.querySelectorAll("[data-close]").forEach(function (b) {
+    b.addEventListener("click", function () { closeModal(b.getAttribute("data-close")); });
+  });
+  document.querySelectorAll(".modal-overlay").forEach(function (overlay) {
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) overlay.classList.remove("active"); });
+  });
+
+  // ---- New KB / Rename -----------------------------------------------------
+
+  var renameTargetId = null;
+
+  function openNewKbModal() {
+    renameTargetId = null;
+    el("newKbTitle").textContent = "New knowledge base";
+    el("newKbSubtitle").textContent = "A named collection of content your agents can query.";
+    el("newKbName").value = "";
+    el("newKbDescription").value = "";
+    el("newKbError").classList.add("hidden");
+    el("btnCreateKb").textContent = "Create";
+    openModal("new-kb");
+  }
+
+  function openRenameModal(kb) {
+    renameTargetId = kb.id;
+    el("newKbTitle").textContent = "Rename knowledge base";
+    el("newKbSubtitle").textContent = "Renaming keeps this knowledge base's content and id.";
+    el("newKbName").value = kb.name;
+    el("newKbDescription").value = kb.description || "";
+    el("newKbError").classList.add("hidden");
+    el("btnCreateKb").textContent = "Save";
+    openModal("new-kb");
+  }
+
+  on("btnNewKbEmpty", "click", openNewKbModal);
+  on("btnNewKbSidebar", "click", openNewKbModal);
+
+  on("btnCreateKb", "click", async function () {
+    var name = el("newKbName").value.trim();
+    var description = el("newKbDescription").value.trim();
+    if (!name) { showError("newKbError", "Name is required."); return; }
+    try {
+      if (renameTargetId) {
+        await apiJson("PATCH", "/api/kbs/" + encodeURIComponent(renameTargetId), { name: name, description: description });
+      } else {
+        var created = await apiJson("POST", "/api/kbs", { name: name, description: description });
+        state.selectedKbId = created.kb.id;
+      }
+      closeModal("new-kb");
+      await refreshAll();
+      if (state.selectedKbId) await selectKb(state.selectedKbId);
+    } catch (err) {
+      showError("newKbError", err.message);
+    }
+  });
+
+  function showError(id, message) {
+    var node = el(id);
+    node.textContent = message;
+    node.classList.remove("hidden");
+  }
+
+  async function deleteKb(kb) {
+    if (!confirm('Delete "' + kb.name + '"? Its sources and index will be removed. This cannot be undone.')) return;
+    await api("/api/kbs/" + encodeURIComponent(kb.id), { method: "DELETE" });
+    state.selectedKbId = null;
+    state.detail = null;
+    await refreshAll();
+  }
+
+  // ---- Add source chooser -------------------------------------------------
+
+  function openAddSource(kb) {
+    state.addSourceKbId = kb.id;
+    el("addSourceKbName").textContent = kb.name;
+    openModal("add-source");
+  }
+
+  document.querySelectorAll("[data-open]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      closeModal("add-source");
+      var target = b.getAttribute("data-open");
+      if (target === "upload") openUploadModal();
+      if (target === "gdrive") openDriveModal();
+      if (target === "website") openWebsiteModal();
+    });
+  });
+
+  // ---- Upload flow ----------------------------------------------------------
+
+  var stagedFiles = []; // { name, status: 'uploading'|'indexed'|'indexing'|'failed', message? }
+
+  function renderStagedFiles() {
+    var html = stagedFiles.map(function (f) {
+      var meta = { uploading: ["loader", "tone-progress", "Uploading…"], indexing: ["loader", "tone-progress", "Indexing"], indexed: ["check-circle", "tone-good", "Indexed"], failed: ["alert-triangle", "tone-bad", f.message || "Failed"] }[f.status];
+      var spin = f.status === "uploading" || f.status === "indexing" ? " spin" : "";
+      return (
+        '<div class="staged-file">' + icon("file-text", { className: "tone-muted" }) + '<span class="name">' + escapeHtml(f.name) + '</span>' +
+        '<span class="status ' + meta[1] + '">' + icon(meta[0], { className: spin }) + " " + meta[2] + "</span></div>"
+      );
+    }).join("");
+    setHtml("stagedFiles", html);
+  }
+
+  function openUploadModal() {
+    var kb = state.kbs.find(function (k) { return k.id === state.addSourceKbId; });
+    el("uploadKbName").textContent = kb ? kb.name : "";
+    stagedFiles = [];
+    renderStagedFiles();
+    el("fileInput").value = "";
+    el("folderInput").value = "";
+    el("uploadDropError").classList.add("hidden");
+    openModal("upload");
+  }
+
+  on("dropzone", "click", function () { el("fileInput").click(); });
+  on("dropzone", "dragenter", function (e) {
+    e.preventDefault();
+    // dropEffect must be set (not just preventDefault) for some browser/OS
+    // combinations to treat the dropzone as a valid drop target at all —
+    // without it, the drag cursor shows "not allowed" and "drop" never
+    // fires, which looks exactly like "no files are accepted".
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    el("dropzone").classList.add("drag-active");
+  });
+  on("dropzone", "dragover", function (e) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  });
+  on("dropzone", "dragleave", function () { el("dropzone").classList.remove("drag-active"); });
+  on("dropzone", "drop", function (e) {
+    e.preventDefault();
+    el("dropzone").classList.remove("drag-active");
+    handleDrop(e.dataTransfer);
+  });
+  on("fileInput", "change", function (e) { handleFiles(e.target.files); e.target.value = ""; });
+  on("folderInput", "change", function (e) { handleFolderFileList(e.target.files); e.target.value = ""; });
+  // The link lives inside the dropzone, which has its own "click" listener
+  // (opens the *file* picker) — without stopping propagation here, clicking
+  // this link would open both pickers at once.
+  on("browseFolderLink", "click", function (e) { e.stopPropagation(); el("folderInput").click(); });
+
+  // Reads the FileSystemEntry API synchronously off `dt.items` (required —
+  // DataTransferItems are only valid for the duration of this task; the
+  // FileSystemEntry/File objects they hand back remain valid afterward, which
+  // is what makes the async walk below safe) so both plain files AND dropped
+  // folders are recognized. Falls back to getAsFile()/.files for browsers
+  // without webkitGetAsEntry (older Safari) or drag sources that only
+  // populate .items (not .files) at drop time — either way, a real dropped
+  // file must never fall through to the "unreadable" error below.
+  function handleDrop(dt) {
+    var fileEntries = []; // FileSystemFileEntry
+    var dirEntries = [];  // FileSystemDirectoryEntry
+    var plainFiles = [];  // File — no entry API support, or a .files-only DataTransfer
+
+    if (dt && dt.items && dt.items.length) {
+      for (var i = 0; i < dt.items.length; i++) {
+        var item = dt.items[i];
+        if (item.kind !== "file") continue;
+        var fsEntry = typeof item.webkitGetAsEntry === "function" ? item.webkitGetAsEntry() : null;
+        if (fsEntry && fsEntry.isDirectory) { dirEntries.push(fsEntry); continue; }
+        if (fsEntry && fsEntry.isFile) { fileEntries.push(fsEntry); continue; }
+        var f = item.getAsFile();
+        if (f) plainFiles.push(f);
+      }
+    } else if (dt && dt.files && dt.files.length) {
+      plainFiles = Array.prototype.slice.call(dt.files);
+    }
+
+    if (fileEntries.length === 0 && dirEntries.length === 0 && plainFiles.length === 0) {
+      // A drop that yields zero files/folders is otherwise a silent no-op —
+      // nothing renders, nothing logs, and the user has no way to tell a
+      // real file drag from an empty/unsupported one (e.g. a browser or OS
+      // drag source that only exposes a text/uri-list, not a File). Surface
+      // it instead of swallowing it.
+      console.error("[knowledge-base] drop event carried no readable files", { types: dt && dt.types });
+      showError("uploadDropError", "That drop didn't contain a readable file — try the “browse” link instead.");
+      return;
+    }
+    el("uploadDropError").classList.add("hidden");
+
+    if (fileEntries.length) {
+      Promise.all(fileEntries.map(entryToFile)).then(handleFiles).catch(function (err) {
+        console.error("[knowledge-base] failed to read one or more dropped files", err);
+        showError("uploadDropError", "Failed to read a dropped file: " + err.message);
+      });
+    }
+    if (plainFiles.length) handleFiles(plainFiles);
+    dirEntries.forEach(ingestDroppedFolder);
+  }
+
+  function entryToFile(entry) {
+    return new Promise(function (resolve, reject) { entry.file(resolve, reject); });
+  }
+
+  // DirectoryReader.readEntries() returns AT MOST 100 entries per call and
+  // must be called repeatedly until it comes back empty — a single call is
+  // the easy mistake that silently truncates any folder over 100 entries.
+  function readAllEntries(reader) {
+    var all = [];
+    function next() {
+      return new Promise(function (resolve, reject) { reader.readEntries(resolve, reject); }).then(function (batch) {
+        if (batch.length === 0) return all;
+        all = all.concat(batch);
+        return next();
+      });
+    }
+    return next();
+  }
+
+  /** Recursively resolves a dropped/selected directory entry into a flat
+   *  list of { relativePath, file } — relativePath includes the top-level
+   *  folder name (e.g. "MyFolder/sub/a.txt"), matching webkitRelativePath's
+   *  shape from the <input webkitdirectory> path below. */
+  function walkDirectoryEntry(entry, prefix) {
+    if (entry.isFile) {
+      return entryToFile(entry).then(function (file) { return [{ relativePath: prefix + entry.name, file: file }]; });
+    }
+    var reader = entry.createReader();
+    return readAllEntries(reader).then(function (children) {
+      return children.reduce(function (chain, child) {
+        return chain.then(function (acc) {
+          return walkDirectoryEntry(child, prefix + entry.name + "/").then(function (sub) { return acc.concat(sub); });
+        });
+      }, Promise.resolve([]));
+    });
+  }
+
+  async function ingestDroppedFolder(dirEntry) {
+    try {
+      var files = await walkDirectoryEntry(dirEntry, "");
+      await ingestFolder(dirEntry.name, files);
+    } catch (err) {
+      console.error("[knowledge-base] failed to read dropped folder \"" + dirEntry.name + "\"", err);
+      showError("uploadDropError", "Failed to read folder “" + dirEntry.name + "”: " + err.message);
+    }
+  }
+
+  // <input webkitdirectory> gives one flat FileList for the whole selected
+  // folder; each File's .webkitRelativePath already includes the top-level
+  // folder name (e.g. "MyFolder/sub/a.txt"), same shape walkDirectoryEntry
+  // produces for a drag-dropped folder — both funnel into ingestFolder().
+  function handleFolderFileList(fileList) {
+    var files = Array.prototype.slice.call(fileList);
+    if (!files.length) return;
+    var folderName = (files[0].webkitRelativePath || files[0].name).split("/")[0];
+    var mapped = files.map(function (f) { return { relativePath: f.webkitRelativePath || f.name, file: f }; });
+    ingestFolder(folderName, mapped);
+  }
+
+  function posixDirname(p) {
+    var idx = p.lastIndexOf("/");
+    return idx === -1 ? "" : p.slice(0, idx);
+  }
+
+  async function handleFiles(fileList) {
+    var kbId = state.addSourceKbId;
+    var files = Array.prototype.slice.call(fileList);
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+      var entry = { name: file.name, status: "uploading" };
+      stagedFiles.push(entry);
+      renderStagedFiles();
+      try {
+        var form = new FormData();
+        form.append("path", "/KnowledgeBase/" + kbId);
+        form.append("files", file);
+        var uploadRes = await fetch("/api/fs/upload", { method: "POST", body: form });
+        var uploadBody = await uploadRes.json();
+        if (!uploadRes.ok || !uploadBody.uploaded || !uploadBody.uploaded[0]) throw new Error(uploadBody.error || "upload failed");
+        entry.status = "indexing";
+        renderStagedFiles();
+        var created = await apiJson("POST", "/api/kbs/" + encodeURIComponent(kbId) + "/sources/upload", { vfsPath: uploadBody.uploaded[0], name: file.name });
+        watchSourceOutcome(kbId, created.source.id, entry);
+      } catch (err) {
+        console.error("[knowledge-base] upload failed for \"" + file.name + "\"", err);
+        entry.status = "failed";
+        entry.message = err.message;
+      }
+      renderStagedFiles();
+    }
+    await refreshAll();
+  }
+
+  // One folder = one source (038 addition — folder-as-source): every file is
+  // uploaded into the VFS under one generated root path, preserving the
+  // folder's relative structure via one /api/fs/upload call per subfolder
+  // (that route only ever writes a flat basename into whatever `path` you
+  // give it — nested structure comes from calling it once per distinct
+  // directory, not from the filename). Once every file has landed, a single
+  // "folder" source is created pointing at that root — the pipeline's
+  // lib/sources/folder.js walks it the same way lib/sources/drive.js walks a
+  // Drive folder.
+  async function ingestFolder(folderName, files) {
+    var kbId = state.addSourceKbId;
+    if (!files.length) return;
+    var slug = folderName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 60) || "folder";
+    var rootPath = "/KnowledgeBase/" + kbId + "/" + slug + "_" + Math.random().toString(36).slice(2, 8);
+    var entry = { name: folderName + "/", status: "uploading" };
+    stagedFiles.push(entry);
+    renderStagedFiles();
+    try {
+      for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        var dir = rootPath + "/" + posixDirname(f.relativePath);
+        var form = new FormData();
+        form.append("path", dir);
+        form.append("files", f.file);
+        var uploadRes = await fetch("/api/fs/upload", { method: "POST", body: form });
+        var uploadBody = await uploadRes.json();
+        if (!uploadRes.ok || !uploadBody.uploaded || !uploadBody.uploaded[0]) {
+          throw new Error((uploadBody && uploadBody.error) || ("failed to upload \"" + f.relativePath + "\""));
+        }
+      }
+      entry.status = "indexing";
+      renderStagedFiles();
+      var created = await apiJson("POST", "/api/kbs/" + encodeURIComponent(kbId) + "/sources/folder", { vfsPath: rootPath, name: folderName });
+      watchSourceOutcome(kbId, created.source.id, entry);
+    } catch (err) {
+      console.error("[knowledge-base] folder upload failed for \"" + folderName + "\"", err);
+      entry.status = "failed";
+      entry.message = err.message;
+    }
+    renderStagedFiles();
+    await refreshAll();
+  }
+
+  // The upload call above only confirms the source was *enqueued* — the actual
+  // extract/chunk/add_episode work happens async server-side. Without this,
+  // a staged file's status freezes at "indexing" forever even when ingestion
+  // fails immediately, since nothing ever re-checks it. Poll briefly so the
+  // spinner reflects the real outcome instead.
+  function watchSourceOutcome(kbId, sourceId, entry) {
+    var attempts = 0;
+    // ~10min at 2s intervals — the server verifies each episode actually
+    // landed in Graphiti (polling get_episodes up to the operator-configured
+    // episodeVerifyTimeoutSeconds, default 300s/5min, up to 2x under
+    // concurrent ingestion jobs — see services/lib/graphiti.js's
+    // waitForEpisode and services/lib/pipeline.js's verifyTimeoutMs) before
+    // marking a source indexed/failed, so this must comfortably outlast that
+    // window, not just catch an immediate failure. If this gives up first,
+    // the main source list (refreshAll's own 3s poll) still picks up the
+    // real outcome once it lands — only this modal's spinner goes stale.
+    var pollIntervalMs = 2000;
+    var maxAttempts = 300;
+    (function tick() {
+      if (stagedFiles.indexOf(entry) === -1) return; // upload modal was closed/reset
+      attempts++;
+      api("/api/kbs/" + encodeURIComponent(kbId)).then(function (detail) {
+        if (stagedFiles.indexOf(entry) === -1) return;
+        var source = (detail.sources || []).find(function (s) { return s.id === sourceId; });
+        if (!source) return;
+        if (source.status === "indexed") {
+          entry.status = "indexed";
+          renderStagedFiles();
+        } else if (source.status === "failed" || source.status === "needs_reauth") {
+          entry.status = "failed";
+          entry.message = source.statusMessage || "Failed";
+          renderStagedFiles();
+        } else if (attempts < maxAttempts) {
+          setTimeout(tick, pollIntervalMs);
+        }
+      }).catch(function (err) {
+        if (attempts < maxAttempts) {
+          setTimeout(tick, pollIntervalMs);
+        } else {
+          console.error("[knowledge-base] gave up watching outcome for source \"" + sourceId + "\"", err);
+        }
+      });
+    })();
+  }
+
+  async function replaceSourceFile(sourceId) {
+    var kb = selectedKb();
+    if (!kb || !state.detail) return;
+    var source = state.detail.sources.find(function (s) { return s.id === sourceId; });
+    if (!source) return;
+    var input = document.createElement("input");
+    input.type = "file";
+    input.onchange = async function () {
+      var file = input.files[0];
+      if (!file) return;
+      try {
+        var form = new FormData();
+        form.append("path", "/KnowledgeBase/" + kb.id);
+        form.append("files", file);
+        var uploadRes = await fetch("/api/fs/upload", { method: "POST", body: form });
+        var uploadBody = await uploadRes.json();
+        if (!uploadRes.ok || !uploadBody.uploaded || !uploadBody.uploaded[0]) throw new Error(uploadBody.error || "upload failed");
+        await api("/api/sources/" + encodeURIComponent(sourceId), { method: "DELETE" });
+        await apiJson("POST", "/api/kbs/" + encodeURIComponent(kb.id) + "/sources/upload", { vfsPath: uploadBody.uploaded[0], name: file.name });
+        await refreshAll();
+      } catch (err) {
+        console.error("[knowledge-base] failed to replace file for source \"" + sourceId + "\"", err);
+        alert("Failed to replace file: " + err.message);
+      }
+    };
+    input.click();
+  }
+
+  // ---- Google Drive flow ----------------------------------------------------
+
+  var driveSelectedFolder = null;
+
+  async function openDriveModal() {
+    driveSelectedFolder = null;
+    el("gdriveFolderPicker").classList.add("hidden");
+    el("folderList").classList.add("hidden");
+    el("gdriveError").classList.add("hidden");
+    el("btnAddFolder").disabled = true;
+    openModal("gdrive");
+    await refreshDriveConnection();
+  }
+
+  async function refreshDriveConnection() {
+    try {
+      var status = await api("/api/drive/status");
+      if (status.connected) {
+        el("gdriveConnected").classList.remove("hidden");
+        el("gdriveDisconnected").classList.add("hidden");
+        el("gdriveEmail").textContent = "Connected" + (status.email ? " as " + status.email : "");
+        el("gdriveFolderPicker").classList.remove("hidden");
+      } else {
+        el("gdriveConnected").classList.add("hidden");
+        el("gdriveDisconnected").classList.remove("hidden");
+        el("gdriveFolderPicker").classList.add("hidden");
+      }
+    } catch (err) {
+      showError("gdriveError", err.message);
+    }
+  }
+
+  function startDriveOAuth() {
+    var scopes = "https://www.googleapis.com/auth/drive.readonly";
+    var url = "/api/integrations/oauth/start?integrationId=gsuite&scopes=" + encodeURIComponent(scopes) + "&browserOrigin=" + encodeURIComponent(location.origin);
+    fetchJson(url).then(function (res) {
+      var popup = window.open(res.authUrl, "kb-gdrive-oauth", "width=520,height=680");
+      var poll = setInterval(function () {
+        if (popup && popup.closed) {
+          clearInterval(poll);
+          refreshDriveConnection();
+        }
+      }, 800);
+    }).catch(function (err) { showError("gdriveError", err.message); });
+  }
+
+  on("btnConnectDrive", "click", startDriveOAuth);
+  on("btnReconnectDrive", "click", startDriveOAuth);
+
+  on("btnBrowseFolders", "click", async function () {
+    var list = el("folderList");
+    try {
+      var res = await api("/api/drive/folders");
+      if (res.folders.length === 0) {
+        list.innerHTML = '<div class="folder-row" style="color:rgba(255,255,255,.4); cursor:default;">No folders found.</div>';
+      } else {
+        list.innerHTML = res.folders.map(function (f) {
+          return '<div class="folder-row" data-id="' + f.id + '" data-name="' + escapeHtml(f.name) + '">' + icon("folder", { className: "tone-progress" }) + " " + escapeHtml(f.name) + "</div>";
+        }).join("");
+        list.querySelectorAll(".folder-row[data-id]").forEach(function (row) {
+          row.addEventListener("click", function () {
+            list.querySelectorAll(".folder-row").forEach(function (r) { r.classList.remove("selected"); });
+            row.classList.add("selected");
+            driveSelectedFolder = { id: row.getAttribute("data-id"), name: row.getAttribute("data-name") };
+            el("gdriveFolderName").value = driveSelectedFolder.name;
+            el("btnAddFolder").disabled = false;
+          });
+        });
+      }
+      list.classList.remove("hidden");
+    } catch (err) {
+      showError("gdriveError", err.message);
+    }
+  });
+
+  on("btnAddFolder", "click", async function () {
+    if (!driveSelectedFolder) return;
+    try {
+      await apiJson("POST", "/api/kbs/" + encodeURIComponent(state.addSourceKbId) + "/sources/drive", {
+        folderId: driveSelectedFolder.id,
+        folderName: driveSelectedFolder.name,
+      });
+      closeModal("gdrive");
+      await refreshAll();
+    } catch (err) {
+      showError("gdriveError", err.message);
+    }
+  });
+
+  // ---- Website flow -----------------------------------------------------
+
+  function openWebsiteModal() {
+    var kb = state.kbs.find(function (k) { return k.id === state.addSourceKbId; });
+    el("websiteKbName").textContent = kb ? kb.name : "";
+    el("websiteUrl").value = "";
+    el("websiteMaxDepth").value = 4;
+    el("websitePageLimit").value = 200;
+    el("websiteError").classList.add("hidden");
+    openModal("website");
+  }
+
+  on("btnStartCrawl", "click", async function () {
+    var url = el("websiteUrl").value.trim();
+    if (!url) { showError("websiteError", "Website URL is required."); return; }
+    try {
+      await apiJson("POST", "/api/kbs/" + encodeURIComponent(state.addSourceKbId) + "/sources/website", {
+        url: url,
+        maxDepth: Number(el("websiteMaxDepth").value) || undefined,
+        pageLimit: Number(el("websitePageLimit").value) || undefined,
+      });
+      closeModal("website");
+      await refreshAll();
+    } catch (err) {
+      showError("websiteError", err.message);
+    }
+  });
+
+  // ---- Source actions ------------------------------------------------------
+
+  async function sourceAction(action, sourceId) {
+    await api("/api/sources/" + encodeURIComponent(sourceId) + "/" + action, { method: "POST" });
+    await refreshAll();
+  }
+
+  async function removeSource(sourceId) {
+    if (!confirm("Remove this source? Its indexed content will be removed from the knowledge base.")) return;
+    await api("/api/sources/" + encodeURIComponent(sourceId), { method: "DELETE" });
+    await refreshAll();
+  }
+
+  // ---- Connection settings (Graphiti MCP endpoint, FR-014) -----------------
+
+  on("btnConnSettings", "click", openConnSettings);
+
+  async function openConnSettings() {
+    el("connSavedHint").classList.remove("show");
+    el("connStatusLine").textContent = "";
+    openModal("conn-settings");
+    try {
+      var cfg = await fetchJson("/api/services/" + encodeURIComponent(SERVICE_ID) + "/config");
+      var own = (cfg.configFiles || []).find(function (f) { return f.name === SERVICE_ID; });
+      el("graphitiEndpointInput").value = (own && own.values && own.values.graphitiEndpoint) || "http://127.0.0.1:8020/mcp/";
+      el("verifyTimeoutInput").value = (own && own.values && own.values.episodeVerifyTimeoutSeconds) || 300;
+    } catch (err) {
+      console.error("[knowledge-base] failed to load current Graphiti endpoint — showing default", err);
+      el("graphitiEndpointInput").value = "http://127.0.0.1:8020/mcp/";
+      el("verifyTimeoutInput").value = 300;
+    }
+    checkGraphitiConnection();
+  }
+
+  async function checkGraphitiConnection() {
+    var line = el("connStatusLine");
+    line.innerHTML = icon("loader", { className: "spin tone-progress" }) + " Checking connection…";
+    try {
+      var res = await api("/api/graphiti/status");
+      if (res.connected) {
+        line.innerHTML = icon("check-circle", { className: "tone-good" }) + ' <span class="tone-good">Connected</span>';
+      } else {
+        line.innerHTML = icon("alert-triangle", { className: "tone-bad" }) + ' <span class="tone-bad">Unreachable — ' + escapeHtml(res.error || "check the endpoint") + "</span>";
+      }
+    } catch (err) {
+      console.error("[knowledge-base] failed to check Graphiti connection", err);
+      line.innerHTML = icon("alert-triangle", { className: "tone-bad" }) + ' <span class="tone-bad">' + escapeHtml(err.message) + "</span>";
+    }
+  }
+
+  on("btnSaveConnSettings", "click", async function () {
+    var value = el("graphitiEndpointInput").value.trim();
+    if (!value) return;
+    var timeoutValue = Number(el("verifyTimeoutInput").value);
+    if (!Number.isFinite(timeoutValue) || timeoutValue <= 0) timeoutValue = 300;
+    try {
+      await fetchJson("/api/services/" + encodeURIComponent(SERVICE_ID) + "/config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: SERVICE_ID, patch: { graphitiEndpoint: value, episodeVerifyTimeoutSeconds: timeoutValue } }),
+      });
+      el("connSavedHint").classList.add("show");
+      setTimeout(checkGraphitiConnection, 300);
+    } catch (err) {
+      console.error("[knowledge-base] failed to save Graphiti endpoint", err);
+      alert("Failed to save: " + err.message);
+    }
+  });
+
+  // ---- Boot + polling --------------------------------------------------------
+
+  refreshAll();
+  setInterval(refreshAll, 3000);
+})();
+</script>
+</body>
+</html>

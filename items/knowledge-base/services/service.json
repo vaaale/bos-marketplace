@@ -1,0 +1,43 @@
+{
+  "id": "knowledge-base",
+  "name": "Knowledge Base",
+  "version": "1.0.0",
+  "description": "Create and manage knowledge bases (uploaded documents, Google Drive folders, websites); ingests content into a Graphiti knowledge graph and exposes kb_search/kb_retrieve tools to agents over MCP.",
+  "entry": "index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "port": {
+        "type": "number",
+        "default": 0,
+        "title": "Port",
+        "description": "HTTP port for the config UI bridge + MCP endpoint — 0 lets the OS assign one automatically (recommended, see docs/dev/apps/services.md §3)."
+      },
+      "host": {
+        "type": "string",
+        "default": "127.0.0.1",
+        "title": "Host",
+        "description": "Interface to bind."
+      },
+      "graphitiEndpoint": {
+        "type": "string",
+        "default": "http://127.0.0.1:8020/mcp/",
+        "title": "Graphiti MCP endpoint",
+        "description": "URL of your Graphiti MCP server, deployed externally (e.g. in Dokploy). Used for every Graphiti call. Editable in the config page — takes effect immediately, no reinstall needed."
+      },
+      "episodeVerifyTimeoutSeconds": {
+        "type": "number",
+        "default": 300,
+        "title": "Episode verification timeout (seconds)",
+        "description": "How long to wait for a queued episode to verifiably land in Graphiti (post-queue polling of get_episodes) before marking the source failed. Default 300s (5 min) — raise this if large chunked documents or your LLM/embeddings backend routinely need longer. Automatically scaled up (to at most 2x) while multiple sources are indexing concurrently, since they contend for the same Graphiti/LLM backend. Editable in the config page — takes effect immediately, no reinstall needed."
+      }
+    }
+  },
+  "dependencies": [],
+  "settingsRegistration": {
+    "label": "Knowledge Base",
+    "icon": "library",
+    "order": 150,
+    "configApp": "config/config.html"
+  }
+}

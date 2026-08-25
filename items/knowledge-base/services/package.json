@@ -1,0 +1,18 @@
+{
+  "name": "knowledge-base-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Worker-thread daemon for the Knowledge Base marketplace item (038-knowledge-base): ingestion pipeline, Graphiti MCP client, and the kb_search/kb_retrieve MCP server exposed to BOS agents.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "cheerio": "^1.2.0",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
+    "xlsx": "^0.18.5"
+  }
+}

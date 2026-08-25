@@ -1,0 +1,837 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OKF Knowledge Base — service config</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #151a22;
+    --panel-2: #1b2129;
+    --border: #262d38;
+    --text: #e6e9ef;
+    --text-dim: #8b93a3;
+    --accent: #4f8cff;
+    --accent-dim: #2a3f66;
+    --danger: #ff6b6b;
+    --warn: #f5b942;
+    --ok: #4fd48c;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+  header .subtitle { color: var(--text-dim); font-weight: 400; }
+  main { padding: 20px; max-width: 980px; margin: 0 auto; }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 14px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.danger { border-color: var(--danger); color: var(--danger); background: transparent; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  a.link-btn { color: var(--accent); cursor: pointer; text-decoration: none; }
+  a.link-btn:hover { text-decoration: underline; }
+
+  .empty-state {
+    text-align: center; padding: 80px 20px; color: var(--text-dim);
+    border: 1px dashed var(--border); border-radius: 10px; margin-top: 40px;
+  }
+  .empty-state h2 { color: var(--text); font-size: 16px; margin: 0 0 8px; }
+  .empty-state .actions { margin-top: 20px; display: flex; gap: 10px; justify-content: center; }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--text-dim); padding: 8px 10px; border-bottom: 1px solid var(--border);
+  }
+  tbody td { padding: 10px; border-bottom: 1px solid var(--border); }
+  tbody tr:hover { background: var(--panel-2); cursor: pointer; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid var(--border);
+  }
+  .panel-header h2 { margin: 0; font-size: 14px; }
+  .panel-body { padding: 4px 16px 16px; }
+
+  .toolbar { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; }
+  .toolbar .spacer { flex: 1; }
+  .crumb { color: var(--text-dim); cursor: pointer; }
+  .crumb:hover { color: var(--accent); }
+
+  .stat-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+  .stat-card {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .stat-card .value { font-size: 24px; font-weight: 600; }
+  .stat-card .label { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+  .tab { padding: 8px 14px; color: var(--text-dim); cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  .trust-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .trust-unverified { background: var(--text-dim); }
+  .trust-machine-confirmed { background: var(--warn); }
+  .trust-human-reviewed { background: var(--ok); }
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+    border: 1px solid var(--border); color: var(--text-dim);
+  }
+  .pill.stale { color: var(--danger); border-color: var(--danger); }
+
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center; z-index: 50;
+  }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    width: 440px; max-width: calc(100vw - 40px); max-height: calc(100vh - 80px); overflow: auto;
+  }
+  .modal-header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+  .modal-header h3 { margin: 0; font-size: 14px; }
+  .modal-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+  .modal-footer { padding: 14px 18px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
+  label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-dim); }
+  input, textarea, select {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); padding: 8px 10px; font: inherit; resize: vertical;
+  }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+  .field-error { color: var(--danger); font-size: 11px; }
+  .hint { color: var(--text-dim); font-size: 11px; }
+  .banner {
+    padding: 10px 14px; border-radius: 8px; font-size: 12px; margin-bottom: 14px;
+    border: 1px solid var(--border);
+  }
+  .banner.error { border-color: var(--danger); color: var(--danger); }
+  .hidden { display: none !important; }
+  textarea.code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; min-height: 140px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧠 OKF Knowledge Base <span class="subtitle">/ service config</span></h1>
+  <div id="header-actions"></div>
+</header>
+<main id="app"></main>
+
+<script>
+(function () {
+  "use strict";
+
+  var state = {
+    baseUrl: null,        // resolved REST bridge base URL
+    view: "loading",      // loading | error | empty | list | detail
+    bundles: [],
+    current: null,        // current bundle detail
+    tab: "concepts",      // concepts | graph | import-export
+    error: null,
+    modal: null,          // "new-bundle" | "import" | "export" | "new-concept" | "add-source"
+    graph: {               // Graph view state (GAP 1)
+      conceptId: null,
+      loading: false,
+      error: null,
+      links: null,
+      backlinks: null,
+      neighbors: null,
+    },
+  };
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    attrs = attrs || {};
+    Object.keys(attrs).forEach(function (k) {
+      if (k === "class") node.className = attrs[k];
+      else if (k === "html") node.innerHTML = attrs[k];
+      else if (k.indexOf("on") === 0 && typeof attrs[k] === "function") node.addEventListener(k.slice(2), attrs[k]);
+      else node.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (c) {
+      if (c === null || c === undefined) return;
+      node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    });
+    return node;
+  }
+
+  // ── connecting to the service's own REST bridge ─────────────────────────
+  // Mirrors docs/dev/apps/services.md §11: prefer BOS's server-provided
+  // httpPath (present under any Supervisor-fronted deployment) over a direct
+  // host:port connection, which only works under plain `npm run dev`.
+  async function resolveBaseUrl() {
+    var id = "okf-knowledge-base";
+    var data = null;
+    try {
+      var res = await fetch("/api/services/" + id + "/config");
+      if (res.ok) data = await res.json();
+    } catch (e) { /* fall through to direct-port fallback below */ }
+
+    if (data && data.httpPath) {
+      return window.location.origin + data.httpPath;
+    }
+    if (data && data.runtime && data.runtime.port) {
+      return window.location.protocol + "//" + window.location.hostname + ":" + data.runtime.port + "/";
+    }
+    // Last resort: same-origin relative fetches (works if this page is
+    // itself proxied under the service's own root, e.g. local dev).
+    return "./";
+  }
+
+  function apiUrl(path) {
+    return state.baseUrl.replace(/\/+$/, "") + "/" + path.replace(/^\/+/, "");
+  }
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  // Bridge requests go through the Supervisor's per-request proxy
+  // (tools/supervisor/supervisor.mjs's proxyServiceHttp), which re-resolves
+  // this service's port on EVERY call by reading runtime.json rather than
+  // consulting a live registry. Whenever the process serving this item
+  // restarts for any reason (a promotion's rebuild, a crash-recovery bounce,
+  // a config change) there's a window where that file still names the old,
+  // now-dead port — the proxy's connect fails and it answers 502 ("Bad
+  // Gateway") even though the item is healthy moments (or, for a full
+  // rebuild, tens of seconds) later. A single failed attempt shouldn't stick
+  // the user with a permanent error banner, so retry a 502/503 (and the
+  // network-level failures a mid-restart connection reset surfaces as) with
+  // backoff before giving up — the existing "Retry" button still covers a
+  // genuinely long rebuild that outlasts this budget.
+  var RETRY_DELAYS_MS = [300, 800, 1500, 3000, 5000];
+
+  async function api(method, path, body, attempt) {
+    attempt = attempt || 0;
+    var res;
+    try {
+      res = await fetch(apiUrl(path), {
+        method: method,
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch (e) {
+      if (attempt < RETRY_DELAYS_MS.length) {
+        await sleep(RETRY_DELAYS_MS[attempt]);
+        return api(method, path, body, attempt + 1);
+      }
+      throw e;
+    }
+    if ((res.status === 502 || res.status === 503) && attempt < RETRY_DELAYS_MS.length) {
+      await sleep(RETRY_DELAYS_MS[attempt]);
+      return api(method, path, body, attempt + 1);
+    }
+    var json = null;
+    try { json = await res.json(); } catch (e) { /* no body */ }
+    if (!res.ok) throw new Error((json && json.error) || (res.status + " " + res.statusText));
+    return json;
+  }
+
+  // ── data loading ─────────────────────────────────────────────────────────
+
+  async function loadBundles() {
+    state.view = "loading";
+    render();
+    try {
+      state.bundles = await api("GET", "/bundles");
+      state.view = state.bundles.length ? "list" : "empty";
+    } catch (e) {
+      state.error = e.message;
+      state.view = "error";
+    }
+    render();
+  }
+
+  async function openBundle(name) {
+    state.view = "loading";
+    render();
+    try {
+      state.current = await api("GET", "/bundles/" + encodeURIComponent(name));
+      state.tab = "concepts";
+      state.view = "detail";
+    } catch (e) {
+      state.error = e.message;
+      state.view = "error";
+    }
+    render();
+  }
+
+  async function refreshCurrent() {
+    if (!state.current) return;
+    state.current = await api("GET", "/bundles/" + encodeURIComponent(state.current.name));
+  }
+
+  // ── rendering ────────────────────────────────────────────────────────────
+
+  function render() {
+    var app = document.getElementById("app");
+    app.innerHTML = "";
+    document.getElementById("header-actions").innerHTML = "";
+
+    if (state.view === "loading") {
+      app.appendChild(el("div", { class: "hint" }, ["Loading…"]));
+    } else if (state.view === "error") {
+      app.appendChild(el("div", { class: "banner error" }, ["Error: " + state.error]));
+      app.appendChild(el("button", { onclick: loadBundles }, ["Retry"]));
+    } else if (state.view === "empty") {
+      renderEmpty(app);
+    } else if (state.view === "list") {
+      renderList(app);
+    } else if (state.view === "detail") {
+      renderDetail(app);
+    }
+
+    if (state.modal) renderModal(app);
+  }
+
+  function renderEmpty(app) {
+    app.appendChild(
+      el("div", { class: "empty-state" }, [
+        el("h2", {}, ["No knowledge bases yet"]),
+        el("p", {}, ["Create a bundle to start storing durable, human-readable knowledge as Markdown + YAML frontmatter."]),
+        el("div", { class: "actions" }, [
+          el("button", { class: "primary", onclick: function () { openModal("new-bundle"); } }, ["New Knowledge Base"]),
+          el("button", { onclick: function () { openModal("import"); } }, ["Import Bundle"]),
+        ]),
+      ]),
+    );
+  }
+
+  function renderList(app) {
+    var toolbar = el("div", { class: "toolbar" }, [
+      el("div", { class: "spacer" }),
+      el("button", { onclick: function () { openModal("import"); } }, ["Import Bundle"]),
+      el("button", { class: "primary", onclick: function () { openModal("new-bundle"); } }, ["New Knowledge Base"]),
+    ]);
+    app.appendChild(toolbar);
+
+    var tbody = el("tbody", {}, state.bundles.map(function (b) {
+      return el("tr", { onclick: function () { openBundle(b.name); } }, [
+        el("td", {}, [b.name]),
+        el("td", {}, [String(b.conceptCount)]),
+        el("td", {}, [
+          b.staleCount > 0 ? el("span", { class: "pill stale" }, [String(b.staleCount)]) : el("span", { class: "pill" }, ["0"]),
+        ]),
+        el("td", {}, [statusSummary(b.statusCounts)]),
+        el("td", {}, [
+          el("a", {
+            class: "link-btn",
+            onclick: function (e) {
+              e.stopPropagation();
+              openModal("delete-bundle", { bundleName: b.name });
+            },
+          }, ["Delete"]),
+        ]),
+      ]);
+    }));
+
+    app.appendChild(
+      el("div", { class: "panel" }, [
+        el("table", {}, [
+          el("thead", {}, [el("tr", {}, [el("th", {}, ["Name"]), el("th", {}, ["Concepts"]), el("th", {}, ["Stale"]), el("th", {}, ["Status"]), el("th", {}, [""])])]),
+          tbody,
+        ]),
+      ]),
+    );
+  }
+
+  function statusSummary(counts) {
+    counts = counts || {};
+    var parts = Object.keys(counts).map(function (k) { return k + ": " + counts[k]; });
+    return parts.length ? parts.join(", ") : "—";
+  }
+
+  function renderDetail(app) {
+    var b = state.current;
+
+    app.appendChild(
+      el("div", { class: "toolbar" }, [
+        el("span", { class: "crumb", onclick: loadBundles }, ["← All knowledge bases"]),
+        el("div", { class: "spacer" }),
+        el("button", { onclick: function () { openModal("export"); } }, ["Export"]),
+        el("button", { class: "primary", onclick: function () { openModal("new-concept"); } }, ["New Concept"]),
+        el("button", { class: "danger", onclick: function () { openModal("delete-bundle", { bundleName: b.name }); } }, ["Delete Bundle"]),
+      ]),
+    );
+
+    app.appendChild(el("h2", { style: "margin: 0 0 16px" }, [b.name]));
+
+    app.appendChild(
+      el("div", { class: "stat-cards" }, [
+        statCard(b.conceptCount, "Concepts"),
+        statCard(b.staleCount, "Stale"),
+        statCard(b.humanReviewedCount, "Human-reviewed"),
+      ]),
+    );
+
+    var tabs = el("div", { class: "tabs" }, [
+      el("div", { class: "tab" + (state.tab === "concepts" ? " active" : ""), onclick: function () { state.tab = "concepts"; render(); } }, ["Concepts"]),
+      el("div", { class: "tab" + (state.tab === "graph" ? " active" : ""), onclick: function () { state.tab = "graph"; render(); } }, ["Graph"]),
+      el("div", { class: "tab" + (state.tab === "import-export" ? " active" : ""), onclick: function () { state.tab = "import-export"; render(); } }, ["Import / Export"]),
+    ]);
+    app.appendChild(tabs);
+
+    if (state.tab === "concepts") {
+      app.appendChild(renderConceptsTable(b));
+    } else if (state.tab === "graph") {
+      app.appendChild(renderGraphTab(b));
+    } else {
+      app.appendChild(renderImportExportTab(b));
+    }
+  }
+
+  function statCard(value, label) {
+    return el("div", { class: "stat-card" }, [
+      el("div", { class: "value" }, [String(value)]),
+      el("div", { class: "label" }, [label]),
+    ]);
+  }
+
+  function renderConceptsTable(b) {
+    var concepts = b.concepts || [];
+    if (!concepts.length) {
+      return el("div", { class: "hint", style: "padding: 24px 0" }, ["No concepts yet — add one with New Concept."]);
+    }
+    var tbody = el("tbody", {}, concepts.map(function (c) {
+      var isStale = c.staleAfter && Date.parse(c.staleAfter) <= Date.now();
+      return el("tr", {}, [
+        el("td", {}, [el("span", { class: "trust-dot trust-" + c.verified }), c.title]),
+        el("td", {}, [c.id]),
+        el("td", {}, [c.status]),
+        el("td", {}, [c.verified]),
+        el("td", {}, [isStale ? el("span", { class: "pill stale" }, ["stale"]) : "—"]),
+        el("td", {}, [
+          el("a", {
+            class: "link-btn",
+            onclick: function (e) {
+              e.stopPropagation();
+              openModal("delete-concept", { conceptId: c.id, conceptTitle: c.title });
+            },
+          }, ["Delete"]),
+        ]),
+      ]);
+    }));
+    return el("div", { class: "panel" }, [
+      el("table", {}, [
+        el("thead", {}, [
+          el("tr", {}, [el("th", {}, ["Title"]), el("th", {}, ["ID"]), el("th", {}, ["Status"]), el("th", {}, ["Trust"]), el("th", {}, ["Stale"]), el("th", {}, [""])]),
+        ]),
+        tbody,
+      ]),
+    ]);
+  }
+
+  function renderImportExportTab(b) {
+    return el("div", { class: "panel" }, [
+      el("div", { class: "panel-body", style: "padding-top: 16px; display:flex; gap: 10px" }, [
+        el("button", { onclick: function () { openModal("import"); } }, ["Import into " + b.name]),
+        el("button", { class: "primary", onclick: function () { openModal("export"); } }, ["Export " + b.name]),
+        el("button", { onclick: function () { openModal("add-source"); } }, ["Add Source"]),
+      ]),
+      el("div", { class: "panel-body", style: "padding-top: 0" }, [
+        el("div", { class: "hint" }, [
+          "\"Add Source\" writes an immutable file into the bundle's raw/ directory — sources are append-only and are never edited once added (see okf_ingest).",
+        ]),
+      ]),
+    ]);
+  }
+
+  // ── Graph view (GAP 1: links / backlinks / neighbors for a selected concept) ──
+
+  async function selectGraphConcept(id) {
+    state.graph = { conceptId: id, loading: true, error: null, links: null, backlinks: null, neighbors: null };
+    render();
+    try {
+      var bundleName = state.current.name;
+      var qs = "?concept=" + encodeURIComponent(id);
+      var results = await Promise.all([
+        api("GET", "/bundles/" + encodeURIComponent(bundleName) + "/links" + qs),
+        api("GET", "/bundles/" + encodeURIComponent(bundleName) + "/backlinks" + qs),
+        api("GET", "/bundles/" + encodeURIComponent(bundleName) + "/neighbors" + qs),
+      ]);
+      state.graph.links = results[0].links;
+      state.graph.backlinks = results[1].backlinks;
+      state.graph.neighbors = results[2].neighbors;
+    } catch (e) {
+      state.graph.error = e.message;
+    }
+    state.graph.loading = false;
+    render();
+  }
+
+  function renderGraphTab(b) {
+    var concepts = b.concepts || [];
+    if (!concepts.length) {
+      return el("div", { class: "hint", style: "padding: 24px 0" }, ["No concepts yet — add one to explore the graph."]);
+    }
+
+    var select = el(
+      "select",
+      {
+        onchange: function (e) { selectGraphConcept(e.target.value); },
+      },
+      [el("option", { value: "" }, ["Select a concept…"])].concat(
+        concepts.map(function (c) {
+          var opt = el("option", { value: c.id }, [c.title + " (" + c.id + ")"]);
+          if (state.graph.conceptId === c.id) opt.setAttribute("selected", "selected");
+          return opt;
+        }),
+      ),
+    );
+
+    var body;
+    if (state.graph.loading) {
+      body = el("div", { class: "hint" }, ["Loading graph…"]);
+    } else if (state.graph.error) {
+      body = el("div", { class: "banner error" }, ["Error: " + state.graph.error]);
+    } else if (!state.graph.conceptId) {
+      body = el("div", { class: "hint" }, ["Pick a concept above to see its outbound links, backlinks, and neighborhood."]);
+    } else {
+      body = el("div", { style: "display: flex; flex-direction: column; gap: 16px" }, [
+        graphList("Outbound links", state.graph.links),
+        graphList("Backlinks (concepts linking here)", state.graph.backlinks),
+        graphList("Neighbors (1-hop, in + out)", (state.graph.neighbors || []).map(function (n) { return n.id + " (distance " + n.distance + ")"; })),
+      ]);
+    }
+
+    return el("div", { class: "panel" }, [
+      el("div", { class: "panel-body", style: "padding-top: 16px" }, [select]),
+      el("div", { class: "panel-body" }, [body]),
+    ]);
+  }
+
+  function graphList(label, items) {
+    items = items || [];
+    return el("div", {}, [
+      el("div", { class: "hint", style: "margin-bottom: 6px" }, [label + " (" + items.length + ")"]),
+      items.length
+        ? el("ul", { style: "margin: 0; padding-left: 18px" }, items.map(function (item) { return el("li", {}, [String(item)]); }))
+        : el("div", { class: "hint" }, ["— none —"]),
+    ]);
+  }
+
+  // ── modals ───────────────────────────────────────────────────────────────
+
+  function openModal(kind, extra) {
+    state.modal = Object.assign({ kind: kind, error: null, busy: false }, extra || {});
+    render();
+  }
+  function closeModal() {
+    state.modal = null;
+    render();
+  }
+
+  function renderModal(app) {
+    var m = state.modal;
+    var content;
+    if (m.kind === "new-bundle") content = newBundleModal(m);
+    else if (m.kind === "import") content = importModal(m);
+    else if (m.kind === "export") content = exportModal(m);
+    else if (m.kind === "new-concept") content = newConceptModal(m);
+    else if (m.kind === "add-source") content = addSourceModal(m);
+    else if (m.kind === "delete-bundle") content = deleteBundleModal(m);
+    else if (m.kind === "delete-concept") content = deleteConceptModal(m);
+
+    app.appendChild(el("div", { class: "modal-backdrop", onclick: function (e) { if (e.target === e.currentTarget) closeModal(); } }, [content]));
+  }
+
+  function modalShell(title, body, footer) {
+    return el("div", { class: "modal" }, [
+      el("div", { class: "modal-header" }, [el("h3", {}, [title]), el("button", { onclick: closeModal }, ["✕"])]),
+      el("div", { class: "modal-body" }, body),
+      el("div", { class: "modal-footer" }, footer),
+    ]);
+  }
+
+  function newBundleModal(m) {
+    var nameInput = el("input", { placeholder: "e.g. product-docs" });
+    var titleInput = el("input", { placeholder: "Optional display title" });
+    var descInput = el("textarea", { placeholder: "Optional description", rows: "3" });
+    var errorBox = m.error ? el("div", { class: "field-error" }, [m.error]) : null;
+
+    return modalShell(
+      "New Knowledge Base",
+      [
+        el("label", {}, ["Name", nameInput]),
+        el("label", {}, ["Title", titleInput]),
+        el("label", {}, ["Description", descInput]),
+        errorBox,
+      ].filter(Boolean),
+      [
+        el("button", { onclick: closeModal }, ["Cancel"]),
+        el("button", {
+          class: "primary",
+          onclick: async function () {
+            var name = nameInput.value.trim();
+            if (!name) { m.error = "Name is required"; return render(); }
+            try {
+              await api("POST", "/bundles", { name: name, title: titleInput.value.trim() || undefined, description: descInput.value.trim() || undefined });
+              closeModal();
+              await loadBundles();
+            } catch (e) {
+              m.error = e.message;
+              render();
+            }
+          },
+        }, ["Create"]),
+      ],
+    );
+  }
+
+  function importModal(m) {
+    var nameInput = el("input", { placeholder: state.current ? state.current.name : "e.g. product-docs", value: state.current ? state.current.name : "" });
+    var fileInput = el("input", { type: "file", multiple: "true" });
+    var errorBox = m.error ? el("div", { class: "field-error" }, [m.error]) : null;
+
+    return modalShell(
+      "Import Bundle",
+      [
+        el("label", {}, ["Bundle name", nameInput]),
+        el("label", {}, ["Files", fileInput]),
+        el("div", { class: "hint" }, ["Select the bundle's index.md/schema.md/log.md and concepts/raw files exported from another OKF store."]),
+        errorBox,
+      ].filter(Boolean),
+      [
+        el("button", { onclick: closeModal }, ["Cancel"]),
+        el("button", {
+          class: "primary",
+          onclick: async function () {
+            var name = nameInput.value.trim();
+            if (!name) { m.error = "Bundle name is required"; return render(); }
+            var files = fileInput.files;
+            if (!files || !files.length) { m.error = "Choose at least one file"; return render(); }
+            try {
+              var manifest = await Promise.all(Array.prototype.map.call(files, function (f) {
+                return f.text().then(function (content) { return { path: f.webkitRelativePath || f.name, content: content }; });
+              }));
+              await api("POST", "/bundles/" + encodeURIComponent(name) + "/import", { files: manifest });
+              closeModal();
+              await loadBundles();
+            } catch (e) {
+              m.error = e.message;
+              render();
+            }
+          },
+        }, ["Import"]),
+      ],
+    );
+  }
+
+  function exportModal(m) {
+    var bundleName = state.current ? state.current.name : (state.bundles[0] && state.bundles[0].name);
+    var output = el("textarea", { class: "code", readonly: "true", placeholder: "Click Export to fetch the bundle manifest…" });
+    var errorBox = m.error ? el("div", { class: "field-error" }, [m.error]) : null;
+
+    return modalShell(
+      "Export Bundle" + (bundleName ? " — " + bundleName : ""),
+      [output, errorBox].filter(Boolean),
+      [
+        el("button", { onclick: closeModal }, ["Close"]),
+        el("button", {
+          class: "primary",
+          onclick: async function () {
+            if (!bundleName) { m.error = "No bundle selected"; return render(); }
+            try {
+              var manifest = await api("GET", "/bundles/" + encodeURIComponent(bundleName) + "/export");
+              output.value = JSON.stringify(manifest, null, 2);
+            } catch (e) {
+              m.error = e.message;
+              render();
+            }
+          },
+        }, ["Export"]),
+      ],
+    );
+  }
+
+  function addSourceModal(m) {
+    var pathInput = el("input", { placeholder: "e.g. source-a.md" });
+    var contentInput = el("textarea", { class: "code", placeholder: "Raw source content…", rows: "8" });
+    var errorBox = m.error ? el("div", { class: "field-error" }, [m.error]) : null;
+
+    return modalShell(
+      "Add Source",
+      [
+        el("label", {}, ["Path (under raw/)", pathInput]),
+        el("label", {}, ["Content", contentInput]),
+        el("div", { class: "hint" }, ["Sources are append-only — this writes a new file under raw/ and can never overwrite an existing one. Ingest it into concepts via okf_ingest."]),
+        errorBox,
+      ].filter(Boolean),
+      [
+        el("button", { onclick: closeModal }, ["Cancel"]),
+        el("button", {
+          class: "primary",
+          onclick: async function () {
+            var relPath = pathInput.value.trim();
+            if (!relPath) { m.error = "Path is required"; return render(); }
+            try {
+              await api("POST", "/bundles/" + encodeURIComponent(state.current.name) + "/raw", {
+                path: relPath,
+                content: contentInput.value || "",
+              });
+              closeModal();
+              await refreshCurrent();
+              render();
+            } catch (e) {
+              m.error = e.message;
+              render();
+            }
+          },
+        }, ["Add"]),
+      ],
+    );
+  }
+
+  function newConceptModal(m) {
+    var idInput = el("input", { placeholder: "e.g. networking/tcp" });
+    var titleInput = el("input", { placeholder: "Human-readable title" });
+    var bodyInput = el("textarea", { class: "code", placeholder: "# Title\n\nConcept body in Markdown…", rows: "8" });
+    var errorBox = m.error ? el("div", { class: "field-error" }, [m.error]) : null;
+
+    return modalShell(
+      "New Concept",
+      [
+        el("label", {}, ["Concept ID", idInput]),
+        el("label", {}, ["Title", titleInput]),
+        el("label", {}, ["Body", bodyInput]),
+        errorBox,
+      ].filter(Boolean),
+      [
+        el("button", { onclick: closeModal }, ["Cancel"]),
+        el("button", {
+          class: "primary",
+          onclick: async function () {
+            var id = idInput.value.trim();
+            if (!id) { m.error = "Concept ID is required"; return render(); }
+            try {
+              await api("POST", "/bundles/" + encodeURIComponent(state.current.name) + "/concepts", {
+                id: id,
+                title: titleInput.value.trim() || undefined,
+                body: bodyInput.value || undefined,
+              });
+              closeModal();
+              await refreshCurrent();
+              render();
+            } catch (e) {
+              m.error = e.message;
+              render();
+            }
+          },
+        }, ["Create"]),
+      ],
+    );
+  }
+
+  function deleteBundleModal(m) {
+    var errorBox = m.error ? el("div", { class: "field-error" }, [m.error]) : null;
+    var cancelAttrs = { onclick: closeModal };
+    var confirmAttrs = {
+      class: "danger",
+      onclick: async function () {
+        m.busy = true;
+        m.error = null;
+        render();
+        try {
+          await api("DELETE", "/bundles/" + encodeURIComponent(m.bundleName));
+          closeModal();
+          await loadBundles();
+        } catch (e) {
+          m.busy = false;
+          m.error = e.message;
+          render();
+        }
+      },
+    };
+    if (m.busy) {
+      cancelAttrs.disabled = "disabled";
+      confirmAttrs.disabled = "disabled";
+    }
+
+    return modalShell(
+      "Delete Knowledge Base",
+      [
+        el("p", { style: "margin: 0" }, [
+          "This will permanently remove the ",
+          el("code", {}, ["/KnowledgeBase/" + m.bundleName + "/"]),
+          " directory — all concepts, raw sources, index.md, schema.md, and log.md. This cannot be undone.",
+        ]),
+        errorBox,
+      ].filter(Boolean),
+      [
+        el("button", cancelAttrs, ["Cancel"]),
+        el("button", confirmAttrs, [m.busy ? "Deleting…" : "Delete Bundle"]),
+      ],
+    );
+  }
+
+  function deleteConceptModal(m) {
+    var checkbox = el("input", { type: "checkbox" });
+    var errorBox = m.error ? el("div", { class: "field-error" }, [m.error]) : null;
+    var cancelAttrs = { onclick: closeModal };
+    var confirmAttrs = {
+      class: "danger",
+      onclick: async function () {
+        m.busy = true;
+        m.error = null;
+        render();
+        try {
+          var qs = checkbox.checked ? "?rewrite_backlinks=true" : "";
+          await api("DELETE", "/bundles/" + encodeURIComponent(state.current.name) + "/concepts/" + encodeURIComponent(m.conceptId) + qs);
+          closeModal();
+          await refreshCurrent();
+          render();
+        } catch (e) {
+          m.busy = false;
+          m.error = e.message;
+          render();
+        }
+      },
+    };
+    if (m.busy) {
+      cancelAttrs.disabled = "disabled";
+      confirmAttrs.disabled = "disabled";
+    }
+
+    return modalShell(
+      "Delete Concept",
+      [
+        el("p", { style: "margin: 0" }, [
+          "Delete concept ",
+          el("code", {}, [m.conceptTitle || m.conceptId]),
+          " (" + m.conceptId + ")? This cannot be undone.",
+        ]),
+        el("label", { style: "flex-direction: row; align-items: center; gap: 8px" }, [checkbox, el("span", {}, ["Rewrite backlinks & update index/log"])]),
+        el("div", { class: "hint" }, [
+          "When checked, concepts linking here are rewritten to remove the reference, index.md is updated, and the deletion is logged. Left unchecked (default), only the concept file is removed.",
+        ]),
+        errorBox,
+      ].filter(Boolean),
+      [
+        el("button", cancelAttrs, ["Cancel"]),
+        el("button", confirmAttrs, [m.busy ? "Deleting…" : "Delete Concept"]),
+      ],
+    );
+  }
+
+  // ── boot ─────────────────────────────────────────────────────────────────
+
+  (async function boot() {
+    state.baseUrl = await resolveBaseUrl();
+    await loadBundles();
+  })();
+})();
+</script>
+</body>
+</html>
