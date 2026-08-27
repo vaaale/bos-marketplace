@@ -36,7 +36,10 @@ import type {
 /** The editor snapshot key. Exported because the chat store reads a v1
  *  snapshot once, to adopt the single conversation v1 owned. */
 export const STATE_KEY = "agentic-text-editor.state";
-const PERSIST_DEBOUNCE_MS = 400;
+const PERSIST_DEBOUNCE_MS = 50;
+/** This app's id — the KV namespace `/api/app-storage` keys writes under. Only
+ *  the unload beacon needs it; every other write goes through the SDK broker. */
+const APP_ID = "agentic-text-editor";
 
 export interface EditorState {
   documents: EditorDocument[];
@@ -393,13 +396,57 @@ export function startPersistence(): () => void {
   };
 }
 
+/**
+ * The unload-proof KV write: a same-origin `fetch` with `keepalive: true`.
+ *
+ * The ordinary path (`storageSet`) is a promise chain — await the SDK, then a
+ * broker round trip or a plain fetch — and the browser cancels in-flight
+ * requests as the document goes away, so the write that matters most, the one
+ * on `pagehide`, routinely never reached the server. `keepalive` is the browser
+ * API for precisely this case: the request outlives the document that issued
+ * it, which is why beacons are written this way.
+ *
+ * It has to bypass the SDK: `keepalive` is a property of THIS fetch, and the
+ * broker's postMessage hop (plus the parent's own fetch) cannot be flagged from
+ * in here. That costs nothing while the item is served locally — the app is
+ * same-origin with BOS — and the caller falls back to `storageSet` when this
+ * returns false, which covers an opaque-origin serving.
+ *
+ * Body shape is the /api/app-storage contract: `{app, op, key, value}`.
+ *
+ * Returns false when the beacon was not attempted, so the caller can fall back.
+ */
+function keepaliveStorageSet(key: string, value: string): boolean {
+  // `keepalive` bodies are capped at 64 KB by the fetch spec; over that the
+  // request is rejected outright, so a big snapshot is better off on the normal
+  // path (which at least sometimes survives) than on a beacon that cannot send.
+  if (value.length > 60_000) return false;
+  try {
+    void fetch("/api/app-storage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app: APP_ID, op: "set", key, value }),
+      keepalive: true,
+      credentials: "same-origin",
+    }).catch(() => {
+      /* unloading — there is nobody left to retry or report to */
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Flush immediately — used when the window is about to go away. */
 export function flushPersistence(): void {
   const state = useEditorStore.getState();
   if (!state.hydrated) return;
   const snapshot = snapshotOf(state);
-  // localStorage lands before we return; the KV call may well be cancelled by
-  // the unload, which is exactly why the mirror exists.
+  const serialized = JSON.stringify(snapshot);
+  // localStorage lands before we return (same profile only), and the KV write
+  // goes out as a keepalive beacon so it survives the unload too.
   writeLocalSnapshot(snapshot);
-  void storageSet(STATE_KEY, JSON.stringify(snapshot));
+  if (!keepaliveStorageSet(STATE_KEY, serialized)) {
+    void storageSet(STATE_KEY, serialized);
+  }
 }
