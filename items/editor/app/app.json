@@ -1,7 +1,0 @@
-{
-  "id": "editor",
-  "name": "Editor",
-  "icon": "PenTool",
-  "createdAt": 1787835034343,
-  "entry": "src/main.tsx"
-}

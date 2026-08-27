@@ -1,11 +1,7 @@
 {
   "id": "agentic-text-editor",
-  "name": "Editor",
+  "name": "Agentic Text Editor",
   "icon": "PenTool",
-  "description": "Tabbed text/markdown editor with an embedded AI chat that can read, write and modify the open documents.",
-  "entry": "index.tsx",
-  "defaultWidth": 1200,
-  "defaultHeight": 700,
-  "singleton": true,
-  "capabilities": ["fs:read", "fs:write", "storage", "window:title", "notify"]
+  "createdAt": 1787835203554,
+  "entry": "src/main.tsx"
 }
