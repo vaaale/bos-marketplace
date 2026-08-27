@@ -104,17 +104,17 @@ The player's best runs are recorded in a top-10 high score list that persists be
 - **FR-007**: System MUST drop the active piece to its lowest valid position and lock it immediately on Spacebar input (hard drop).
 - **FR-008**: System MUST reject or resolve any move/rotation that would cause the active piece to overlap a wall or an existing block — pieces MUST never clip through the board boundary or stacked blocks.
 - **FR-009**: System MUST clear every fully-filled horizontal row when a piece locks, and shift all rows above each cleared row downward.
-- **FR-010**: System MUST award points when lines clear, and clearing more than one line in a single lock MUST award more total points than the same rows cleared individually [NEEDS CLARIFICATION: exact point values / formula for 1/2/3/4-line clears, and whether soft/hard drops grant bonus points — default: single=100, double=300, triple=500, quad=800; soft-drop +1/row, hard-drop +2/row].
+- **FR-010**: System MUST award points when lines clear, and clearing more than one line in a single lock MUST award more total points than the same rows cleared individually. Scoring: single=100, double=300, triple=500, quad=800; soft-drop grants +1 per row dropped, hard-drop grants +2 per row dropped.
 - **FR-011**: System MUST display the current score, total lines cleared, and current level in a visible HUD.
 - **FR-012**: System MUST increase the piece fall speed as the level rises.
-- **FR-013**: System MUST increase the level when the lines-cleared total crosses a threshold [NEEDS CLARIFICATION: lines per level — default: 10 lines per level, level = floor(lines/10) + 1].
+- **FR-013**: System MUST increase the level when the lines-cleared total crosses a threshold: 10 lines per level, level = floor(lines/10) + 1.
 - **FR-014**: System MUST show a next-piece preview box displaying the upcoming tetromino (shape and color) before it spawns.
 - **FR-015**: System MUST end the game when the stack reaches the top such that a newly spawned piece cannot be placed (game over).
 - **FR-016**: System MUST present a clearly visible game-over state (e.g. a full-board or panel overlay) when the game ends, halting the play loop.
-- **FR-017**: System MUST restart the game from the game-over state (and reset score/lines/level/board) on a dedicated restart key [NEEDS CLARIFICATION: which key — default: Enter].
+- **FR-017**: System MUST restart the game from the game-over state (and reset score/lines/level/board) on the Enter key.
 - **FR-018**: System MUST present a clean, readable dark visual style (dark background, legible piece colors, readable HUD text).
 - **FR-019**: System MUST maintain a high score list of the top 10 scores, persisted in the browser's `localStorage` so it survives page reloads.
-- **FR-020**: System MUST display the high score list in a visible panel (and again on the game-over screen) [NEEDS CLARIFICATION: name entries — default: score-only list of the top 10, no player names/initials].
+- **FR-020**: System MUST display the high score list in a visible panel (and again on the game-over screen) as a score-only list of the top 10 — no player names or initials.
 - **FR-021**: System MUST insert the player's final score at game over if it ranks within the top 10, re-sort the list in descending order, and drop the lowest entry when the list is already full.
 - **FR-022**: System MUST handle an unavailable or disabled `localStorage` gracefully (fall back to an in-memory list for the current session) without throwing errors.
 
@@ -152,4 +152,13 @@ The player's best runs are recorded in a top-10 high score list that persists be
 - Single-player, local, keyboard-only desktop experience; no multiplayer, no touch/mobile controls, no sound (all out of scope for v1). The high score list is the one persistence feature: it lives in the player's browser (`localStorage`), not on a server, so there is no cross-device leaderboard.
 - Rotation uses standard collision detection with wall/stack kicks so the piece always resolves to a valid position when one exists.
 - Pieces spawn at the top of the playfield and the next piece is drawn from a uniform random bag of the seven tetrominoes.
-- Defaults for the open clarifications: scoring single=100 / double=300 / triple=500 / quad=800 with small soft/hard-drop bonuses; 10 lines per level; restart key = Enter; high score list is score-only (no player names).
+- All open clarifications were resolved on 2026-08-27 (see Clarifications below): scoring single=100 / double=300 / triple=500 / quad=800 with soft-drop +1/row and hard-drop +2/row; 10 lines per level (level = floor(lines/10) + 1); restart key = Enter; high score list is score-only (no player names).
+
+## Clarifications
+
+### Session 2026-08-27
+
+- **Q1: Exact scoring values and drop bonuses?** A: Single=100, double=300, triple=500, quad=800. Soft-drop grants +1 per row dropped; hard-drop grants +2 per row dropped. (Locked into FR-010.)
+- **Q2: Lines per level?** A: 10 lines per level; level = floor(lines/10) + 1. (Locked into FR-013.)
+- **Q3: Restart key?** A: Enter. (Locked into FR-017.)
+- **Q4: High score list entries — include names?** A: Score-only top 10, no player names or initials. (Locked into FR-020.)
