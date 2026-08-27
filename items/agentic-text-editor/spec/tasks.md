@@ -133,7 +133,7 @@
   - Mock `window.__bos.storage.get/set` for persistence assertions
   - Assert on DOM (classes, text content, element presence) per the mockup's CSS structure
 
-- [ ] T087 [P] Add **v2 quickstart.md** section: manual validation steps for US6/US7/US8 (agent switch, conversation new/switch, tool-row dual-color) + the e2e run command. Extend the existing quickstart's "Known limitations" if any v2 limitation applies.
+- [x] T087 [P] Add **v2 quickstart.md** section: manual validation steps for US6/US7/US8 (agent switch, conversation new/switch, tool-row dual-color) + the e2e run command. Extend the existing quickstart's "Known limitations" if any v2 limitation applies.
 
 ---
 
