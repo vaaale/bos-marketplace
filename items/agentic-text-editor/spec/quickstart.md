@@ -144,7 +144,32 @@ the Preview toggle uses its renderer, and the assistant's
 
 ---
 
-## 7. Automated checks
+## 7. Agent & conversation management (v2 → SC-008 / SC-009)
+
+With the app open, in the chat header (the bar across the top of the right pane):
+
+| Control | Where | What it does |
+|---------|-------|-------------|
+| **Agent selector** (sparkles icon + label, left) | Chat header, left | Opens a dropdown listing every registered BOS agent. Select one and the next message in the active conversation goes to that agent. The choice is remembered per conversation and survives restarts. |
+| **New conversation** (plus icon, right) | Chat header, right | Clears the chat pane to the empty state and starts a fresh thread on the currently-selected agent. The previous conversation is kept and still available in the dropdown. |
+| **Conversation selector** (label + chevron, right) | Chat header, right | Lists every conversation this app started, most-recent first, with each item showing the conversation title, the agent name, and a relative timestamp. Select one to restore its transcript and its agent. |
+
+To verify persistence:
+
+1. Select a non-default agent (or just note the current one).
+2. Click New conversation → confirm the empty state appears.
+3. Close the app window, reopen it.
+4. The agent selector should still show the same agent; the conversation selector should still show the same conversation (its title, not "New conversation").
+
+The app's conversation index is stored in its per-app KV store. Transcript files live at `/Documents/Chats/ate-<id>.json` (one per conversation), written by the BOS assistant loop — the item never writes to that directory directly.
+
+## 8. Full tool-call visibility (v2 → SC-010)
+
+Send a message that causes the agent to call both an `agentic_editor_*` tool and a non-editor tool (e.g. "search the web for hedgehogs and add a paragraph about them to the document").
+
+In the agent's reply, a single tool row appears with chips: the editor tool (`agentic_editor_add_content`) renders in **violet** ("add content"), and the non-editor tool (`web_search`) renders in **neutral gray** ("web search"). Both chips are the same pill shape — only the accent color differs. This row is also present on any conversation restored from a previous session (replayed from the transcript, not re-executed).
+
+## 9. Automated checks
 
 ```bash
 # Types (the app is outside the Next.js tsconfig graph, so check it directly)
