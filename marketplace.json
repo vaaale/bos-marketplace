@@ -187,6 +187,21 @@
         "entrypoint": "items/webdav-vfs-mount",
         "version": "1.0.0"
       }
+    },
+    {
+      "id": "editor",
+      "name": "Editor",
+      "description": "",
+      "app": {
+        "entrypoint": "items/editor/app",
+        "runtime": "iframe",
+        "version": "0.0.0",
+        "icon": "PenTool"
+      },
+      "spec": {
+        "path": "items/editor/spec",
+        "version": "0.0.0"
+      }
     }
   ]
 }
