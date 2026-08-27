@@ -97,6 +97,7 @@ export function SettingsPanel({
           <Settings2 size={14} strokeWidth={1.9} />
           <h3>Editor settings</h3>
           <button
+            type="button"
             className="ate-btn"
             onClick={() => onChange({ ...DEFAULT_SETTINGS })}
             aria-label="Reset to defaults"
@@ -140,7 +141,7 @@ export function SettingsPanel({
         </div>
 
         <div className="ate-dialog-footer">
-          <button className="ate-btn ate-btn-primary" onClick={onClose} data-testid="ate-settings-done">
+          <button type="button" className="ate-btn ate-btn-primary" onClick={onClose} data-testid="ate-settings-done">
             Done
           </button>
         </div>
