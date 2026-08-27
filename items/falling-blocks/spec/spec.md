@@ -64,6 +64,23 @@ When the stack reaches the top and a new piece cannot spawn, the game ends in a 
 
 ---
 
+### User Story 4 - High score list (Priority: P3)
+
+The player's best runs are recorded in a top-10 high score list that persists between sessions, shown in a visible panel and on the game-over screen.
+
+**Why this priority**: Leaderboards add replay incentive and are explicitly requested, but they layer on top of the completed game loop and terminal state, so they form a distinct, independently testable slice.
+
+**Independent Test**: Can be tested by playing to a score that qualifies for the top 10, confirming it appears in the list, reloading the page, and confirming it persists; and by watching the list re-sort and cap at 10.
+
+**Acceptance Scenarios**:
+
+1. **Given** a completed game with a score that ranks in the top 10, **When** the game ends, **Then** the score is added to the high score list.
+2. **Given** the high score list is displayed, **When** the player views it, **Then** entries are ordered from highest to lowest score and at most 10 entries are shown.
+3. **Given** the list already holds 10 entries, **When** a new qualifying score arrives, **Then** the lowest entry is dropped to keep the list at 10.
+4. **Given** a high score was recorded, **When** the page is reloaded, **Then** the list still contains it (persisted across sessions).
+
+---
+
 ### Edge Cases
 
 - What happens when a rotation is blocked by a wall/stack on all sides — the piece stays in its last valid orientation (no clipping).
@@ -71,6 +88,8 @@ When the stack reaches the top and a new piece cannot spawn, the game ends in a 
 - How does the system handle holding a movement key (auto-repeat) vs. a single press — movement must not be so fast pieces clip through blocks.
 - What happens if multiple rows clear simultaneously — only one next-piece is consumed, score uses the multi-line bonus.
 - What happens when the app loses keyboard focus — the game should not keep advancing silently (pause or at minimum not register stray keys).
+- What happens when the player's final score ties an existing high score entry — the entry is accepted and inserted in a stable, deterministic order.
+- What happens when the list already has 10 entries and a new qualifying score arrives — exactly one lowest entry is dropped so the list stays capped at 10.
 
 ## Requirements *(mandatory)*
 
@@ -94,6 +113,10 @@ When the stack reaches the top and a new piece cannot spawn, the game ends in a 
 - **FR-016**: System MUST present a clearly visible game-over state (e.g. a full-board or panel overlay) when the game ends, halting the play loop.
 - **FR-017**: System MUST restart the game from the game-over state (and reset score/lines/level/board) on a dedicated restart key [NEEDS CLARIFICATION: which key — default: Enter].
 - **FR-018**: System MUST present a clean, readable dark visual style (dark background, legible piece colors, readable HUD text).
+- **FR-019**: System MUST maintain a high score list of the top 10 scores, persisted in the browser's `localStorage` so it survives page reloads.
+- **FR-020**: System MUST display the high score list in a visible panel (and again on the game-over screen) [NEEDS CLARIFICATION: name entries — default: score-only list of the top 10, no player names/initials].
+- **FR-021**: System MUST insert the player's final score at game over if it ranks within the top 10, re-sort the list in descending order, and drop the lowest entry when the list is already full.
+- **FR-022**: System MUST handle an unavailable or disabled `localStorage` gracefully (fall back to an in-memory list for the current session) without throwing errors.
 
 ### Non-Functional Requirements
 
@@ -108,6 +131,7 @@ When the stack reaches the top and a new piece cannot spawn, the game ends in a 
 - **Tetromino Set**: the seven fixed shapes (I, O, T, S, Z, J, L), each with a defined set of 4-cell coordinates per rotation and a unique color.
 - **Game State**: score, lines cleared, level, current/next piece id, and run state (playing / game-over).
 - **Next Piece**: the tetromino id queued to spawn after the current piece locks.
+- **High Score Table**: ordered list of up to 10 recorded scores, persisted in `localStorage`; each entry is a score (and optionally a player name/initials).
 
 ## Success Criteria *(mandatory)*
 
@@ -120,10 +144,12 @@ When the stack reaches the top and a new piece cannot spawn, the game ends in a 
 - **SC-005**: Reaching a higher level produces a measurably faster fall speed than the previous level.
 - **SC-006**: The next-piece preview always matches the piece that actually spawns.
 - **SC-007**: Letting the stack reach the top produces a visible game-over state; pressing the restart key yields a clean, fresh board.
+- **SC-008**: A qualifying score is recorded into the top 10, the list re-sorts descending, the lowest entry is dropped beyond 10, and the list persists across page reloads.
+- **SC-009**: When `localStorage` is unavailable, the game still runs and keeps an in-memory high score list without throwing errors.
 
 ## Assumptions
 
-- Single-player, local, keyboard-only desktop experience; no multiplayer, no touch/mobile controls, no save/load, no sound (all out of scope for v1).
+- Single-player, local, keyboard-only desktop experience; no multiplayer, no touch/mobile controls, no sound (all out of scope for v1). The high score list is the one persistence feature: it lives in the player's browser (`localStorage`), not on a server, so there is no cross-device leaderboard.
 - Rotation uses standard collision detection with wall/stack kicks so the piece always resolves to a valid position when one exists.
 - Pieces spawn at the top of the playfield and the next piece is drawn from a uniform random bag of the seven tetrominoes.
-- Defaults for the open clarifications: scoring single=100 / double=300 / triple=500 / quad=800 with small soft/hard-drop bonuses; 10 lines per level; restart key = Enter.
+- Defaults for the open clarifications: scoring single=100 / double=300 / triple=500 / quad=800 with small soft/hard-drop bonuses; 10 lines per level; restart key = Enter; high score list is score-only (no player names).
