@@ -117,7 +117,7 @@
 
 **Purpose**: The complete e2e test file covers all v2 user stories end-to-end, including the cross-cutting scenarios
 
-- [ ] T086 Create/extend `e2e/agentic-text-editor.spec.ts` with a **v2 test block** covering:
+- [x] T086 Create `e2e/v2.spec.ts` (dedicated v2 suite, 9 tests) covering:
   1. **Shell integrity (regression)**: app renders two-pane layout, agent selector visible in header, conversation selector visible, new-conversation button visible
   2. **US6 — Agent selector**: dropdown opens, lists agents, selection updates label, persists across reload
   3. **US7 — Conversations**: new conversation creates empty state, dropdown lists conversations most-recent-first, switching restores transcript + agent, persists across reload, global across tabs
