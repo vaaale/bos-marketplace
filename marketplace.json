@@ -158,7 +158,7 @@
     },
     {
       "id": "agentic-text-editor",
-      "name": "Agentic Text Editor",
+      "name": "Editor",
       "description": "A text editor with integrated AI agent for content manipulation",
       "tags": [
         "productivity",
