@@ -3,10 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Agentic Text Editor — Edit vs Preview</title>
+  <title>Agentic Text Editor — UI Mockup (v2)</title>
+  <script src="https://unpkg.com/lucide@latest"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: #0f1117;
@@ -509,6 +510,157 @@
     ::-webkit-scrollbar-thumb:hover {
       background: rgba(255,255,255,0.25);
     }
+
+    /* ========================================================= */
+    /* ===== v2: chat header selectors & dropdowns (FR-023/024) */
+    /* ========================================================= */
+    .chat-header { position: relative; }
+    .chat-header .spacer { flex: 1; }
+
+    .chat-header .selector {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 7px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #d0d0dc;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+    .chat-header .selector:hover {
+      background: rgba(255,255,255,0.09);
+      border-color: rgba(255,255,255,0.16);
+    }
+    .chat-header .selector .lucide { width: 14px; height: 14px; }
+    .chat-header .selector .agent-ic { color: #a78bfa; }
+    .chat-header .selector .conv-ic { color: rgba(255,255,255,0.55); }
+    .chat-header .selector .chev { width: 13px; height: 13px; color: rgba(255,255,255,0.4); }
+    .chat-header .selector .label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .chat-header .icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #c0c0d0;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .chat-header .icon-btn:hover {
+      background: rgba(255,255,255,0.1);
+      border-color: rgba(255,255,255,0.16);
+      color: #fff;
+    }
+    .chat-header .icon-btn .lucide { width: 15px; height: 15px; }
+
+    .dropdown { position: relative; display: inline-flex; }
+    .dropdown-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      z-index: 30;
+      min-width: 220px;
+      max-width: 300px;
+      background: #1e2028;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 9px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+      padding: 5px;
+      display: none;
+    }
+    .dropdown-menu.open { display: block; }
+    .dropdown-menu .menu-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: rgba(255,255,255,0.3);
+      padding: 6px 10px 4px;
+      font-weight: 600;
+    }
+    .dropdown-item {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 7px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      color: #d0d0dc;
+      font-size: 12px;
+    }
+    .dropdown-item:hover { background: rgba(255,255,255,0.06); }
+    .dropdown-item.active { background: rgba(139,92,246,0.12); }
+    .dropdown-item .di-icon { color: rgba(255,255,255,0.45); flex-shrink: 0; display: inline-flex; }
+    .dropdown-item .di-icon .lucide { width: 15px; height: 15px; }
+    .dropdown-item .di-name { font-weight: 500; }
+    .dropdown-item .di-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .dropdown-item .di-text .di-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dropdown-item .sub { font-size: 10px; color: rgba(255,255,255,0.35); }
+    .dropdown-item .check { margin-left: auto; color: #a78bfa; display: inline-flex; }
+    .dropdown-item .check .lucide { width: 14px; height: 14px; }
+    .agent-menu { left: 0; }
+    .conv-menu { right: 0; }
+
+    /* ===== v2: tool-call row under agent replies (FR-025) ===== */
+    .tool-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 1px; padding: 0 2px; }
+    .tool-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: 999px;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
+    .tool-chip .lucide { width: 11px; height: 11px; }
+    .tool-chip.editor {
+      background: rgba(139,92,246,0.16);
+      border: 1px solid rgba(139,92,246,0.35);
+      color: #c4b5fd;
+    }
+    .tool-chip.other {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.16);
+      color: rgba(255,255,255,0.55);
+    }
+    .tool-chip.other .lucide { color: rgba(255,255,255,0.45); }
+
+    /* ===== v2: empty conversation state (US7) ===== */
+    .empty-state {
+      flex: 1;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      color: rgba(255,255,255,0.35);
+      text-align: center;
+      padding: 24px;
+    }
+    .empty-state.show { display: flex; }
+    .empty-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 8px;
+    }
+    .empty-icon .lucide { width: 22px; height: 22px; color: rgba(139,92,246,0.7); }
+    .empty-title { font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.55); }
+    .empty-text { font-size: 12px; color: rgba(255,255,255,0.3); max-width: 260px; line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -611,9 +763,75 @@ if (config.enabled) {
     <div class="chat-pane">
       <div class="chat-header">
         <div class="status-dot"></div>
-        <h2>Chat with Agent</h2>
+
+        <!-- Agent selector (FR-023 / US6) -->
+        <div class="dropdown agent-dd">
+          <button class="selector" onclick="toggleDropdown(event)" title="Select agent">
+            <i data-lucide="sparkles" class="agent-ic"></i>
+            <span class="label" id="agent-label">Main Assistant</span>
+            <i data-lucide="chevron-down" class="chev"></i>
+          </button>
+          <div class="dropdown-menu agent-menu">
+            <div class="menu-label">Agents</div>
+            <div class="dropdown-item active" onclick="selectAgent(this)">
+              <span class="di-icon"><i data-lucide="sparkles"></i></span>
+              <span class="di-name">Main Assistant</span>
+              <span class="sub">default</span>
+              <span class="check"><i data-lucide="check"></i></span>
+            </div>
+            <div class="dropdown-item" onclick="selectAgent(this)">
+              <span class="di-icon"><i data-lucide="bot"></i></span>
+              <span class="di-name">Code Writer</span>
+            </div>
+            <div class="dropdown-item" onclick="selectAgent(this)">
+              <span class="di-icon"><i data-lucide="bot"></i></span>
+              <span class="di-name">Research Bot</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+
+        <!-- New conversation (FR-024 / US7) -->
+        <button class="icon-btn" title="New conversation" onclick="newConversation(event)">
+          <i data-lucide="plus"></i>
+        </button>
+
+        <!-- Conversation selector (FR-024 / US7) -->
+        <div class="dropdown conv-dd">
+          <button class="selector" onclick="toggleDropdown(event)" title="Select conversation">
+            <i data-lucide="messages-square" class="conv-ic"></i>
+            <span class="label" id="conv-label">Action items thread</span>
+            <i data-lucide="chevron-down" class="chev"></i>
+          </button>
+          <div class="dropdown-menu conv-menu">
+            <div class="menu-label">Conversations</div>
+            <div class="dropdown-item active" onclick="selectConversation(this)">
+              <span class="di-icon"><i data-lucide="message-square"></i></span>
+              <span class="di-text">
+                <span class="di-name">Action items thread</span>
+                <span class="sub">Main Assistant · 2:33 PM</span>
+              </span>
+              <span class="check"><i data-lucide="check"></i></span>
+            </div>
+            <div class="dropdown-item" onclick="selectConversation(this)">
+              <span class="di-icon"><i data-lucide="message-square"></i></span>
+              <span class="di-text">
+                <span class="di-name">Roadmap review</span>
+                <span class="sub">Code Writer · 11:42 AM</span>
+              </span>
+            </div>
+            <div class="dropdown-item" onclick="selectConversation(this)">
+              <span class="di-icon"><i data-lucide="message-square"></i></span>
+              <span class="di-text">
+                <span class="di-name">README cleanup</span>
+                <span class="sub">Main Assistant · Yesterday</span>
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
-      
+
       <div class="chat-messages" id="chat-messages">
         <div class="message agent">
           <div class="msg-bubble">
@@ -621,22 +839,50 @@ if (config.enabled) {
           </div>
           <div class="msg-time">2:30 PM</div>
         </div>
-        
+
         <div class="message user">
           <div class="msg-bubble">
             Add a section about the action items and deadlines
           </div>
           <div class="msg-time">2:31 PM</div>
         </div>
-        
+
         <div class="message agent">
           <div class="msg-bubble">
             I'll add an action items section with deadlines. Should I include specific dates for each item, or keep it general like "by Friday"?
           </div>
           <div class="msg-time">2:31 PM</div>
         </div>
+
+        <!-- New turn demonstrating FR-025: editor + non-editor tool chips in one row -->
+        <div class="message user">
+          <div class="msg-bubble">
+            Yes, include specific dates.
+          </div>
+          <div class="msg-time">2:33 PM</div>
+        </div>
+
+        <div class="message agent">
+          <div class="msg-bubble">
+            Done — I added the Action Items section with deadlines, and pulled the team's sprint dates so the due dates line up.
+          </div>
+          <div class="tool-row">
+            <span class="tool-chip editor"><i data-lucide="pencil"></i> add content</span>
+            <span class="tool-chip editor"><i data-lucide="text-cursor"></i> modify content</span>
+            <span class="tool-chip other"><i data-lucide="globe"></i> web search</span>
+            <span class="tool-chip other"><i data-lucide="file-text"></i> read file</span>
+          </div>
+          <div class="msg-time">2:33 PM</div>
+        </div>
       </div>
-      
+
+      <!-- Empty conversation state (shown when "New conversation" is chosen) -->
+      <div class="empty-state" id="empty-state">
+        <div class="empty-icon"><i data-lucide="message-square"></i></div>
+        <div class="empty-title">No messages yet</div>
+        <div class="empty-text">Start a conversation with your agent to begin editing your document.</div>
+      </div>
+
       <div class="chat-input-area">
         <div class="chat-input-wrap">
           <input type="text" class="chat-input" placeholder="Type your message..." />
@@ -652,9 +898,9 @@ if (config.enabled) {
       const editMode = document.getElementById('edit-mode');
       const previewMode = document.getElementById('preview-mode');
       const buttons = document.querySelectorAll('.mode-btn');
-      
+
       buttons.forEach(btn => btn.classList.remove('active'));
-      
+
       if (mode === 'edit') {
         editMode.classList.add('active');
         previewMode.classList.remove('active');
@@ -675,14 +921,14 @@ if (config.enabled) {
     function updateLineNumbers() {
       const lines = editor.value.split('\n').length;
       lineNumbers.innerHTML = Array.from({length: lines}, (_, i) => i + 1).join('<br>');
-      
+
       // Update cursor position
       const pos = editor.selectionStart;
       const before = editor.value.substring(0, pos);
       const lineNum = before.split('\n').length;
       const colNum = before.split('\n').pop().length + 1;
       cursorPos.textContent = `Ln ${lineNum}, Col ${colNum}`;
-      
+
       // Mark as changed
       if (changeStatus.textContent !== 'No changes') {
         changeStatus.textContent = 'Unsaved changes';
@@ -731,16 +977,20 @@ if (config.enabled) {
       if (input.value.trim()) {
         const chatMessages = document.getElementById('chat-messages');
         const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        
+
+        // If the empty state is showing, a new message starts the thread
+        document.getElementById('empty-state').classList.remove('show');
+        chatMessages.style.display = 'flex';
+
         // Add user message
         const userMsg = document.createElement('div');
         userMsg.className = 'message user';
         userMsg.innerHTML = `<div class="msg-bubble">${input.value}</div><div class="msg-time">${now}</div>`;
         chatMessages.appendChild(userMsg);
-        
+
         input.value = '';
         chatMessages.scrollTop = chatMessages.scrollHeight;
-        
+
         // Simulate agent response
         setTimeout(() => {
           const agentMsg = document.createElement('div');
@@ -782,6 +1032,53 @@ if (config.enabled) {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     });
+
+    // ===== v2: agent & conversation dropdowns =====
+    function closeMenus() {
+      document.querySelectorAll('.dropdown-menu.open').forEach(m => m.classList.remove('open'));
+    }
+
+    function toggleDropdown(e) {
+      e.stopPropagation();
+      const dropdown = e.currentTarget.closest('.dropdown');
+      const menu = dropdown.querySelector('.dropdown-menu');
+      const wasOpen = menu.classList.contains('open');
+      closeMenus();
+      if (!wasOpen) menu.classList.add('open');
+    }
+
+    function selectAgent(item) {
+      document.getElementById('agent-label').textContent = item.querySelector('.di-name').textContent.trim();
+      item.closest('.dropdown-menu').querySelectorAll('.dropdown-item').forEach(i => i.classList.remove('active'));
+      item.classList.add('active');
+      closeMenus();
+    }
+
+    function selectConversation(item) {
+      document.getElementById('conv-label').textContent = item.querySelector('.di-name').textContent.trim();
+      item.closest('.dropdown-menu').querySelectorAll('.dropdown-item').forEach(i => i.classList.remove('active'));
+      item.classList.add('active');
+      document.getElementById('chat-messages').style.display = 'flex';
+      document.getElementById('empty-state').classList.remove('show');
+      closeMenus();
+    }
+
+    function newConversation(e) {
+      e.stopPropagation();
+      closeMenus();
+      document.getElementById('chat-messages').style.display = 'none';
+      document.getElementById('empty-state').classList.add('show');
+      document.getElementById('conv-label').textContent = 'New conversation';
+      // Fresh thread isn't in the list yet — clear the active mark.
+      document.querySelectorAll('.conv-menu .dropdown-item').forEach(i => i.classList.remove('active'));
+    }
+
+    // Close menus on outside click / Escape
+    document.addEventListener('click', closeMenus);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
+
+    // Render lucide icons (runs after DOM + lucide load)
+    lucide.createIcons();
   </script>
 </body>
 </html>
