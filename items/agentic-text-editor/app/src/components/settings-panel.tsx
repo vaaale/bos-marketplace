@@ -97,12 +97,13 @@ export function SettingsPanel({
           <Settings2 size={14} strokeWidth={1.9} />
           <h3>Editor settings</h3>
           <button
-            className="ate-btn-icon"
+            className="ate-btn"
             onClick={() => onChange({ ...DEFAULT_SETTINGS })}
             aria-label="Reset to defaults"
-            title="Reset to defaults"
+            data-testid="ate-settings-reset"
           >
             <RotateCcw size={13} strokeWidth={1.9} />
+            Reset to defaults
           </button>
           <button className="ate-btn-icon" onClick={onClose} aria-label="Close settings">
             <X size={14} strokeWidth={2} />
@@ -139,7 +140,7 @@ export function SettingsPanel({
         </div>
 
         <div className="ate-dialog-footer">
-          <button className="ate-btn ate-btn-primary" onClick={onClose}>
+          <button className="ate-btn ate-btn-primary" onClick={onClose} data-testid="ate-settings-done">
             Done
           </button>
         </div>
