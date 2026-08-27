@@ -20,9 +20,9 @@
 
 **Purpose**: Types, broker client wrapper, and capability manifest — the foundation all v2 stories depend on
 
-- [ ] T053 [P] Add v2 types to `app/types.ts`: `AgentInfo { id, name, description }`, `AppConversation { id, title, agentId, createdAt, lastActiveAt }`, `ChatPersistence { conversations: AppConversation[], activeConversationId: string|null, selectedAgentId: string }`, `ToolChip { variant: 'editor'|'other', label: string, icon?: string }`
-- [ ] T054 Create `app/src/assistant/client.ts` — thin typed wrapper over `window.__bos.assistant` (methods: `listAgents()`, `startRun({conversationId, agentId, message, surfaceTools, attachments?})`, `onRunEvent(runId, callback)`, `postToolResult(runId, callId, result)`, `getActiveRun(conversationId)`, `cancelRun(runId)`) + `readTranscript(conversationId)` via `window.__bos.fs.read('/Documents/Chats/<id>.json')` returning parsed `ChatMessage[]`. Centralizes the broker contract; no other module touches `window.__bos` directly.
-- [ ] T055 [P] Update `app/app.json` — add `"capabilities": ["assistant", "storage", "fs:read"]` to the manifest
+- [x] T053 [P] Add v2 types to `app/types.ts`: `AgentInfo { id, name, description }`, `AppConversation { id, title, agentId, createdAt, lastActiveAt }`, `ChatPersistence { conversations: AppConversation[], activeConversationId: string|null, selectedAgentId: string }`, `ToolChip { variant: 'editor'|'other', label: string, icon?: string }`
+- [x] T054 Create `app/src/assistant/client.ts` — thin typed wrapper over `window.__bos.assistant` (methods: `listAgents()`, `startRun({conversationId, agentId, message, surfaceTools, attachments?})`, `onRunEvent(runId, callback)`, `postToolResult(runId, callId, result)`, `getActiveRun(conversationId)`, `cancelRun(runId)`) + `readTranscript(conversationId)` via `window.__bos.fs.read('/Documents/Chats/<id>.json')` returning parsed `ChatMessage[]`. Centralizes the broker contract; no other module touches `window.__bos` directly.
+- [x] T055 [P] Update `app/app.json` — add `"capabilities": ["assistant", "storage", "fs:read"]` to the manifest
 
 **Checkpoint**: Foundation ready — types defined, broker client available, capabilities declared
 
@@ -36,15 +36,15 @@
 
 ### Tests for User Story 6 ⚠️
 
-- [ ] T056 [P] [US6] E2E test in `e2e/agentic-text-editor.spec.ts`: "agent selector lists registered agents" — open app, click agent dropdown, assert menu shows "Main Assistant" with active mark; assert at least one other agent visible (or menu shows only Main Assistant if no user-defined agents exist)
-- [ ] T057 [P] [US6] E2E test: "selecting an agent updates the header label" — open dropdown, select a non-default agent, assert header label updates to the selected agent name
-- [ ] T058 [P] [US6] E2E test: "agent selection persists across app restart" — select agent B, close and reopen app, assert agent B is still selected in the header
+- [x] T056 [P] [US6] E2E test in `e2e/agentic-text-editor.spec.ts`: "agent selector lists registered agents" — open app, click agent dropdown, assert menu shows "Main Assistant" with active mark; assert at least one other agent visible (or menu shows only Main Assistant if no user-defined agents exist)
+- [x] T057 [P] [US6] E2E test: "selecting an agent updates the header label" — open dropdown, select a non-default agent, assert header label updates to the selected agent name
+- [x] T058 [P] [US6] E2E test: "agent selection persists across app restart" — select agent B, close and reopen app, assert agent B is still selected in the header
 
 ### Implementation for User Story 6
 
-- [ ] T059 [US6] Create `app/src/components/chat/agent-selector.tsx` — dropdown component: trigger button (violet `sparkles` icon + agent name label + `chevron-down`), menu (labeled "Agents", one item per agent with icon + name, active item marked with `check` icon + violet highlight). Props: `agents: AgentInfo[]`, `selectedAgentId: string`, `onSelect(agentId)`. Styling per mockup `.selector` + `.dropdown-menu.agent-menu`.
-- [ ] T060 [US6] Create `app/src/assistant/chat-store.ts` — Zustand store: state `{ conversations, activeConversationId, selectedAgentId, agents, transcripts, activeRunId, streamingMessage, liveToolStatus }`; actions: `loadAgents()`, `selectAgent(agentId)`, `loadConversations()`, `createConversation()`, `selectConversation(id)`, `loadTranscript(id)`, `startRun(message)`, `attachRun(runId)`, `postToolResult(runId, callId, result)`, `clearLiveState()`. Persists `ChatPersistence` shape to `window.__bos.storage.set('chat-state', ...)` on every mutation. Hydrates from storage on init.
-- [ ] T061 [US6] Modify `app/src/components/chat/chat-header.tsx` — replace the static "Chat with Agent" title with: `[status-dot] [agent-selector] [flex-spacer] [new-conv-btn] [conversation-selector]`. The agent-selector is wired to `chat-store.selectedAgentId` + `selectAgent()`.
+- [x] T059 [US6] Create `app/src/components/chat/agent-selector.tsx` — dropdown component: trigger button (violet `sparkles` icon + agent name label + `chevron-down`), menu (labeled "Agents", one item per agent with icon + name, active item marked with `check` icon + violet highlight). Props: `agents: AgentInfo[]`, `selectedAgentId: string`, `onSelect(agentId)`. Styling per mockup `.selector` + `.dropdown-menu.agent-menu`.
+- [x] T060 [US6] Create `app/src/assistant/chat-store.ts` — Zustand store: state `{ conversations, activeConversationId, selectedAgentId, agents, transcripts, activeRunId, streamingMessage, liveToolStatus }`; actions: `loadAgents()`, `selectAgent(agentId)`, `loadConversations()`, `createConversation()`, `selectConversation(id)`, `loadTranscript(id)`, `startRun(message)`, `attachRun(runId)`, `postToolResult(runId, callId, result)`, `clearLiveState()`. Persists `ChatPersistence` shape to `window.__bos.storage.set('chat-state', ...)` on every mutation. Hydrates from storage on init.
+- [x] T061 [US6] Modify `app/src/components/chat/chat-header.tsx` — replace the static "Chat with Agent" title with: `[status-dot] [agent-selector] [flex-spacer] [new-conv-btn] [conversation-selector]`. The agent-selector is wired to `chat-store.selectedAgentId` + `selectAgent()`.
 
 **Checkpoint**: Agent selector functional — user can switch agents, selection persists
 
@@ -58,20 +58,20 @@
 
 ### Tests for User Story 7 ⚠️
 
-- [ ] T062 [P] [US7] E2E test: "new conversation shows empty state" — click new-conversation button, assert empty-state visible ("No messages yet"), assert conversation dropdown no longer marks the previous conversation as active
-- [ ] T063 [P] [US7] E2E test: "conversation dropdown lists existing conversations most-recent-first" — seed two conversations (via storage mock or two sends), open dropdown, assert order is most-recent-first, assert active one is marked
-- [ ] T064 [P] [US7] E2E test: "selecting a conversation restores its transcript" — switch to conversation B, send a unique message, switch back to A, assert A's transcript is shown (not B's), assert B's message is not visible
-- [ ] T065 [P] [US7] E2E test: "conversation + agent persist across app restart" — send message in conversation A with agent B, close and reopen app, assert conversation A is active with agent B selected in the header and A's transcript visible
-- [ ] T066 [P] [US7] E2E test: "chat is global across tabs" — open two document tabs, switch to tab 2, assert the same active conversation is shown in the chat pane (transcript unchanged by tab switch)
-- [ ] T067 [P] [US7] E2E test: "new conversation inherits the currently selected agent" — select agent B, click new conversation, assert the new conversation's agent is B (verify by the agent selector showing B)
+- [x] T062 [P] [US7] E2E test: "new conversation shows empty state" — click new-conversation button, assert empty-state visible ("No messages yet"), assert conversation dropdown no longer marks the previous conversation as active
+- [x] T063 [P] [US7] E2E test: "conversation dropdown lists existing conversations most-recent-first" — seed two conversations (via storage mock or two sends), open dropdown, assert order is most-recent-first, assert active one is marked
+- [x] T064 [P] [US7] E2E test: "selecting a conversation restores its transcript" — switch to conversation B, send a unique message, switch back to A, assert A's transcript is shown (not B's), assert B's message is not visible
+- [x] T065 [P] [US7] E2E test: "conversation + agent persist across app restart" — send message in conversation A with agent B, close and reopen app, assert conversation A is active with agent B selected in the header and A's transcript visible
+- [x] T066 [P] [US7] E2E test: "chat is global across tabs" — open two document tabs, switch to tab 2, assert the same active conversation is shown in the chat pane (transcript unchanged by tab switch)
+- [x] T067 [P] [US7] E2E test: "new conversation inherits the currently selected agent" — select agent B, click new conversation, assert the new conversation's agent is B (verify by the agent selector showing B)
 
 ### Implementation for User Story 7
 
-- [ ] T068 [US7] Create `app/src/components/chat/conversation-selector.tsx` — dropdown: trigger button (muted `messages-square` icon + conversation title label + `chevron-down`), menu (labeled "Conversations", most-recent-first, each item shows `message-square` icon + title + sub-line `<agentName> · <relativeTime>`, active marked with `check`). Props: `conversations: AppConversation[]`, `activeId: string|null`, `agents: AgentInfo[]` (for sub-line), `onSelect(id)`. Styling per mockup `.dropdown-menu.conv-menu`.
-- [ ] T069 [US7] Modify `app/src/components/chat/chat-header.tsx` — add: new-conversation icon button (`plus` icon, tooltip "New conversation", wired to `chat-store.createConversation()`) + `conversation-selector` (wired to `chat-store.conversations` + `selectConversation()`), anchored right after the flex spacer.
-- [ ] T070 [US7] Modify `app/src/components/chat/chat-messages.tsx` — render the **active conversation's** transcript from `chat-store.transcripts[activeConversationId]`. When the active conversation has no messages, show the empty-state (mockup: `message-square` icon, "No messages yet", helper text). When switching conversations, re-read the transcript via `chat-store.loadTranscript(id)` (which calls `client.readTranscript(id)`).
-- [ ] T071 [US7] Modify `app/src/components/chat/chat-input.tsx` — on send: call `chat-store.startRun(message)` which invokes `client.startRun({ conversationId: activeConversationId, agentId: selectedAgentId, message, surfaceTools: editorToolDeclarations })`. If `startRun` returns an `activeRunId` (409 — run already active), re-attach via `attachRun` instead.
-- [ ] T072 [US7] Implement conversation lifecycle in `chat-store.ts` actions: `createConversation()` — mint id `ate-<Date.now()>-<rand4>`, create `{ id, title: "New conversation", agentId: selectedAgentId, createdAt, lastActiveAt }`, push to `conversations[]`, set `activeConversationId`, persist. `selectConversation(id)` — set `activeConversationId`, set `selectedAgentId` = that conversation's `agentId`, load transcript, persist. `loadConversations()` — hydrate from `window.__bos.storage.get('chat-state')` on app mount.
+- [x] T068 [US7] Create `app/src/components/chat/conversation-selector.tsx` — dropdown: trigger button (muted `messages-square` icon + conversation title label + `chevron-down`), menu (labeled "Conversations", most-recent-first, each item shows `message-square` icon + title + sub-line `<agentName> · <relativeTime>`, active marked with `check`). Props: `conversations: AppConversation[]`, `activeId: string|null`, `agents: AgentInfo[]` (for sub-line), `onSelect(id)`. Styling per mockup `.dropdown-menu.conv-menu`.
+- [x] T069 [US7] Modify `app/src/components/chat/chat-header.tsx` — add: new-conversation icon button (`plus` icon, tooltip "New conversation", wired to `chat-store.createConversation()`) + `conversation-selector` (wired to `chat-store.conversations` + `selectConversation()`), anchored right after the flex spacer.
+- [x] T070 [US7] Modify `app/src/components/chat/chat-messages.tsx` — render the **active conversation's** transcript from `chat-store.transcripts[activeConversationId]`. When the active conversation has no messages, show the empty-state (mockup: `message-square` icon, "No messages yet", helper text). When switching conversations, re-read the transcript via `chat-store.loadTranscript(id)` (which calls `client.readTranscript(id)`).
+- [x] T071 [US7] Modify `app/src/components/chat/chat-input.tsx` — on send: call `chat-store.startRun(message)` which invokes `client.startRun({ conversationId: activeConversationId, agentId: selectedAgentId, message, surfaceTools: editorToolDeclarations })`. If `startRun` returns an `activeRunId` (409 — run already active), re-attach via `attachRun` instead.
+- [x] T072 [US7] Implement conversation lifecycle in `chat-store.ts` actions: `createConversation()` — mint id `ate-<Date.now()>-<rand4>`, create `{ id, title: "New conversation", agentId: selectedAgentId, createdAt, lastActiveAt }`, push to `conversations[]`, set `activeConversationId`, persist. `selectConversation(id)` — set `activeConversationId`, set `selectedAgentId` = that conversation's `agentId`, load transcript, persist. `loadConversations()` — hydrate from `window.__bos.storage.get('chat-state')` on app mount.
 
 **Checkpoint**: Conversation management fully functional — new/switch/persist, global across tabs, per-conversation agent binding
 
@@ -85,19 +85,19 @@
 
 ### Tests for User Story 8 ⚠️
 
-- [ ] T073 [P] [US8] E2E test: "editor tool chips render in violet" — mock a reply with `toolCalls: [{function: {name: "agentic_editor_add_content"}}]`, assert the chip has class `tool-chip editor` (violet styling)
-- [ ] T074 [P] [US8] E2E test: "non-editor tool chips render in gray" — mock a reply with `toolCalls: [{function: {name: "web_search"}}]`, assert the chip has class `tool-chip other` (neutral gray styling)
-- [ ] T075 [P] [US8] E2E test: "mixed tool row shows both colors" — mock a reply with `toolCalls: [{name: "agentic_editor_modify_content"}, {name: "read_file"}, {name: "memory_search"}]`, assert 1 editor chip + 2 other chips in the same `.tool-row`
-- [ ] T076 [P] [US8] E2E test: "tool row renders on conversation replay (load from transcript)" — seed a transcript file via `fs.write` mock with an assistant message carrying `toolCalls[]`, open that conversation, assert the tool row renders with correct colors (no live run needed)
-- [ ] T077 [P] [US8] Unit test in `e2e/agentic-text-editor.spec.ts` (or co-located `app/src/assistant/__tests__/tool-chip.test.ts`): `tool-chip.ts` prefix rule — `getToolChip("agentic_editor_open_file")` returns `{variant: "editor"}`; `getToolChip("web_search")` returns `{variant: "other"}`; `getToolChip("read_file")` returns `{variant: "other"}`
+- [x] T073 [P] [US8] E2E test: "editor tool chips render in violet" — mock a reply with `toolCalls: [{function: {name: "agentic_editor_add_content"}}]`, assert the chip has class `tool-chip editor` (violet styling)
+- [x] T074 [P] [US8] E2E test: "non-editor tool chips render in gray" — mock a reply with `toolCalls: [{function: {name: "web_search"}}]`, assert the chip has class `tool-chip other` (neutral gray styling)
+- [x] T075 [P] [US8] E2E test: "mixed tool row shows both colors" — mock a reply with `toolCalls: [{name: "agentic_editor_modify_content"}, {name: "read_file"}, {name: "memory_search"}]`, assert 1 editor chip + 2 other chips in the same `.tool-row`
+- [x] T076 [P] [US8] E2E test: "tool row renders on conversation replay (load from transcript)" — seed a transcript file via `fs.write` mock with an assistant message carrying `toolCalls[]`, open that conversation, assert the tool row renders with correct colors (no live run needed)
+- [x] T077 [P] [US8] Unit test in `e2e/agentic-text-editor.spec.ts` (or co-located `app/src/assistant/__tests__/tool-chip.test.ts`): `tool-chip.ts` prefix rule — `getToolChip("agentic_editor_open_file")` returns `{variant: "editor"}`; `getToolChip("web_search")` returns `{variant: "other"}`; `getToolChip("read_file")` returns `{variant: "other"}`
 
 ### Implementation for User Story 8
 
-- [ ] T078 [US8] Create `app/src/assistant/tool-chip.ts` — `getToolChip(toolName: string): ToolChip`. Rule: `toolName.startsWith("agentic_editor_")` → `{ variant: "editor", label: prettified(toolName), icon: "pencil" }`. Otherwise → `{ variant: "other", label: prettified(toolName), icon: "wrench" }`. `prettified` converts `snake_case` to `lowercase words` (e.g. `agentic_editor_add_content` → "add content", `web_search` → "web search"). This is the **single source of truth** for the dual-color rule.
-- [ ] T079 [US8] Create `app/src/components/chat/tool-row.tsx` — `<ToolRow toolCalls: ToolCallRef[] />` component. Maps each `toolCall.function.name` through `getToolChip()` and renders a `<span className={\`tool-chip ${chip.variant}\`}>` with the chip's icon + label. Layout: `display: flex; flex-wrap: wrap; gap: 5px;` (matching mockup `.tool-row`).
-- [ ] T080 [US8] Modify `app/src/components/chat/message-bubble.tsx` — for agent messages that have `toolCalls[]` (length > 0), render `<ToolRow toolCalls={message.toolCalls} />` between the message bubble and the timestamp. This **replaces** the v1 editor-only chip row. Styling must match the mockup: `.tool-chip.editor` (violet: `background: rgba(139,92,246,0.16); border: 1px solid rgba(139,92,246,0.35); color: #c4b5fd`) and `.tool-chip.other` (gray: `background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16); color: rgba(255,255,255,0.55)`).
-- [ ] T081 [US8] Create `app/src/assistant/run-projector.ts` — folds a run's `onRunEvent` events into the live render model consumed by `chat-store.ts`. Handles: `text_delta` (append to `streamingMessage`), `tool_call` (add to `liveToolStatus` map keyed by `callId`), `tool_result` (mark `liveToolStatus[callId].status = "done"`), `message` (finalize: replace `streamingMessage` with the settled message, clear `liveToolStatus`, dedupe by `message.id` against existing transcript). Exposes: `project(events, state) → newState` or a class with `feed(event)`.
-- [ ] T082 [US8] Wire live tool row in `chat-messages.tsx` — while a run is active (`chat-store.activeRunId` is set), render a live agent bubble with `streamingMessage` text + a `<ToolRow>` fed from `liveToolStatus` (only entries with `status !== "pending"`). When the `message` event finalizes, the live bubble transitions to the settled message (with its full `toolCalls[]` via T080's `<ToolRow>`).
+- [x] T078 [US8] Create `app/src/assistant/tool-chip.ts` — `getToolChip(toolName: string): ToolChip`. Rule: `toolName.startsWith("agentic_editor_")` → `{ variant: "editor", label: prettified(toolName), icon: "pencil" }`. Otherwise → `{ variant: "other", label: prettified(toolName), icon: "wrench" }`. `prettified` converts `snake_case` to `lowercase words` (e.g. `agentic_editor_add_content` → "add content", `web_search` → "web search"). This is the **single source of truth** for the dual-color rule.
+- [x] T079 [US8] Create `app/src/components/chat/tool-row.tsx` — `<ToolRow toolCalls: ToolCallRef[] />` component. Maps each `toolCall.function.name` through `getToolChip()` and renders a `<span className={\`tool-chip ${chip.variant}\`}>` with the chip's icon + label. Layout: `display: flex; flex-wrap: wrap; gap: 5px;` (matching mockup `.tool-row`).
+- [x] T080 [US8] Modify `app/src/components/chat/message-bubble.tsx` — for agent messages that have `toolCalls[]` (length > 0), render `<ToolRow toolCalls={message.toolCalls} />` between the message bubble and the timestamp. This **replaces** the v1 editor-only chip row. Styling must match the mockup: `.tool-chip.editor` (violet: `background: rgba(139,92,246,0.16); border: 1px solid rgba(139,92,246,0.35); color: #c4b5fd`) and `.tool-chip.other` (gray: `background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16); color: rgba(255,255,255,0.55)`).
+- [x] T081 [US8] Create `app/src/assistant/run-projector.ts` — folds a run's `onRunEvent` events into the live render model consumed by `chat-store.ts`. Handles: `text_delta` (append to `streamingMessage`), `tool_call` (add to `liveToolStatus` map keyed by `callId`), `tool_result` (mark `liveToolStatus[callId].status = "done"`), `message` (finalize: replace `streamingMessage` with the settled message, clear `liveToolStatus`, dedupe by `message.id` against existing transcript). Exposes: `project(events, state) → newState` or a class with `feed(event)`.
+- [x] T082 [US8] Wire live tool row in `chat-messages.tsx` — while a run is active (`chat-store.activeRunId` is set), render a live agent bubble with `streamingMessage` text + a `<ToolRow>` fed from `liveToolStatus` (only entries with `status !== "pending"`). When the `message` event finalizes, the live bubble transitions to the settled message (with its full `toolCalls[]` via T080's `<ToolRow>`).
 
 **Checkpoint**: Full tool-call visibility — dual-color chips render for all tools, both live and on replay
 
@@ -107,9 +107,9 @@
 
 **Purpose**: The app must not throw when capabilities are missing or reads fail
 
-- [ ] T083 [P] Implement "Assistant unavailable" state: if `listAgents()` rejects (capability not granted or network error), show a clear message in the chat pane replacing the input area. Editor pane unaffected. No crash.
-- [ ] T084 [P] Implement "Conversation not found" state: if `readTranscript(id)` fails (file deleted/corrupt), show "Conversation not found" in the message area, remove the stale entry from `conversations[]`, and auto-activate the next most-recent conversation (or show empty state if none remain).
-- [ ] T085 [P] Implement `startRun` 409 handling: if the response includes an `activeRunId`, call `attachRun(activeRunId)` instead of treating it as an error. (Covers: user opens a conversation while a run is still in-flight.)
+- [x] T083 [P] Implement "Assistant unavailable" state: if `listAgents()` rejects (capability not granted or network error), show a clear message in the chat pane replacing the input area. Editor pane unaffected. No crash.
+- [x] T084 [P] Implement "Conversation not found" state: if `readTranscript(id)` fails (file deleted/corrupt), show "Conversation not found" in the message area, remove the stale entry from `conversations[]`, and auto-activate the next most-recent conversation (or show empty state if none remain).
+- [x] T085 [P] Implement `startRun` 409 handling: if the response includes an `activeRunId`, call `attachRun(activeRunId)` instead of treating it as an error. (Covers: user opens a conversation while a run is still in-flight.)
 
 ---
 
@@ -139,11 +139,11 @@
 
 ## Phase 59: Polish & Verification
 
-- [ ] T088 [P] Run `npx tsc --noEmit --strict --jsx react-jsx --target ES2020 --module esnext --moduleResolution bundler --skipLibCheck --lib dom,dom.iterable,esnext --types node,react,react-dom data/user-apps/items/agentic-text-editor/app/src/main.tsx` — fix all type errors
-- [ ] T089 [P] Run `npm run lint` — fix all lint errors
-- [ ] T090 [P] Verify the app renders correctly at small (800px) and large (1920px) window sizes with the new header controls (no overflow, ellipsis works)
-- [ ] T091 [P] Verify conversation switch is instant with no layout shift (transcript loads synchronously from in-memory cache after first read)
-- [ ] T092 [P] Verify the agent dropdown and conversation dropdown menus close on outside click and Escape key
+- [x] T088 [P] Run `npx tsc --noEmit --strict --jsx react-jsx --target ES2020 --module esnext --moduleResolution bundler --skipLibCheck --lib dom,dom.iterable,esnext --types node,react,react-dom data/user-apps/items/agentic-text-editor/app/src/main.tsx` — fix all type errors
+- [x] T089 [P] Run `npm run lint` — fix all lint errors
+- [x] T090 [P] Verify the app renders correctly at small (800px) and large (1920px) window sizes with the new header controls (no overflow, ellipsis works)
+- [x] T091 [P] Verify conversation switch is instant with no layout shift (transcript loads synchronously from in-memory cache after first read)
+- [x] T092 [P] Verify the agent dropdown and conversation dropdown menus close on outside click and Escape key
 
 ---
 
