@@ -1,6 +1,6 @@
 {
   "id": "agentic-text-editor",
-  "name": "Agentic Text Editor",
+  "name": "Editor",
   "icon": "PenTool",
   "createdAt": 1787849228338,
   "entry": "src/main.tsx"
