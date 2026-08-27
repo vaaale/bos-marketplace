@@ -254,11 +254,11 @@ test.describe("Agentic Text Editor v2 — agent selector", () => {
 
     const menu = await openMenu(app, "ate-agent-selector");
     await expect(menu).toContainText("Agents");
-    // The Main Assistant is well-known and always registered, so it is the one
+    // The Assistant is well-known and always registered, so it is the one
     // option that can be asserted by name on any BOS install.
     const main = menu.getByTestId(`ate-agent-option-${MAIN_ASSISTANT_ID}`);
     await expect(main).toBeVisible();
-    await expect(main).toContainText("Main Assistant");
+    await expect(main).toContainText("Assistant");
 
     // Leave the header as it was found — Escape closes the menu (focus is on
     // the trigger inside the iframe, which is where the handler lives).
@@ -273,13 +273,13 @@ test.describe("Agentic Text Editor v2 — agent selector", () => {
     await menu.getByTestId(`ate-agent-option-${MAIN_ASSISTANT_ID}`).click();
     await expect(menu).toBeHidden();
 
-    await expect(selectorLabel(app, "ate-agent-selector")).toHaveText("Main Assistant");
+    await expect(selectorLabel(app, "ate-agent-selector")).toHaveText("Assistant");
   });
 
   test("agent selection persists across reload", async ({ page, request }) => {
     const agents = await registeredAgents(request);
     const other = agents.find((a) => a.id !== MAIN_ASSISTANT_ID);
-    test.skip(!other, "only the Main Assistant is registered on this install");
+    test.skip(!other, "only the Assistant is registered on this install");
     const second = other as { id: string; name: string };
 
     const app = await openEditor(page, request);
@@ -295,10 +295,10 @@ test.describe("Agentic Text Editor v2 — agent selector", () => {
     const reopened = await openEditor(page, request);
     await expect(selectorLabel(reopened, "ate-agent-selector")).toHaveText(second.name);
 
-    // Put the Main Assistant back so the rest of the run starts where it did.
+    // Put the Assistant back so the rest of the run starts where it did.
     const backMenu = await openMenu(reopened, "ate-agent-selector");
     await backMenu.getByTestId(`ate-agent-option-${MAIN_ASSISTANT_ID}`).click();
-    await expect(selectorLabel(reopened, "ate-agent-selector")).toHaveText("Main Assistant");
+    await expect(selectorLabel(reopened, "ate-agent-selector")).toHaveText("Assistant");
   });
 });
 
@@ -318,6 +318,9 @@ test.describe("Agentic Text Editor v2 — conversations", () => {
     const app = await openEditor(page, request);
 
     const label = selectorLabel(app, "ate-agent-selector");
+    // Wait for the real agent catalog to arrive (label changes from the
+    // seeded fallback name to the real one, e.g. "Assistant").
+    await expect(label).not.toHaveText("Main Assistant", { timeout: 10_000 });
     const before = (await label.textContent())?.trim() ?? "";
     expect(before.length).toBeGreaterThan(0);
 

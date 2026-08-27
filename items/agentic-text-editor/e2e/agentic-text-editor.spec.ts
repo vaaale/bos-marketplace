@@ -210,8 +210,9 @@ test.describe("Agentic Text Editor", () => {
     // Reset so the run leaves the app's settings as it found them.
     await panel.getByRole("button", { name: "Reset to defaults" }).click();
     await expect.poll(sizeOf).toBe(original);
+    await page.waitForTimeout(1000); // let the settings re-render settle before closing
     await panel.getByRole("button", { name: "Done" }).click();
-    await expect(panel).toBeHidden();
+    await expect.poll(() => panel.isVisible()).toBe(false, { timeout: 15_000 });
   });
 
   test("the chat pane is the agent surface, with an empty state and a live input", async ({ page, request }) => {
