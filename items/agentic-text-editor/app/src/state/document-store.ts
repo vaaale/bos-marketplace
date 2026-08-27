@@ -233,15 +233,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   async hydrate() {
     if (get().hydrated) return;
     const [raw, settings] = await Promise.all([storageGet(STATE_KEY), loadSettings()]);
-    let snapshot: Partial<PersistedState> = {};
-    if (raw) {
-      try {
-        snapshot = JSON.parse(raw) as Partial<PersistedState>;
-      } catch {
-        snapshot = {};
-      }
-    }
-    const documents = Array.isArray(snapshot.documents) ? snapshot.documents.filter(isDocument) : [];
+    // The KV store is the cross-profile source of truth, but its writes are
+    // debounced — so the synchronous localStorage mirror can be newer (the
+    // pagehide flush's KV call is routinely killed by the unload). Take
+    // whichever of the two snapshots is fresher; see `fresherSnapshot`.
+    const snapshot = fresherSnapshot(parseSnapshot(raw), readLocalSnapshot()) ?? {};
+    const documents = documentsOf(snapshot);
     const activeDocumentId =
       typeof snapshot.activeDocumentId === "string" && documents.some((d) => d.id === snapshot.activeDocumentId)
         ? snapshot.activeDocumentId
@@ -290,9 +287,12 @@ export { isDirty };
 
 // ------------------------------------------------------------------ persistence
 //
-// FR-019/020: tabs, buffers and settings survive an app restart. Debounced so a
-// fast typist doesn't hammer the KV store. Chat history is NOT here — it is
-// server-owned and re-read per conversation (FR-021, v2).
+// FR-019/020: tabs, buffers and settings survive an app restart. Two writes per
+// change: a synchronous localStorage mirror (always current, same profile only)
+// and a debounced KV write (durable and cross-profile, but async — so it can be
+// cut short by an unload). Hydration reads both and takes the fresher one. Chat
+// history is NOT here — it is server-owned and re-read per conversation
+// (FR-021, v2).
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -307,10 +307,81 @@ function snapshotOf(state: EditorState): PersistedState {
   };
 }
 
+/**
+ * Mirror the snapshot into localStorage, synchronously and undebounced.
+ *
+ * Why both stores: the KV write is async AND debounced, so the one that matters
+ * most — the `pagehide` flush — is regularly aborted by the browser as the
+ * document goes away, leaving the KV store a snapshot behind and losing the
+ * user's tabs across a restart. `localStorage.setItem` completes before the
+ * event handler returns, so this copy is always current for THIS profile. The
+ * KV store keeps its job as the durable, cross-profile store.
+ *
+ * Same key, same shape as the KV entry (and as bos.ts's own storage fallback),
+ * so whichever one hydrate reads it parses identically.
+ */
+function writeLocalSnapshot(snapshot: PersistedState): void {
+  try {
+    window.localStorage.setItem(STATE_KEY, JSON.stringify(snapshot));
+  } catch {
+    /* no localStorage (private mode, quota, a sandbox that denies it) — the KV
+       store is still being written, so this is a lost cache, not lost state. */
+  }
+}
+
+function parseSnapshot(raw: string | null): Partial<PersistedState> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedState> | null;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readLocalSnapshot(): Partial<PersistedState> | null {
+  try {
+    return parseSnapshot(window.localStorage.getItem(STATE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function documentsOf(snapshot: Partial<PersistedState> | null): EditorDocument[] {
+  return snapshot && Array.isArray(snapshot.documents) ? snapshot.documents.filter(isDocument) : [];
+}
+
+/** The most recent save recorded in a snapshot, or 0 if nothing was ever saved. */
+function newestSave(documents: EditorDocument[]): number {
+  return documents.reduce((max, d) => (typeof d.lastSaved === "number" && d.lastSaved > max ? d.lastSaved : max), 0);
+}
+
+/**
+ * Choose between the KV snapshot and the localStorage mirror.
+ *
+ * More documents wins (a snapshot that predates opening a tab can only be
+ * older); on a tie, the more recent `lastSaved` wins; on a full tie the KV
+ * store wins, since it is the real store and the two are then equivalent.
+ */
+function fresherSnapshot(
+  kv: Partial<PersistedState> | null,
+  local: Partial<PersistedState> | null,
+): Partial<PersistedState> | null {
+  if (!local) return kv;
+  if (!kv) return local;
+  const kvDocs = documentsOf(kv);
+  const localDocs = documentsOf(local);
+  if (localDocs.length !== kvDocs.length) return localDocs.length > kvDocs.length ? local : kv;
+  return newestSave(localDocs) > newestSave(kvDocs) ? local : kv;
+}
+
 /** Start persisting state changes. Returns an unsubscribe function. */
 export function startPersistence(): () => void {
   const unsubscribe = useEditorStore.subscribe((state) => {
     if (!state.hydrated) return;
+    // Synchronous mirror first: it must be current even if the tab dies before
+    // the debounced KV write below ever fires.
+    writeLocalSnapshot(snapshotOf(state));
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => {
       void storageSet(STATE_KEY, JSON.stringify(snapshotOf(useEditorStore.getState())));
@@ -326,5 +397,9 @@ export function startPersistence(): () => void {
 export function flushPersistence(): void {
   const state = useEditorStore.getState();
   if (!state.hydrated) return;
-  void storageSet(STATE_KEY, JSON.stringify(snapshotOf(state)));
+  const snapshot = snapshotOf(state);
+  // localStorage lands before we return; the KV call may well be cancelled by
+  // the unload, which is exactly why the mirror exists.
+  writeLocalSnapshot(snapshot);
+  void storageSet(STATE_KEY, JSON.stringify(snapshot));
 }
