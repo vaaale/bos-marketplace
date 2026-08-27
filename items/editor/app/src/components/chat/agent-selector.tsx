@@ -47,24 +47,32 @@ export function AgentSelector({
       align="left"
       title="Select agent"
       testId="ate-agent-selector"
-      disabled={disabled || agents.length === 0}
+      // Gated on the assistant's reachability ALONE. It used to also disable
+      // itself whenever `agents` was empty, which made "the catalog has not
+      // arrived yet" look identical to "there is no assistant" — the store now
+      // seeds the Main Assistant so this list is never empty anyway.
+      disabled={disabled}
       icon={<Sparkles size={14} strokeWidth={1.9} className="ate-selector-icon ate-accent-icon" />}
     >
       {(close) =>
-        agents.map((agent) => (
-          <DropdownItem
-            key={agent.id}
-            icon={<AgentGlyph agentId={agent.id} />}
-            name={agent.name}
-            sub={agent.id === MAIN_ASSISTANT_ID ? "default" : agent.description || undefined}
-            active={agent.id === selectedAgentId}
-            testId={`ate-agent-option-${agent.id}`}
-            onSelect={() => {
-              close();
-              onSelect(agent.id);
-            }}
-          />
-        ))
+        agents.length === 0 ? (
+          <div className="ate-menu-empty">No agents registered.</div>
+        ) : (
+          agents.map((agent) => (
+            <DropdownItem
+              key={agent.id}
+              icon={<AgentGlyph agentId={agent.id} />}
+              name={agent.name}
+              sub={agent.id === MAIN_ASSISTANT_ID ? "default" : agent.description || undefined}
+              active={agent.id === selectedAgentId}
+              testId={`ate-agent-option-${agent.id}`}
+              onSelect={() => {
+                close();
+                onSelect(agent.id);
+              }}
+            />
+          ))
+        )
       }
     </Dropdown>
   );

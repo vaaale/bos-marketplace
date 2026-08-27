@@ -9,7 +9,7 @@
 // the only thing that changes what is shown here.
 
 import { useEffect, useRef } from "react";
-import { AlertTriangle, Loader2, MessageSquare, PlugZap } from "lucide-react";
+import { AlertTriangle, Loader2, MessageSquare, PlugZap, RotateCw } from "lucide-react";
 import { MessageBubble } from "./message-bubble";
 import type { ChatMessage } from "../../types";
 
@@ -24,12 +24,20 @@ export function ChatMessages({
   /** A conversation's transcript could not be read; shown as a banner, because
    *  by the time it renders the app has already moved on to the next one. */
   transcriptError,
+  /** A retry is already in flight — the button says so instead of stacking. */
+  retrying,
+  /** Ask the store to probe the assistant again. The degraded state has to have
+   *  a way OUT: granting the capability in Settings re-registers the manifest
+   *  without reloading this iframe, so only a fresh call can notice. */
+  onRetry,
 }: {
   messages: ChatMessage[];
   conversationId: string | null;
   loading?: boolean;
   unavailable?: string | null;
   transcriptError?: string | null;
+  retrying?: boolean;
+  onRetry?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stick = useRef(true);
@@ -80,8 +88,20 @@ export function ChatMessages({
           <h3>Assistant unavailable</h3>
           <p>
             {unavailable} The editor still works — open, edit and save documents as usual. Grant this app the
-            Assistant capability in Settings → Apps to bring the chat back.
+            Assistant capability in Settings → Apps, then try again.
           </p>
+          {onRetry && (
+            <button
+              className="ate-btn ate-retry-btn"
+              type="button"
+              onClick={onRetry}
+              disabled={retrying}
+              data-testid="ate-assistant-retry"
+            >
+              <RotateCw size={13} strokeWidth={1.9} className={retrying ? "ate-typing" : undefined} />
+              {retrying ? "Reconnecting…" : "Try again"}
+            </button>
+          )}
         </div>
       ) : loading && messages.length === 0 ? (
         <div className="ate-chat-empty" data-testid="ate-transcript-loading">

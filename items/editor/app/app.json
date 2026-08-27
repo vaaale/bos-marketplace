@@ -2,6 +2,6 @@
   "id": "editor",
   "name": "Editor",
   "icon": "PenTool",
-  "createdAt": 1787833822021,
+  "createdAt": 1787834751660,
   "entry": "src/main.tsx"
 }

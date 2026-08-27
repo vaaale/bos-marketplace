@@ -21,7 +21,7 @@
 //     one thing that DOES reject is an ungranted capability — which this module
 //     turns into `{ error }` too, so callers have exactly one shape to handle.
 
-import { whenReady } from "../services/bos";
+import { storageGet, storageSet, whenReady } from "../services/bos";
 import type { BosApi, BosAssistantApi, BosRunEvent } from "../services/bos";
 import type { AgentInfo, ChatPersistence, TranscriptMessage } from "../types";
 
@@ -43,6 +43,36 @@ interface Reply {
   [key: string]: unknown;
 }
 
+/**
+ * A broker call that never settles is worse than one that fails.
+ *
+ * The channel is `postMessage` + a correlation id: if a call is posted before
+ * the parent's listener is attached, nothing ever answers it and the promise
+ * stays pending FOREVER. A pending catalog read is indistinguishable from a
+ * slow one, so the chat would sit in a permanent half-loaded state with no
+ * error and no retry. Turning silence into a rejection is what makes the
+ * retry loop in chat-store possible at all.
+ */
+const CALL_TIMEOUT_MS = 10_000;
+/** A run start does real work server-side, so it gets a longer leash. */
+const START_RUN_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`BrowserOS did not answer the ${what} request.`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: Error) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 async function sdk(): Promise<BosApi> {
   const api = await whenReady();
   if (!api) throw new Error("BrowserOS is not available.");
@@ -59,9 +89,9 @@ async function assistant(): Promise<BosAssistantApi> {
 }
 
 /** Run a broker call, normalising a rejection into the same `{ error }` shape. */
-async function attempt(fn: () => Promise<unknown>): Promise<Reply> {
+async function attempt(fn: () => Promise<unknown>, what: string, ms = CALL_TIMEOUT_MS): Promise<Reply> {
   try {
-    const body = await fn();
+    const body = await withTimeout(fn(), ms, what);
     return body && typeof body === "object" ? (body as Reply) : {};
   } catch (err) {
     return { error: (err as Error).message || "The assistant is unavailable." };
@@ -77,7 +107,10 @@ async function attempt(fn: () => Promise<unknown>): Promise<Reply> {
  */
 export async function listAgents(): Promise<AgentInfo[]> {
   const api = await assistant();
-  const body = (await api.listAgents()) as { agents?: unknown; error?: string };
+  const body = (await withTimeout(api.listAgents(), CALL_TIMEOUT_MS, "agent list")) as {
+    agents?: unknown;
+    error?: string;
+  };
   if (body && typeof body === "object" && typeof body.error === "string") throw new Error(body.error);
   const raw = Array.isArray(body?.agents) ? (body.agents as Record<string, unknown>[]) : [];
   const agents = raw
@@ -111,7 +144,7 @@ export interface StartRunResult {
 
 /** Start a run. Never throws; a 409 comes back as `{ activeRunId }` (T085). */
 export async function startRun(input: StartRunInput): Promise<StartRunResult> {
-  const body = await attempt(async () => (await assistant()).startRun(input));
+  const body = await attempt(async () => (await assistant()).startRun(input), "run start", START_RUN_TIMEOUT_MS);
   return {
     runId: typeof body.runId === "string" ? body.runId : undefined,
     activeRunId: typeof body.activeRunId === "string" ? body.activeRunId : undefined,
@@ -131,18 +164,18 @@ export async function onRunEvent(runId: string, cb: (event: BosRunEvent) => void
 
 /** Answer a frontend tool call. First claim wins, server-side. */
 export async function postToolResult(runId: string, callId: string, result: string): Promise<void> {
-  await attempt(async () => (await assistant()).postToolResult(runId, callId, result));
+  await attempt(async () => (await assistant()).postToolResult(runId, callId, result), "tool result");
 }
 
 /** The conversation's live run, if any — the reconnect probe. */
 export async function getActiveRun(conversationId: string): Promise<string | null> {
-  const body = await attempt(async () => (await assistant()).getActiveRun(conversationId));
+  const body = await attempt(async () => (await assistant()).getActiveRun(conversationId), "active run");
   return typeof body.runId === "string" ? body.runId : null;
 }
 
 /** Stop a run. Idempotent, and safe to call for a run that already finished. */
 export async function cancelRun(runId: string): Promise<void> {
-  await attempt(async () => (await assistant()).cancelRun(runId));
+  await attempt(async () => (await assistant()).cancelRun(runId), "cancel");
 }
 
 // ------------------------------------------------------------------ transcript
@@ -235,35 +268,17 @@ function isConversation(value: unknown): boolean {
 
 // ------------------------------------------------------------------ raw KV
 //
-// The per-app key/value store, with the same localStorage fallback the rest of
-// the app uses: `storage` is a separate grant from `assistant`, and a user who
-// has revoked it should lose persistence, not the app.
+// The per-app key/value store. `storage` is a separate grant from `assistant`,
+// and a user who has it revoked should lose PERSISTENCE, not the app — so this
+// is one thin pass-through to the shared implementation in services/bos.ts,
+// which remembers the refusal and falls back to localStorage. It can neither
+// throw nor report an assistant failure, which is deliberate: the chat's
+// availability must never depend on whether this app can write a file.
 
 export async function readKey(key: string): Promise<string | null> {
-  const api = await whenReady();
-  if (api) {
-    const value = await api.storage.get(key).catch(() => undefined);
-    if (value !== undefined) return value;
-  }
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
+  return storageGet(key);
 }
 
 export async function writeKey(key: string, value: string): Promise<void> {
-  const api = await whenReady();
-  if (api) {
-    const ok = await api.storage
-      .set(key, value)
-      .then(() => true)
-      .catch(() => false);
-    if (ok) return;
-  }
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    /* nothing else we can do */
-  }
+  await storageSet(key, value);
 }

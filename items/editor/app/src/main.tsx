@@ -73,6 +73,10 @@ function App() {
   const chat = useChatStore();
   const messages = useMemo(() => chatMessagesFor(chat), [chat]);
   const conversations = useMemo(() => conversationsByRecency(chat.conversations), [chat.conversations]);
+  // The ONE thing that disables the chat header's controls. The store sets it
+  // only after the catalog read has failed every retry, so "not loaded yet"
+  // never reads as "unavailable" — that conflation is what left the agent
+  // picker, the new-conversation button and the conversation picker inert.
   const assistantUnavailable = chat.assistantError;
 
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -298,6 +302,8 @@ function App() {
           loading={chat.loadingTranscript}
           unavailable={assistantUnavailable}
           transcriptError={chat.transcriptError}
+          retrying={chat.assistantRetrying}
+          onRetry={() => void chat.retryAssistant()}
         />
         <ChatInput
           busy={chat.busy}

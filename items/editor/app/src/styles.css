@@ -656,6 +656,12 @@ button {
   line-height: 1.6;
 }
 
+/* The way out of the "Assistant unavailable" state. Sits under the copy, so it
+   reads as the next step rather than as a fifth header control. */
+.ate-retry-btn {
+  margin-top: 4px;
+}
+
 .ate-message {
   display: flex;
   flex-direction: column;

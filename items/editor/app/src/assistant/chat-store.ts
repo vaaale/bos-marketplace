@@ -39,6 +39,37 @@ const FOREIGN_TOOL_GRACE_MS = 4000;
 /** How often to check that a run we are attached to is still alive. */
 const WATCHDOG_MS = 5000;
 
+/**
+ * The agent catalog is the app's readiness probe, so it RETRIES.
+ *
+ * The failure this guards against: the catalog read is the very first broker
+ * call the app makes, and the ways it can fail on a cold start are all
+ * transient — a call posted before the parent frame's message listener is
+ * attached, a grant that is still being resolved, a BOS still warming up. A
+ * single attempt that treats any of those as "the assistant is unavailable"
+ * turns a millisecond of startup into a session-long dead chat, because
+ * nothing ever asks again.
+ *
+ * One attempt, then four backed-off retries (~6.9s in total) before the
+ * degraded state is allowed to latch — and even then `retryAssistant` can
+ * clear it, so a capability granted in Settings is one click from working.
+ */
+const AGENT_RETRY_BACKOFF_MS = [300, 800, 1800, 4000];
+
+/**
+ * What the agent selector shows before (or instead of) the real catalog.
+ *
+ * The Main Assistant's id is well-known and always registered, so a chat can be
+ * driven with nothing loaded at all. Seeding it means the selector is never
+ * empty — and an empty selector is a DISABLED selector, which is the same
+ * stuck-control bug arriving by a different route.
+ */
+const FALLBACK_AGENTS: AgentInfo[] = [
+  { id: client.DEFAULT_AGENT_ID, name: "Main Assistant", type: "primary" },
+];
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** A locally-echoed user message: what the user typed, before (or instead of)
  *  the server owning it. Never persisted. */
 interface ChatEcho {
@@ -63,7 +94,13 @@ export interface ChatState {
   /** False until the persisted index has been read. */
   hydrated: boolean;
   agents: AgentInfo[];
-  /** Non-null when the assistant cannot be used at all (T083). */
+  /** True once the REAL catalog has been read; until then `agents` is the
+   *  fallback list, which is usable but not authoritative. */
+  agentsLoaded: boolean;
+  /** A catalog read (first load or a retry) is in flight. */
+  assistantRetrying: boolean;
+  /** Non-null when the assistant genuinely cannot be reached — set ONLY after
+   *  every retry has failed, never as a starting state (T083). */
   assistantError: string | null;
   conversations: AppConversation[];
   activeConversationId: string | null;
@@ -79,6 +116,8 @@ export interface ChatState {
   busy: boolean;
 
   init(): Promise<void>;
+  /** Re-attempt the catalog read after the degraded state has latched. */
+  retryAssistant(): Promise<void>;
   selectAgent(agentId: string): void;
   createConversation(): AppConversation;
   selectConversation(conversationId: string): Promise<void>;
@@ -338,9 +377,60 @@ export const useChatStore = create<ChatState>((set, get) => {
     }, WATCHDOG_MS);
   };
 
+  /**
+   * Read the agent catalog, retrying before conceding.
+   *
+   * Returns true once the real catalog is in the store. Only an exhausted
+   * retry budget sets `assistantError` — which is the ONLY thing that disables
+   * the chat header's controls, so nothing transient can reach them.
+   */
+  const loadAgents = async (): Promise<boolean> => {
+    if (get().assistantRetrying) return get().agentsLoaded;
+    set({ assistantRetrying: true });
+    let lastError = "";
+    try {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const agents = await client.listAgents();
+          set({ agents, agentsLoaded: true, assistantError: null });
+          if (!agents.some((a) => a.id === get().selectedAgentId)) {
+            // The remembered agent has been deleted since. Fall back rather
+            // than sending every message to an id that no longer resolves.
+            const fallback = agents[0].id;
+            set({ selectedAgentId: fallback });
+            const current = get().activeConversationId;
+            if (current) patchConversation(current, { agentId: fallback });
+            else persist();
+          }
+          return true;
+        } catch (err) {
+          lastError = (err as Error).message || "";
+          const delay = AGENT_RETRY_BACKOFF_MS[attempt];
+          if (delay === undefined) break;
+          await sleep(delay);
+        }
+      }
+      set({ assistantError: lastError || "The assistant is unavailable." });
+      return false;
+    } finally {
+      set({ assistantRetrying: false });
+    }
+  };
+
+  /** Rejoin a run that is still in flight in `conversationId`, if there is one. */
+  const resumeActiveRun = async (conversationId: string): Promise<void> => {
+    if (get().live || get().activeConversationId !== conversationId) return;
+    const runId = await client.getActiveRun(conversationId);
+    if (runId && !get().live && get().activeConversationId === conversationId) {
+      void attachRun(runId, conversationId);
+    }
+  };
+
   return {
     hydrated: false,
-    agents: [],
+    agents: FALLBACK_AGENTS,
+    agentsLoaded: false,
+    assistantRetrying: false,
     assistantError: null,
     conversations: [],
     activeConversationId: null,
@@ -392,34 +482,33 @@ export const useChatStore = create<ChatState>((set, get) => {
 
       set({ conversations, activeConversationId, selectedAgentId, hydrated: true });
 
-      // The agent catalog. A rejection here is the "Assistant unavailable"
-      // state (a revoked capability, or a BOS that cannot answer) — the editor
-      // pane must be entirely unaffected by it.
-      try {
-        const agents = await client.listAgents();
-        set({ agents, assistantError: null });
-        if (!agents.some((a) => a.id === get().selectedAgentId)) {
-          // The remembered agent has been deleted since. Fall back rather than
-          // sending every message to an id that no longer resolves.
-          const fallback = agents[0].id;
-          set({ selectedAgentId: fallback });
-          const current = get().activeConversationId;
-          if (current) patchConversation(current, { agentId: fallback });
-          persist();
-        }
-      } catch (err) {
-        set({ assistantError: (err as Error).message || "The assistant is unavailable." });
-      }
-
+      // Everything above this line is LOCAL state — the conversation index and
+      // which agent/conversation is selected — so the header's controls are
+      // already fully usable, and nothing below may take that away.
+      //
+      // The catalog read and the transcript read then run CONCURRENTLY, and
+      // neither gates the other. The old code awaited the catalog first and
+      // latched "Assistant unavailable" on its first rejection, which made a
+      // cold-start hiccup permanent: `init` is guarded by `hydrated`, so it
+      // never ran a second time and nothing else ever cleared the flag.
       const current = get().activeConversationId;
-      if (current) {
-        await loadTranscript(current);
-        if (!get().assistantError) {
-          // A run may still be in flight from before the app was closed.
-          const runId = await client.getActiveRun(current);
-          if (runId) void attachRun(runId, current);
-        }
-      }
+      await Promise.all([
+        loadAgents(),
+        current ? loadTranscript(current).then(() => resumeActiveRun(current)) : Promise.resolve(),
+      ]);
+    },
+
+    /**
+     * Re-attempt the catalog read. This is the way OUT of the degraded state:
+     * a capability granted in Settings → Apps re-registers the app's manifest
+     * without reloading its iframe, so the app has to be able to ask again.
+     */
+    async retryAssistant() {
+      if (get().assistantRetrying) return;
+      set({ assistantError: null });
+      if (!(await loadAgents())) return;
+      const current = get().activeConversationId;
+      if (current) await resumeActiveRun(current);
     },
 
     // ---------------------------------------------------------------- agents
@@ -469,10 +558,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       persist();
       await loadTranscript(conversationId);
       // Rejoin a run that is still going in the conversation just opened.
-      if (!get().assistantError && !get().live && get().activeConversationId === conversationId) {
-        const runId = await client.getActiveRun(conversationId);
-        if (runId && get().activeConversationId === conversationId) void attachRun(runId, conversationId);
-      }
+      if (!get().assistantError) await resumeActiveRun(conversationId);
     },
 
     // ---------------------------------------------------------------- sending
@@ -480,8 +566,14 @@ export const useChatStore = create<ChatState>((set, get) => {
     async send(text) {
       const trimmed = text.trim();
       if (!trimmed) return;
+      if (get().busy) return;
+      if (get().assistantError) {
+        // Reachable programmatically (the composer is disabled in this state).
+        // Never refuse on a stale verdict — re-probe first.
+        set({ assistantError: null });
+        if (!(await loadAgents())) return;
+      }
       const state = get();
-      if (state.busy || state.assistantError) return;
 
       const conversation =
         state.conversations.find((c) => c.id === state.activeConversationId) ?? get().createConversation();

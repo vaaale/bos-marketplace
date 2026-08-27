@@ -72,17 +72,52 @@ function sdk(): BosApi | null {
   return w.__bos ?? null;
 }
 
-/** Resolve once the SDK has installed itself (it dispatches `bos:ready`). */
+/** How often to re-check for `window.__bos` while waiting for it. */
+const READY_POLL_MS = 40;
+
+/** Memoised once the SDK is found — after that `whenReady` is a plain lookup. */
+let resolved: BosApi | null = null;
+
+/**
+ * Resolve once the SDK has installed itself.
+ *
+ * BOS inlines the SDK into the app document's <head>, so in practice `__bos`
+ * already exists by the time this module's first caller runs. But that is a
+ * property of the SERVING route, not a contract this app can lean on: a preview
+ * harness, a slow inline script, or a future async injection would all leave a
+ * window where it is absent. Waiting on `bos:ready` ALONE is not enough either
+ * — that event fires exactly once, at install time, so a listener attached
+ * afterwards never hears it and would wait out the whole timeout for an SDK
+ * that is already sitting there.
+ *
+ * So this both listens for the event AND polls, and returns as soon as either
+ * says yes. Callers must still handle `null`: "no SDK at all" is a real state
+ * (a bare browser preview), just never a state we should INVENT by giving up
+ * on an SDK that simply arrived a tick late — that mistake is what latches the
+ * chat into its degraded state for the rest of the session.
+ */
 export function whenReady(timeoutMs = 3000): Promise<BosApi | null> {
-  if (sdk()) return Promise.resolve(sdk());
+  if (resolved) return Promise.resolve(resolved);
+  const now = sdk();
+  if (now) {
+    resolved = now;
+    return Promise.resolve(now);
+  }
   return new Promise((resolve) => {
-    const done = (): void => {
-      window.removeEventListener("bos:ready", done);
+    const finish = (): void => {
+      window.removeEventListener("bos:ready", onReady);
+      clearInterval(poll);
       clearTimeout(timer);
-      resolve(sdk());
+      resolved = sdk();
+      resolve(resolved);
     };
-    const timer = setTimeout(done, timeoutMs);
-    window.addEventListener("bos:ready", done);
+    const check = (): void => {
+      if (sdk()) finish();
+    };
+    const onReady = (): void => finish();
+    const poll = setInterval(check, READY_POLL_MS);
+    const timer = setTimeout(finish, timeoutMs);
+    window.addEventListener("bos:ready", onReady);
   });
 }
 
@@ -128,14 +163,35 @@ export async function notify(message: string): Promise<void> {
 
 // ---------------------------------------------------------------- storage
 //
-// Per-app persistent KV. Falls back to localStorage when the capability is
-// missing so the app still behaves sensibly in a bare preview.
+// Per-app persistent KV, with a localStorage fallback.
+//
+// `storage` is a SEPARATE grant from `assistant`, and BOS does not re-seed an
+// item's grant file on reinstall — so an item whose manifest asks for both can
+// perfectly well be running with only one of them. Persistence therefore has to
+// degrade on its own: losing `storage` costs the user durable state, never a
+// working chat, and NOTHING in here may ever report a failure that the chat's
+// availability check can see.
+//
+// The first rejection is remembered. Without that, every keystroke-driven
+// snapshot write would fire another doomed broker call and log another
+// unhandled-looking rejection for the life of the session.
+
+let storageGranted: boolean | null = null;
+
+/** False once a storage call has been refused — the app is on localStorage. */
+export function isStoragePersistent(): boolean {
+  return storageGranted !== false;
+}
 
 export async function storageGet(key: string): Promise<string | null> {
   const api = await whenReady();
-  if (api) {
+  if (api && storageGranted !== false) {
     const v = await api.storage.get(key).catch(() => undefined);
-    if (v !== undefined) return v;
+    if (v !== undefined) {
+      storageGranted = true;
+      return v;
+    }
+    storageGranted = false;
   }
   try {
     return window.localStorage.getItem(key);
@@ -146,11 +202,12 @@ export async function storageGet(key: string): Promise<string | null> {
 
 export async function storageSet(key: string, value: string): Promise<void> {
   const api = await whenReady();
-  if (api) {
+  if (api && storageGranted !== false) {
     const ok = await api.storage
       .set(key, value)
       .then(() => true)
       .catch(() => false);
+    storageGranted = ok;
     if (ok) return;
   }
   try {
