@@ -84,7 +84,12 @@ overlay, controls legend); **canvas owns only the playfield and the next-preview
 2. **Tetromino shape table** — 7 shapes (I, O, T, S, Z, J, L), each with its
    per-rotation cell offsets and fixed colour (see §3.1).
 3. **High-score store** — load/persist top-10 with in-memory fallback (ADR-3);
-   `record(score) -> rankIndex|−1`, `list()`.
+   `record(score) -> rankIndex|−1` (0-based rank of the recorded score within the
+   top-10, or −1 if it didn't make the cut), `list() -> number[]` (descending,
+   ≤10, `[]` when the store is empty). **Empty / first-run:** a fresh install or
+   cleared storage gives `list() === []`; the first-ever `record(s)` is rank `0`
+   (displayed rank 1) and earns the "New high score" badge (badge condition in
+   ADR-3).
 4. **Game state model** — one `state` object: `grid` (ROWS×COLS of `null`|
    colourKey), `active` `{shape, rot, x, y}`, `next` (shape key), `score`,
    `lines`, `level`, `phase` (`'playing'`|`'gameover'`), plus a derived
@@ -102,8 +107,14 @@ overlay, controls legend); **canvas owns only the playfield and the next-preview
    `floor(lines/10)+1` driving `fallMs` (FR-012/013, ADR-1 note on speed).
 8. **Rendering** — `renderBoard()` (locked cells → faint grid → drop-ghost →
    active piece with glow), `renderNext()` (centre shape in 88×88), `renderHUD()`
-   (DOM: score/lines/level), `renderHighScores()` (DOM lists, side + overlay,
-   with `.top`/`.new` highlighting), `renderOverlay(show)`.
+   (DOM: score/lines/level), `renderHighScores()` (DOM lists — side `#hsSide` and
+   overlay `#hsGo` — with `.top`/`.new` highlighting, **all keyed off the single
+   `record()` rank** so the two lists stay in sync), `renderOverlay(show)`.
+   **Empty state**: when `list()` is empty (fresh install / cleared storage), both
+   surfaces render either an empty list or one muted "No scores yet" placeholder
+   row — never a phantom entry, and **no** "★ New high score" badge. The `.new`
+   highlight (and therefore the badge) exists only at the row whose value is the
+   just-recorded score, which exists only after a qualifying `record()`.
 9. **Game loop** — `requestAnimationFrame` with a fixed-timestep accumulator for
    gravity (ADR-1); render every frame, step gravity when the accumulator passes
    `fallMs`.
@@ -151,11 +162,14 @@ stateDiagram-v2
 - **Playing**: gravity ticks via the loop; input active; HUD/next/high-scores
   live.
 - **GameOver**: reached the instant `spawn()`'s piece collides at its start
-  position (FR-015/016). The loop stops stepping gravity; the overlay card is
-  shown over the piled board with final score, the "★ New high score" badge
-  (only if the score made the top 10), the re-sorted top-10 (new entry
-  highlighted), and a pulsing "Enter Restart" prompt. `record(finalScore)` runs
-  here (FR-021).
+  position (FR-015/016). The loop stops stepping gravity; `record(finalScore)`
+  runs here (FR-021) and its return value drives the overlay. The overlay card is
+  shown over the piled board with the final score, the **re-sorted top-10** (the
+  just-recorded entry, if it made the cut, is `.new`-highlighted), and a pulsing
+  "Enter Restart" prompt. The **"★ New high score" badge shows iff
+  `record(finalScore)` returned a rank in `0..9`** (the score made the top-10
+  cut) — precise, tie-deterministic condition in ADR-3. The first score into an
+  empty list is rank `0`, so the **first-ever game over earns the badge**.
 - **Reset** (from GameOver on Enter): clears grid, zero score/lines/level=1,
   re-randomises active + next, phase → Playing, overlay hidden (FR-017, SC-007).
 
@@ -250,24 +264,32 @@ capability declaration is needed in `app.json`.
   `overflow:auto`), which is acceptable and matches NFR-003's "default layout
   size" scope. Revisit only if a mobile target is ever added (out of scope, v1).
 
-### ADR-2 — Rotation / collision-kick resolution
+### ADR-2 — Ordered rotation-kick set (classic-style, not full SRS)
 - **Context**: FR-005/FR-008/SC-003 require the piece to rotate 90° and *never*
   clip a wall or stack — "rejected **or** kicked to a valid position." Edge case:
   rotation blocked on all sides must leave the piece in its last valid
   orientation.
 - **Options**: (a) **reject-only** — if the rotated footprint collides, don't
-  rotate; (b) **SRS-lite ordered kicks** — try the rotation in place, then a small
-  ordered set of nudges, take the first valid; (c) **full SRS** (Super Rotation
-  System) kick table + floor-kick rules.
-- **Decision**: **(b) SRS-lite.** Apply rotation; if it collides, try offsets in
-  order `[ (0,0), (0,-1), (0,+1), (0,-2), (0,+2), (-1,0), (+1,0) ]` (row, col)
-  and keep the first that passes `collides()`. **O** is a no-op (never rotates).
-  If none is valid, the rotation is rejected entirely (no clipping).
+  rotate; (b) **ordered kick set** — try the rotation in place, then a small ordered set
+  of nudges, take the first valid; (c) **full SRS** (Super Rotation System)
+  per-transition kick tables + floor-kick rules.
+- **Decision**: **(b) an ordered rotation-kick set.** Apply rotation; if it
+  collides, try offsets in order `[ (0,0), (0,-1), (0,+1), (0,-2), (0,+2), (-1,0),
+  (+1,0) ]` (row, col) and keep the first that passes `collides()`. The **same
+  fixed ordered set is applied identically to every piece and every
+  rotation→rotation transition** — this is *not* per-transition SRS. **O** is a
+  no-op (never rotates). If none is valid, the rotation is rejected entirely (no
+  clipping).
 - **Consequences**: Resolves the classic "rotate against a wall/stack" cases the
   spec calls out, with predictable, minimal movement. Simpler and fully sufficient
   for this feature than full SRS (no spin-combo/floor-kick edge semantics the spec
   asks for); a reviewer wanting exact SRS parity would note it, but (c) buys no
-  spec-visible behaviour at real cost.
+  spec-visible behaviour at real cost. **T-spin and I-spin special-casing are
+  intentionally OMITTED** — no spin detection, no spin-specific scoring bonus, no
+  I-piece wall/floor-kick carve-outs. This keeps rotation classic NES-style
+  (consistent with the spec's single/double/triple/quad line scoring, which
+  defines no spin bonuses); the omission is a deliberate decision, not an
+  accident, so a reviewer shouldn't flag the absence of T-spins as a gap.
 
 ### ADR-3 — High-score `localStorage` with in-memory fallback
 - **Context**: FR-019/022, SC-009 — persist top-10 across reloads, but if
@@ -282,8 +304,23 @@ capability declaration is needed in `app.json`.
   pair of helpers, so a mid-session failure can't leak a throw into gameplay.
   `record(score)`: push, sort **descending with a stable order for equal scores**
   (insert-after-existing-equal — deterministic per the edge case), cap at 10,
-  return the rank (used to drive the overlay "New high score" badge + `.new`
-  highlight), persist.
+  **return the 0-based rank of the recorded score if it made the top-10 cut, else
+  −1**, persist. `list()` returns the descending array, or `[]` when the store is
+  empty (fresh install / cleared storage).
+
+  **"New high score" badge — precise condition.** The overlay's "★ New high
+  score" badge is shown **iff `record(finalScore)` returned a rank in `0..9`**
+  (the score made the top-10). Because the sort is stable insert-after-existing-
+  equal, an equal score that **ties the cut line still makes it in** (it is placed
+  after the existing equal and lands within the first 10), so the badge is
+  **deterministic on ties** — the same score against the same list always agrees.
+  This `record()` rank is the **single source of truth**: the overlay's `.new`
+  highlight, the side-list's `.new`/`.top` styling, and the badge all key off the
+  same result, so the side panel and the overlay stay in sync. **Empty / first-
+  run:** with an empty list the first-ever `record(s)` is rank `0` (displayed rank
+  1) and **earns the badge**; while the list is empty, neither surface shows a
+  badge or a phantom entry (it renders an empty list or one muted "No scores yet"
+  placeholder — see §3 Rendering and §3.2).
 - **Consequences**: Persisted normally, degrades silently to session-only. Sorting
   is score-only (no names — FR-020).
 
@@ -327,9 +364,11 @@ capability declaration is needed in `app.json`.
   recomputed on level change.
 - **Consequences**: Gravity is wall-clock-deterministic at any refresh rate;
   render stays at display rate (smooth). `fallMs = max(80, 800 - (level-1)*60)`
-  is the chosen curve (level 1 = 800ms, −60ms/level, floor 80ms ≈ level 13) — a
-  concrete, testable ramp (SC-005) that's trivial to tune. DAS (ADR-4) shares the
-  same `now` clock so input and gravity never drift apart.
+  is the chosen curve (level 1 = 800ms, −60ms/level, floor 80ms at level 13) — a
+  concrete, testable ramp (SC-005) that's trivial to tune. **Level is unbounded
+  (FR-013), but `fallMs` is clamped by the `max(80, …)` floor — every level ≥ 13
+  holds the 80ms floor**, so speed saturates and never drops below 80ms. DAS
+  (ADR-4) shares the same `now` clock so input and gravity never drift apart.
 
 ---
 
