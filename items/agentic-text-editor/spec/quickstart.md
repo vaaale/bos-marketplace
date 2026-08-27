@@ -1,7 +1,8 @@
 # Quickstart: Agentic Text Editor
 
-Validation guide for the feature (T052). Everything below is manual except the
-last section, which runs the automated checks.
+Validation guide for the feature. Everything below is manual except the last
+section, which runs the automated checks. Sections 7 and 8 cover the v2 scope
+(agent & conversation management, full tool-call visibility).
 
 **What it is**: a marketplace app — a tabbed text/markdown editor in the left
 pane and a chat with the BrowserOS assistant in the right pane. The agent edits
@@ -183,14 +184,21 @@ npx tsc --noEmit
 npm run lint
 
 # End-to-end (needs a running BOS; installs the item itself if it isn't yet)
+# v1: shell layout, open/edit/preview/save, restart persistence, multi-tab, settings, chat
 npx playwright test e2e/agentic-text-editor.spec.ts
+# v2: agent selector, conversation management, dual-color tool row, sanity guards
+npx playwright test e2e/v2.spec.ts
 ```
 
-The e2e suite covers the shell layout, open/edit/preview/save, restart
-persistence, multi-tab + the unsaved-changes prompt, live settings, and the chat
-surface. It deliberately does **not** drive an LLM run — the agent tool handlers
-act on the same store the UI tests, and an e2e test that needed a model would be
-neither fast nor deterministic.
+The e2e suites deliberately do **not** drive an LLM run — the v1 suite tests
+the document editor and chat surface against the real app, and the v2 suite
+seeds conversation transcripts and index entries through the BOS API so the
+tool-row and persistence tests are deterministic without a model. The v2 suite
+is serial and cleans up everything it seeds (transcript files, index entries).
+
+> **Note**: the v2 spec uses `expect.poll` to wait for the app's async
+> persistence writes before reloading, so it is safe against the race between
+> a selection and the postMessage→POST storage write.
 
 ---
 
@@ -203,3 +211,13 @@ neither fast nor deterministic.
 - **External modification is not detected.** If a file changes on disk while a
   tab holds it, saving overwrites it (out of scope for v1, per the spec).
 - **No undo/redo** beyond the browser's own textarea history.
+- **v2 conversations are app-scoped.** The conversation dropdown lists only
+  conversations this app started (the `ate-` prefix). They are real BOS
+  assistant conversations and will also appear in the global BOS chat list
+  under the selected agent — the app's dropdown simply does not enumerate
+  conversations started elsewhere (per clarification A2).
+- **Storage capability fallback.** If the item's `storage` capability is not
+  granted (Settings → Apps), the app falls back to `localStorage` for its
+  conversation index. Persistence still works per browser profile, but the
+  index is not shared across BOS instances. Grant `storage` in the item's
+  capability settings for full shared-store persistence.
