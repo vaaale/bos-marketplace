@@ -6,7 +6,7 @@
 
 **Created**: 2026-05-21
 
-**Status**: Draft
+**Status**: Installed — incremental v2 in progress (agent & conversation management, full tool-call visibility)
 
 **Input**: User description: "An app to edit text and markdown documents with an embedded AI chat. Left pane is a tabbed document list, right pane is the chat. The agent can write/edit/update document contents. Agent edits the internal buffer — content is not persisted until the user explicitly saves."
 
@@ -98,7 +98,57 @@ The user can configure fonts, font sizes, and colors for markdown elements throu
 
 ---
 
-### Assistant Tools
+#### User Story 6 - Choose which agent to talk to (Priority: P1)
+
+The user picks which BrowserOS agent drives the chat from a dropdown in the chat header. The default is the agent the chat is currently bound to (the Main Assistant). Switching agents routes subsequent messages to the selected agent.
+
+**Why this priority**: The value of the editor's chat is the agent doing the work. Locking it to a single agent removes a core flexibility users expect from BOS's multi-agent model.
+
+**Independent Test**: Open the app → open the agent dropdown in the chat header → confirm it lists the BrowserOS agents with the active one marked → select a different agent → send a message → confirm it is handled by that agent.
+
+**Acceptance Scenarios**:
+
+1. **Given** the app is open, **When** the user opens the agent dropdown in the chat header, **Then** it lists the agents available in BrowserOS, with the currently active agent marked.
+2. **Given** the active agent is the Main Assistant, **When** the user selects a different agent, **Then** the next message sent is processed by that agent.
+3. **Given** the user has selected an agent, **When** the app is restarted, **Then** the last selected agent is restored.
+
+---
+
+### User Story 7 - Start a new conversation or switch to an existing one (Priority: P1)
+
+The user can start a fresh conversation and select from previously-started conversations. Each conversation keeps its own transcript and is associated with the agent that ran it.
+
+**Why this priority**: A single ever-growing thread (today's behavior) makes it impossible to start a clean task or return to an earlier one — fundamental to real use.
+
+**Independent Test**: Open the app → send a couple of messages → click "New conversation" → confirm the transcript is empty → send a message → open the conversation dropdown → confirm both conversations are listed → select the first → confirm its transcript (and agent) is restored.
+
+**Acceptance Scenarios**:
+
+1. **Given** the user has an active conversation, **When** they click "New conversation", **Then** a fresh empty conversation becomes active and the previous one is retained.
+2. **Given** multiple conversations exist, **When** the user opens the conversation dropdown, **Then** it lists them (most recent first), with the active one marked.
+3. **Given** the user selects an existing conversation from the dropdown, **Then** its transcript — and the agent it runs on — is restored into the chat.
+4. **Given** a conversation has messages, **When** the app is restarted, **Then** the conversation, including its transcript and agent, is restored and selectable.
+5. **Given** multiple tabs are open, **When** the user switches the active conversation, **Then** every tab reflects the newly-active conversation's transcript (the chat is still global across tabs).
+
+---
+
+### User Story 8 - See every tool call the agent makes (Priority: P2)
+
+The chat already renders the wired-in editor tool calls as chips under each agent reply. The user wants every other tool call the agent executes shown too, rendered in a distinct color so it is visually separable from the editor tools. The existing editor-tool rendering is unchanged.
+
+**Why this priority**: Full transparency into what the agent did — especially when it calls non-editor tools (search, file, memory, etc.) — without changing the established editor-tool chips.
+
+**Independent Test**: Ask the agent something that triggers a non-editor tool (e.g. "search the web for …") → confirm the agent reply's tool row now shows that tool in the alternate color, alongside any editor tools.
+
+**Acceptance Scenarios**:
+
+1. **Given** an agent reply invoked an editor tool, **When** the reply renders, **Then** the editor tool chip is shown in the existing style (unchanged).
+2. **Given** an agent reply invoked a non-editor tool, **When** the reply renders, **Then** that tool is also shown in the same tool row, in a distinct color that clearly separates it from the editor tools.
+3. **Given** an agent reply invoked both editor and non-editor tools, **When** the reply renders, **Then** both appear in the row — editor tools in the existing style, the others in the alternate color.
+
+---
+
+## Assistant Tools
 
 The app exposes the following assistant tools (Tier 1 — installed-app tools). All tool names are prefixed with `agentic_editor_`.
 
@@ -269,7 +319,7 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - **FR-006**: The app MUST support saving files to disk, persisting the internal buffer state.
 - **FR-007**: The app MUST support creating new untitled documents.
 - **FR-008**: The right pane MUST contain a chat interface where the user can communicate with an AI agent.
-- **FR-009**: The chat MUST be global across all tabs — one conversation per app instance.
+- **FR-009**: The chat MUST be global across all tabs — a single active conversation is shared by every tab at a time. The app MUST support multiple conversations and let the user switch between them (FR-024).
 - **FR-010**: The agent MUST receive context about all open document tabs, including their filenames, content, and which tab is currently active.
 - **FR-011**: Agent edits MUST modify the internal document buffer in real-time (live update) without requiring user confirmation.
 - **FR-012**: The internal buffer MUST NOT be persisted to disk until the user explicitly saves (via Save button or explicit agent save command).
@@ -283,6 +333,9 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - **FR-020**: Tabs and their content MUST survive app restarts (reloaded from disk on startup).
 - **FR-021**: Chat history MUST persist across app restarts.
 - **FR-022**: The app MUST prompt the user when closing a tab with unsaved changes.
+- **FR-023**: The app MUST provide an agent selector (dropdown) in the chat header that lists the agents available in BrowserOS, and MUST route messages to the selected agent. The currently-active agent MUST be marked in the selector, and the selection MUST persist across app restarts.
+- **FR-024**: The app MUST support multiple conversations: a control to start a new conversation, and a dropdown to select among existing conversations. Each conversation MUST retain its own transcript and be associated with the agent that ran it. The conversation list, the active conversation, and the selected agent MUST all persist across app restarts.
+- **FR-025**: The chat MUST render every tool call invoked by the agent in the reply's tool row. Editor tools (`agentic_editor_*`) MUST keep their existing rendering; all other tool calls MUST be rendered in a visually distinct style (different color) so they are clearly separable from the editor tools.
 
 ### Key Entities
 
@@ -291,6 +344,7 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - **ChatMessage**: A message in the global chat. Attributes: id, role (user/agent), content, timestamp, relatedDocumentId (optional, for messages that reference a specific document).
 - **DocumentFormatHandler**: Pluggable format handler for rendering and editing different document types. Attributes: id, name, extensions, renderer (for preview), editor (for edit mode).
 - **EditorSettings**: User-configurable appearance settings. Attributes: fontFamily, fontSize, headingColors, codeBlockBackground, codeBlockForeground, linkColor, etc.
+- **Conversation**: A distinct chat thread. Attributes: id, agentId (the agent it runs on), messages[], createdAt, lastActiveAt, isActive. The app stores a list of conversations; exactly one is active at a time. The chat surface displays the active conversation only.
 
 ## Success Criteria *(mandatory)*
 
@@ -303,6 +357,9 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - **SC-005**: Users can configure font family, size, and element colors in settings and see changes reflected immediately in both edit and preview modes.
 - **SC-006**: All app state (tabs, content, chat history, settings) is preserved across app restarts with no data loss.
 - **SC-007**: The document format architecture supports adding a new format handler (e.g., HTML) as a single pluggable module without modifying core app code.
+- **SC-008**: The user can switch the active agent from the dropdown and have subsequent messages processed by that agent; the selection persists across restarts.
+- **SC-009**: The user can start new conversations and switch between existing ones; each retains its transcript and agent, all restored after restart, with the chat remaining global across tabs.
+- **SC-010**: Every tool call the agent makes is visible in the reply's tool row — editor tools in the existing style, all others in a distinct, separable style.
 
 ## Assumptions
 
@@ -315,3 +372,5 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - Auto-save is NOT in scope — only explicit save (user click or explicit agent command).
 - External file modification detection (file changed on disk) is not in scope for v1 — handled as a stretch goal.
 - Undo/redo functionality is not explicitly specified but may be expected by users — to be addressed in design.
+- **v2 (agent & conversation management)**: The agent list is sourced from BrowserOS's registered agents; the default is the Main Assistant (the agent the embedded chat is currently bound to). Each conversation is bound to a single agent — the agent dropdown selects the agent for the active conversation, and "New conversation" starts a fresh thread on the currently selected agent. (Flag as A1; see Clarifications.)
+- **v2 (tool-call visibility)**: Full per-reply tool-call visibility requires the embedded chat to expose the complete list of tool calls for each agent reply — not just the editor surface tools — to the app's rendering layer, so the app can color non-editor tools distinctly.
