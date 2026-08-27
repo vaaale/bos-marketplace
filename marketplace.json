@@ -97,7 +97,7 @@
     {
       "id": "terminal",
       "name": "Terminal Service",
-      "description": "WebSocket-based shell daemon — the reference/example service for user-specs/002-service-daemons, bundled with its own Terminal app under app/.",
+      "description": "WebSocket-based shell daemon \u2014 the reference/example service for user-specs/002-service-daemons, bundled with its own Terminal app under app/.",
       "app": {
         "entrypoint": "items/terminal/app",
         "runtime": "iframe",
@@ -144,7 +144,7 @@
     {
       "id": "live-avatar",
       "name": "Live Avatar",
-      "description": "Lip-synced talking avatar (AVTR-1) — a voice engine with a face. Streams TTS audio to an avatar rendering server; BOS shows the result in the presence window. Not a separate app.",
+      "description": "Lip-synced talking avatar (AVTR-1) \u2014 a voice engine with a face. Streams TTS audio to an avatar rendering server; BOS shows the result in the presence window. Not a separate app.",
       "tags": [
         "voice",
         "avatar",
@@ -186,21 +186,6 @@
       "services": {
         "entrypoint": "items/webdav-vfs-mount",
         "version": "1.0.0"
-      }
-    },
-    {
-      "id": "editor",
-      "name": "Editor",
-      "description": "",
-      "app": {
-        "entrypoint": "items/editor/app",
-        "runtime": "iframe",
-        "version": "0.0.0",
-        "icon": "PenTool"
-      },
-      "spec": {
-        "path": "items/editor/spec",
-        "version": "0.0.0"
       }
     }
   ]
