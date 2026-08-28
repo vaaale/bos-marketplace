@@ -10,7 +10,11 @@
 // connection to the service's own port (§11) — never hardcode a port.
 
 interface BosApi {
-  services: { getConfig: (id: string) => Promise<unknown> };
+  services: {
+    getConfig: (id: string) => Promise<unknown>;
+    status: (id: string) => Promise<unknown>;
+    call: (id: string, path: string, init?: { method?: string; body?: unknown }) => Promise<unknown>;
+  };
 }
 
 declare global {
@@ -55,7 +59,13 @@ export async function getServiceRunning(): Promise<boolean> {
     const data = (await fetchJson(`/api/services/${SERVICE_ID}`)) as { service?: ServiceStatusView };
     return data.service?.state === "running";
   } catch {
-    return false;
+    if (!window.__bos) return false;
+    try {
+      const data = (await window.__bos.services.status(SERVICE_ID)) as { service?: ServiceStatusView };
+      return data.service?.state === "running";
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -78,11 +88,22 @@ async function resolveBaseUrl(): Promise<string> {
 }
 
 async function call(path: string, init?: RequestInit): Promise<unknown> {
-  const base = await resolveBaseUrl();
-  const res = await fetch(new URL(path.replace(/^\//, ""), base).toString(), init);
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error((body && body.error) || `${path}: HTTP ${res.status}`);
-  return body;
+  try {
+    const base = await resolveBaseUrl();
+    const res = await fetch(new URL(path.replace(/^\//, ""), base).toString(), init);
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body && body.error) || `${path}: HTTP ${res.status}`);
+    return body;
+  } catch (err) {
+    // Opaque-origin (marketplace) install: the direct fetch above can never
+    // succeed (no CORS, by design — docs/dev/apps/services.md §11/§14), so
+    // fall back to the window.__bos broker, which performs the SAME call from
+    // the trusted same-origin parent frame and relays the result back.
+    if (!window.__bos) throw err;
+    const method = init?.method ?? "GET";
+    const body = init?.body != null ? JSON.parse(String(init.body)) : undefined;
+    return window.__bos.services.call(SERVICE_ID, path, { method, body });
+  }
 }
 
 export const api = {
