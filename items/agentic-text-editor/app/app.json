@@ -7,5 +7,12 @@
   "defaultWidth": 1200,
   "defaultHeight": 700,
   "singleton": true,
-  "capabilities": ["fs:read", "fs:write", "storage", "window:title", "notify"]
+  "capabilities": [
+    "fs:read",
+    "fs:write",
+    "storage",
+    "window:title",
+    "notify",
+    "assistant"
+  ]
 }

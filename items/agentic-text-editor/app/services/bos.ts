@@ -3,13 +3,13 @@
 // Installed apps run inside a sandboxed iframe and reach BOS through the SDK
 // (`window.__bos`), which is injected by /apps/[...slug]. Only the capabilities
 // granted in app.json are honoured — this app declares fs:read, fs:write,
-// storage, window:title and notify.
+// storage, window:title, notify and assistant.
 //
-// The assistant run API has no broker method, so the chat talks to it over
-// same-origin fetch. That works because a user-authored item is served
-// `origin: "local"` (same-origin sandbox); see docs/dev/guides/apps.md §
-// "Trust tiers". Everything else goes through the broker so the app keeps
-// working if it is ever re-served opaque-origin.
+// EVERYTHING goes through the SDK, including the assistant: this item is served
+// `origin: "marketplace"`, i.e. an opaque-origin sandbox, where a direct fetch to
+// /api/* is cross-origin and fails. The `assistant` capability
+// (040-assistant-broker-capability) is the supported way for a sandboxed app to
+// drive an agent run; see docs/dev/assistant/assistant-broker.md.
 
 import type { VfsEntry } from "../types-vfs";
 
@@ -28,6 +28,27 @@ interface BosApi {
     set: (key: string, value: string) => Promise<unknown>;
     remove: (key: string) => Promise<unknown>;
     keys: () => Promise<string[]>;
+  };
+  /** Requires the "assistant" capability. Every method resolves with the
+   *  equivalent HTTP API's body; an API error comes back as `{error, status}`
+   *  rather than throwing, and only an UNGRANTED call rejects. `onRunEvent` is
+   *  push-based — the parent owns the run's NDJSON stream and relays each event
+   *  verbatim — so it must be subscribed to exactly once per run. */
+  assistant: {
+    listAgents: () => Promise<unknown>;
+    startRun: (opts: {
+      conversationId: string;
+      agentId: string;
+      message: string;
+      /** JSON-Schema-style declarations; `object` (not Record) so an app can
+       *  pass its own precisely-typed schema interface without a cast. */
+      surfaceTools?: { name: string; description: string; parameters: object }[];
+      attachments?: unknown[];
+    }) => Promise<unknown>;
+    onRunEvent: (runId: string, cb: (event: { seq: number; type: string; [key: string]: unknown }) => void) => () => void;
+    postToolResult: (runId: string, callId: string, result: string) => Promise<unknown>;
+    getActiveRun: (conversationId: string) => Promise<unknown>;
+    cancelRun: (runId: string) => Promise<unknown>;
   };
 }
 
@@ -48,6 +69,15 @@ export function whenReady(timeoutMs = 3000): Promise<BosApi | null> {
     const timer = setTimeout(done, timeoutMs);
     window.addEventListener("bos:ready", done);
   });
+}
+
+// ---------------------------------------------------------------- assistant
+
+/** The assistant broker, once the SDK is up. Null if the SDK never arrived (a
+ *  bare preview outside BOS); an ungranted capability instead rejects per call. */
+export async function assistant(): Promise<BosApi["assistant"] | null> {
+  const api = await whenReady();
+  return api?.assistant ?? null;
 }
 
 // ---------------------------------------------------------------- VFS
