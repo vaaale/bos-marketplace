@@ -187,6 +187,21 @@
         "entrypoint": "items/webdav-vfs-mount",
         "version": "1.0.0"
       }
+    },
+    {
+      "id": "falling-blocks",
+      "name": "Falling Blocks",
+      "description": "",
+      "app": {
+        "entrypoint": "items/falling-blocks/app",
+        "runtime": "iframe",
+        "version": "0.0.0",
+        "icon": "Grid3x3"
+      },
+      "spec": {
+        "path": "items/falling-blocks/spec",
+        "version": "0.0.0"
+      }
     }
   ]
 }
