@@ -176,6 +176,7 @@ The Workflow Manager app ships a skill that instructs the assistant on how to us
 1. **Given** the Workflow Manager is installed, **When** the assistant needs to build a workflow, **Then** it can load the bundled skill and follow its instructions.
 2. **Given** the skill is loaded, **When** the assistant builds a complex workflow, **Then** it creates well-formed ephemeral/Research nodes with candidate sub-agents and required tools/skills.
 3. **Given** the skill is loaded, **When** the assistant runs a workflow, **Then** it can execute, retrieve results, and inspect historical runs via the workflow tools.
+4. **Given** the task is "run N investigations in parallel and feed them to a synthesis step," **When** the assistant builds the workflow, **Then** the skill steers it to use the native **research** output type (the recommended primitive for this pattern), not a manual delegate fan-out with file handoff, and it documents the realistic latency difference (research ≫ faster than serial delegate fan-out).
 
 ### User Story 10 - Node Trajectory Panel (Priority: P2)
 
@@ -195,6 +196,80 @@ Opening a workflow run — a live run or a selected historical run — and click
 6. **Given** a node is an agent (statically-defined or Ephemeral), **When** the user opens its trajectory, **Then** the panel shows the prompt/instructions that were executed — the assembled task plus the upstream context fed into it.
 7. **Given** a node is live and its agent is currently executing, **When** the user opens its trajectory, **Then** the panel shows the agent's activity in real time — thinking/reasoning (where exposed), in-flight tool calls, and the streaming response.
 8. **Given** the run view is rendered, **When** it previously showed a per-step status list below the graph, **Then** that list is no longer shown — per-step status is conveyed by the graph's node colors and the node trajectory panel.
+9. **Given** a Research node is executing, **When** the user opens its trajectory, **Then** the panel shows **per-sub-agent status** (pending/running/completed/failed) so the user can see which fan-out sub-agent is the straggler, and a short **current-action** string for any in-progress step.
+
+### User Story 11 - Branch Routing Is Correct, Structured, and Safe (Priority: P1)
+
+A routing node's selection is a **structured, machine-readable signal** (not free-form prose), the DAG rule for how a selection propagates is precise, and a run that selects a branch which then executes **zero** leaves is never silently reported as successful. This fixes the reported failure where an agent's prose ("I'll select the alarm branch") produced the wrong recorded selection (`quiet`), a shared intermediate step (`render`) blocked all downstream nodes, and the run still ended `completed` with no terminal action.
+
+**Why this priority**: This is the single biggest blocker in the field evaluation — a silent `completed` that skipped the terminal action (no dashboard, no alert) is the most dangerous failure mode. Dynamic routing is the feature's headline value (US7); it only delivers that value if selection is deterministic, propagates correctly through shared steps, and is guarded against silent no-ops.
+
+**Independent Test**: Author a workflow `A → B(candidates: X, Y)` where a shared step `S` also depends on `B` and sits before the leaves. Run it; confirm the routing node selects via a structured signal, `S` runs regardless of selection, the selected leaf runs, and the unselected leaf is neutral. Separately, author a workflow whose selected leaf is unreachable and confirm the run reports a `workflow.branch.skipped` warning rather than `completed`. Testable in isolation.
+
+**Acceptance Scenarios**:
+
+1. **Given** a routing node completes and its agent emits a **structured** selection of a candidate, **When** the run proceeds, **Then** the run records that exact candidate as selected — never a different one inferred from prose — and the run delegates accordingly.
+2. **Given** a routing node's agent emits no valid structured selection, **When** the run continues, **Then** the selection is retried (retry-loop); if it still cannot be resolved, the node **fails** rather than defaulting to an arbitrary candidate.
+3. **Given** a workflow with a shared step `S` that depends on a routing node `B` but is **not** one of `B`'s candidate leaves, **When** `B` completes, **Then** `S` runs normally (it is gated only by its own dependencies), and a candidate leaf runs only if its routing node selected it.
+4. **Given** a routing node selects a branch, but the selected path results in **zero** executed leaves (e.g. the leaf is unreachable), **When** the run ends, **Then** the run is **not** marked `completed` — it emits a `workflow.branch.skipped` event and reports a final state of `completed_with_warnings` (or fails), so the silent no-op is surfaced.
+5. **Given** a workflow with malformed candidate topology (e.g. a candidate leaf that is unreachable from its routing node, or a node ambiguously both a shared dependency and a gated leaf), **When** the user runs `workflow_validate`, **Then** the validation reports the structural problem.
+
+### User Story 12 - Ephemeral Agents Actually Get Their Declared Tools (Priority: P1)
+
+An ephemeral-agent node's declared tool list is genuinely granted to the spawned agent, so a node that lists `file_read`/`file_write` (or any listed tool) has those tools available — including deferred tools reachable via `find_tools`. This fixes the reported gap where cluster agents listed the VFS file tools, could not find them, got empty `find_tools`/`find_agent` results, and had to fall back to `run_command` heredocs.
+
+**Why this priority**: The natural "parallel research → merge" handoff is write-a-file / read-a-file. Forcing `run_command` for file I/O is clunky and reintroduces the heredoc JSON-parse risk the user was actively fighting. Tool fidelity is a correctness bug: the declared allowlist must mean what it says.
+
+**Independent Test**: Author an ephemeral-agent node with `tools: ["file_read", "file_write"]`; run it; confirm the agent can call `file_write`/`file_read` directly (not via `run_command`) and that `find_tools` returns the listed deferred tools when requested. Testable in isolation.
+
+**Acceptance Scenarios**:
+
+1. **Given** an ephemeral-agent node declares `file_read` and `file_write` in its tool list, **When** the agent executes, **Then** both tools are available to it and `find_tools` does not return empty for them.
+2. **Given** an ephemeral-agent node declares a set of tools, **When** the agent is spawned, **Then** the spawned agent's effective tool set matches the declared allowlist (no silent drop, no substitution).
+3. **Given** the user hands off data between a fan-out and a merge step, **When** the steps are authorable without file I/O, **Then** the research/delegate step outputs are consumable as first-class structured data by the dependent step (no mandatory file handoff).
+
+### User Story 13 - Live Run Progress Is Observable (Priority: P1)
+
+`workflow_status` and `workflow_run_get` return a **populated live per-step state** (status, attempt count, and a short current-action string per in-progress step) and, for Research nodes, **per-sub-agent status** — so a long run is not a black box and the user/agent can tell which of N parallel agents is the straggler. This same live state is the single source of truth consumed by both the app trajectory panel (US10) and the tools.
+
+**Why this priority**: The evaluation reported `workflow_status` returning `steps: {}` with only an event log — no per-step live state, no per-sub-agent progress — forcing filesystem polling to gauge a 30–60 min run. Live, structured progress is what makes fire-and-poll (FR-008) actually usable.
+
+**Independent Test**: Start a multi-branch run; poll `workflow_status`; confirm each in-progress step returns status + attempt + a short current-action string, and a Research node returns per-sub-agent status identifying the slowest sub-agent. Testable in isolation.
+
+**Acceptance Scenarios**:
+
+1. **Given** a run is in progress, **When** the caller polls `workflow_status` (or `workflow_run_get`), **Then** the response includes a populated per-step map — for each step: status, attempt count, and a short current-action string while in progress — not an empty `steps: {}`.
+2. **Given** a Research node is fanning out multiple sub-agents, **When** the caller polls live status, **Then** each sub-agent's status (pending/running/completed/failed) is exposed, so the straggler is identifiable.
+3. **Given** the live per-step state changes, **When** the app's trajectory panel (US10/US10-9) or the tools read it, **Then** both reflect the same current state (single source of truth).
+
+### User Story 14 - Fast Iteration Without Full Execution (Priority: P2)
+
+`workflow_run` supports a **dry-run / fixture mode** that substitutes canned sub-agent outputs for designated nodes, so the user can validate the DAG, branch routing, and leaf steps in seconds instead of a full 30–60 min research run.
+
+**Why this priority**: The evaluation burned significant wall-clock on full runs just to confirm one branch-routing behavior. A dry-run mode would have surfaced the routing bug (US11) on the first attempt. This is an iteration-cost fix that compounds with the routing fix.
+
+**Independent Test**: Author a workflow with a research node; run it in dry-run mode with a canned research output injected; confirm the downstream merge and branch-routing execute in seconds against the fixture and the leaves are reached. Testable in isolation.
+
+**Acceptance Scenarios**:
+
+1. **Given** a `workflow_run` call with dry-run/fixture mode and a canned output for a designated node, **When** the run executes, **Then** that node's real execution is skipped and the fixture output is used by its dependents.
+2. **Given** a workflow with branch routing, **When** it is run in dry-run mode, **Then** the DAG, selection, and leaf reachability are evaluated without performing the real (slow) research, completing in seconds.
+3. **Given** a non-dry-run `workflow_run`, **When** it executes, **Then** real sub-agent execution occurs (the fixture mode is opt-in and does not change default behavior).
+
+### User Story 15 - Stuck Agents Fail Fast, and Latency Is Documented (Priority: P2)
+
+The engine enforces a **per-step** and a **per-run** timeout (configurable on the Workflow, with sensible defaults) so a stuck agent fails fast instead of silently consuming an hour, and the skill/docs state realistic latency for delegate vs research steps.
+
+**Why this priority**: A parallel fan-out's wall-clock is dominated by the slowest of N agents, and a single hung agent can consume an hour with no signal. Timeouts give a fail-fast guarantee; latency documentation sets correct expectations (the native research type is materially faster than serial delegate fan-out).
+
+**Independent Test**: Author a workflow with a step timeout shorter than a node's expected duration; run it; confirm the timed-out step is marked failed with a timeout reason and the run does not hang indefinitely. Testable in isolation.
+
+**Acceptance Scenarios**:
+
+1. **Given** a step exceeds its configured per-step timeout, **When** the timeout elapses, **Then** the step is marked failed with a timeout reason and the scheduler proceeds (or halts per the workflow's on-failure policy) — it does not hang.
+2. **Given** a whole run exceeds its configured per-run timeout, **When** the timeout elapses, **Then** the run is marked failed/timed-out and halted.
+3. **Given** the Workflow entity has a default retry/timeout config, **When** the user does not override it, **Then** sensible defaults apply so an unconfigured run still fails fast.
+4. **Given** the skill/docs are read, **When** the user chooses between a delegate fan-out and a research node for parallel work, **Then** the guidance states the realistic relative latency and recommends research for parallel investigations feeding a synthesis step.
 
 ## Requirements *(mandatory)*
 
