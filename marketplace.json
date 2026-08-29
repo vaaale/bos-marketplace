@@ -206,6 +206,195 @@
         "path": "items/falling-blocks/spec",
         "version": "0.0.0"
       }
+    },
+    {
+      "id": "gws-calendar",
+      "name": "gws-calendar",
+      "description": "Google Calendar: Manage calendars and events.",
+      "skill": {
+        "path": "skills/gws-calendar",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-calendar-agenda",
+      "name": "gws-calendar-agenda",
+      "description": "Google Calendar: Show upcoming events across all calendars.",
+      "skill": {
+        "path": "skills/gws-calendar-agenda",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-calendar-insert",
+      "name": "gws-calendar-insert",
+      "description": "Google Calendar: Create a new event.",
+      "skill": {
+        "path": "skills/gws-calendar-insert",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-docs",
+      "name": "gws-docs",
+      "description": "Read and write Google Docs.",
+      "skill": {
+        "path": "skills/gws-docs",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-docs-write",
+      "name": "gws-docs-write",
+      "description": "Google Docs: Append text to a document.",
+      "skill": {
+        "path": "skills/gws-docs-write",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-drive",
+      "name": "gws-drive",
+      "description": "Google Drive: Manage files, folders, and shared drives.",
+      "skill": {
+        "path": "skills/gws-drive",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-drive-upload",
+      "name": "gws-drive-upload",
+      "description": "Google Drive: Upload a file with automatic metadata.",
+      "skill": {
+        "path": "skills/gws-drive-upload",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail",
+      "name": "gws-gmail",
+      "description": "Gmail: Send, read, and manage email.",
+      "skill": {
+        "path": "skills/gws-gmail",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-forward",
+      "name": "gws-gmail-forward",
+      "description": "Gmail: Forward a message to new recipients.",
+      "skill": {
+        "path": "skills/gws-gmail-forward",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-read",
+      "name": "gws-gmail-read",
+      "description": "Gmail: Read a message and extract its body or headers.",
+      "skill": {
+        "path": "skills/gws-gmail-read",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-reply",
+      "name": "gws-gmail-reply",
+      "description": "Gmail: Reply to a message (handles threading automatically).",
+      "skill": {
+        "path": "skills/gws-gmail-reply",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-reply-all",
+      "name": "gws-gmail-reply-all",
+      "description": "Gmail: Reply-all to a message (handles threading automatically).",
+      "skill": {
+        "path": "skills/gws-gmail-reply-all",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-send",
+      "name": "gws-gmail-send",
+      "description": "Gmail: Send an email.",
+      "skill": {
+        "path": "skills/gws-gmail-send",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-triage",
+      "name": "gws-gmail-triage",
+      "description": "Gmail: Show unread inbox summary (sender, subject, date).",
+      "skill": {
+        "path": "skills/gws-gmail-triage",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-gmail-watch",
+      "name": "gws-gmail-watch",
+      "description": "Gmail: Watch for new emails and stream them as NDJSON.",
+      "skill": {
+        "path": "skills/gws-gmail-watch",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-shared",
+      "name": "gws-shared",
+      "description": "gws CLI: Shared patterns for authentication, global flags, and output formatting.",
+      "skill": {
+        "path": "skills/gws-shared",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-sheets",
+      "name": "gws-sheets",
+      "description": "Google Sheets: Read and write spreadsheets.",
+      "skill": {
+        "path": "skills/gws-sheets",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-sheets-append",
+      "name": "gws-sheets-append",
+      "description": "Google Sheets: Append a row to a spreadsheet.",
+      "skill": {
+        "path": "skills/gws-sheets-append",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "gws-sheets-read",
+      "name": "gws-sheets-read",
+      "description": "Google Sheets: Read values from a spreadsheet.",
+      "skill": {
+        "path": "skills/gws-sheets-read",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "recipe-save-email-attachments",
+      "name": "recipe-save-email-attachments",
+      "description": "Find Gmail messages with attachments and save them to a Google Drive folder.",
+      "skill": {
+        "path": "skills/recipe-save-email-attachments",
+        "version": "0.22.5"
+      }
+    },
+    {
+      "id": "recipe-save-email-to-doc",
+      "name": "recipe-save-email-to-doc",
+      "description": "Save a Gmail message body into a Google Doc for archival or reference.",
+      "skill": {
+        "path": "skills/recipe-save-email-to-doc",
+        "version": "0.22.5"
+      }
     }
   ]
 }
