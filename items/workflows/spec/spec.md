@@ -177,6 +177,22 @@ The Workflow Manager app ships a skill that instructs the assistant on how to us
 2. **Given** the skill is loaded, **When** the assistant builds a complex workflow, **Then** it creates well-formed ephemeral/Research nodes with candidate sub-agents and required tools/skills.
 3. **Given** the skill is loaded, **When** the assistant runs a workflow, **Then** it can execute, retrieve results, and inspect historical runs via the workflow tools.
 
+### User Story 10 - Node Trajectory Panel (Priority: P2)
+
+Opening a workflow run — a live run or a selected historical run — and clicking any node on the graph opens a panel docked to the **right** of the graph, with a **horizontally resizable** width (a draggable divider between graph and panel), showing that node's **execution trajectory**: its ordered lifecycle events (start / retry / running / complete / fail / cancel / skip) with timestamps and durations, its current/final outcome, and its output/artifact (and, for routing nodes, the candidate sub-agent it selected). The redundant per-step status list that currently sits below the graph is **removed** — per-step status is instead surfaced by the graph's node coloring plus this on-demand, per-node trajectory panel.
+
+**Why this priority**: Today the only per-node detail is a flat status list that merely mirrors the graph's node colors, so it cannot answer "what actually happened *inside* this step" (retries, timing, error, output). A trajectory panel gives per-node, event-level visibility for both live and finished runs, replacing a redundant list with a more powerful on-demand inspection surface. It builds directly on the run-persistence already delivered by US6/FR-015/FR-017.
+
+**Independent Test**: Open a live run and click a node — confirm the right-side resizable panel shows that node's lifecycle events in order (timestamps + durations), its status, and its output, updating live while it runs. Separately, select a historical run, click a node, and confirm the same panel shows the replayed trajectory (a neutral/never-ran node shows "no events"). Confirm the per-step status list is gone. Testable in isolation.
+
+**Acceptance Scenarios**:
+
+1. **Given** a live run is open, **When** the user clicks a node on the graph, **Then** a trajectory panel opens to the right of the graph showing that node's ordered lifecycle events (with timestamps and durations), its current status, and its output.
+2. **Given** the trajectory panel is open, **When** the user drags the divider, **Then** the panel's width resizes horizontally and the graph reflows to fill the remaining space.
+3. **Given** the trajectory panel is open, **When** the user clicks a different node, **Then** the panel updates to that node's trajectory; the panel can be dismissed and re-opened by clicking a node.
+4. **Given** a historical run is selected, **When** the user clicks a node, **Then** the trajectory panel shows that node's trajectory replayed from the persisted run log, and a neutral/never-ran node is shown as having no events.
+5. **Given** the run view is rendered, **When** it previously showed a per-step status list below the graph, **Then** that list is no longer shown — per-step status is conveyed by the graph's node colors and the node trajectory panel.
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
@@ -205,6 +221,9 @@ The Workflow Manager app ships a skill that instructs the assistant on how to us
 - **FR-021**: Nodes MUST be configurable as ephemeral agents — a task description plus a configurable tool list and skill list — used when no existing BOS agent matches the task; an ephemeral node may run alone or in parallel with others.
 - **FR-022**: A Research node type MUST fan out multiple sub-agents and run them in parallel, collecting their outputs.
 - **FR-023**: The app MUST ship a Workflow Manager skill that instructs the assistant to build, execute, and retrieve workflows (including historical-run inspection) via the workflow tools.
+- **FR-025**: In a workflow run view (live) and when a historical run is selected, clicking any node on the graph MUST open a trajectory panel docked to the **right** of the graph, with a **horizontally resizable** width via a draggable divider (the graph reflows to fill the remaining space). The panel MUST be dismissible and MUST re-open/update when another node is clicked.
+- **FR-026**: The trajectory panel MUST show, for the selected node: its identity (name, agent source, output type); its current (live) or final (historical) status; the **ordered lifecycle events for that node** projected from the run's persisted event log (`step.start` / `step.retry` (with attempt number) / `step.running` / `step.complete` / `step.fail` (with error) / `step.cancel` / `step.skip`) with timestamps and durations; and the node's output/artifact (and, for a routing node, the candidate sub-agent it selected). A neutral/never-ran node MUST be shown as having no events. For a live run, the panel MUST update in real time as new events stream.
+- **FR-027**: The app MUST NOT render a redundant per-step status list below the graph in the run view — per-step status is surfaced by the graph's node coloring plus the per-node trajectory panel (FR-025/FR-026).
 
 ### Non-Functional Requirements
 
@@ -240,6 +259,8 @@ The Workflow Manager app ships a skill that instructs the assistant on how to us
 - **SC-012**: Independent workflow branches and Research-node fan-out execute in parallel up to `maxConcurrentSteps`, with no serialization of independent steps.
 - **SC-013**: The assistant can load the Workflow Manager skill and correctly build, execute, and retrieve workflows via the workflow tools.
 - **SC-014**: An agent can poll a workflow's live status via `workflow_list` (which returns `workflow_id`, `status` running/idle, and `run_id` when running) followed by `workflow_status`/`workflow_run_get` for detail.
+- **SC-015**: Clicking a node in the live run view or a selected historical run opens the right-side, horizontally-resizable trajectory panel for that node; switching nodes updates the panel; the panel is dismissible; and the previously-redundant per-step status list is no longer rendered.
+- **SC-016**: The trajectory panel's per-node lifecycle events match the run's persisted event log with 100% fidelity (event order, timestamps, durations, retry attempts, error text, final outcome, and output/artifact), and update live while a node is executing.
 
 ## Assumptions
 
@@ -254,3 +275,4 @@ The Workflow Manager app ships a skill that instructs the assistant on how to us
 - Runs are persisted as first-class entities to the real VFS (run id, timestamps, final state, per-step outcomes, event log), enabling historical run inspection. The `workflow_run_list`/`workflow_run_get` tools extend the tool surface so historical introspection is tool-reachable; the run selector on the detail view replays a selected run's graph from its persisted log.
 - The workflow engine is **fully re-implemented inside the Workflow Manager service** (user-approved): BOS's `src/lib/workflows/*` and `/api/workflows/*` routes are **retired**, and the worker owns the complete engine — node model (agent source + output type), dynamic routing, parallel scheduling (up to `maxConcurrentSteps`), persistence, and execution. This reverses the earlier "engine stays in BOS source" assumption (ADR-1). The feature is therefore **bos-core + marketplace-item**: a bos-core retirement of the old engine, plus a marketplace-item re-implementation as a service.
 - **Node axes are orthogonal**: agent source (statically-defined agent | Ephemeral agent) is independent of output type (delegate | tool | research | ag-ui); any combination is valid (e.g. an Ephemeral agent node with research output, or a static-agent node with tool output).
+- **A node's trajectory is a derived projection, not new storage**: it is the node-scoped, ordered slice of the run's already-persisted event log + per-step outcomes + outputs (per US6/FR-015/ADR-8 run persistence). It is available in the live run view (updating in real time) and in a selected historical run (replayed from the persisted log). No new data store is introduced. The redundant per-step status list below the graph is removed in favor of the graph's node coloring + the on-demand trajectory panel (FR-027).
