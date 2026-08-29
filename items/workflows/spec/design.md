@@ -635,6 +635,8 @@ read the same location") is the UX statement of ADR-2's invisible-content fix. T
 renders node labels as `outputType · sub` (e.g. `tool · fetch:csv`, `ag-ui · normalize`,
 `delegate · db`) — consistent with the node-model axes (§3.4.2).
 
+<!-- §9-SCOPE-ADD-SENTINEL -->
+
 ---
 
 # §9 — Scope-add (US10–US15)
