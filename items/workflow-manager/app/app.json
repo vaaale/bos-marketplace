@@ -1,0 +1,7 @@
+{
+  "id": "workflow-manager",
+  "name": "Workflow Manager",
+  "icon": "Workflow",
+  "createdAt": 1788040757980,
+  "entry": "src/main.tsx"
+}

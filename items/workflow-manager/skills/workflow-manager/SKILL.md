@@ -1,0 +1,292 @@
+---
+name: workflow-manager
+description: Build, run, and inspect multi-step agent workflows (DAGs of delegate/tool/research/ag-ui nodes) via the Workflow Manager's service-declared tools.
+---
+
+# Workflow Manager
+
+The Workflow Manager service owns a complete workflow engine — a node model, a
+parallel scheduler, dynamic routing, and persistence — and exposes it to you
+as 12 native tools: `workflow_list`, `workflow_create`, `workflow_read`,
+`workflow_modify`, `workflow_run`, `workflow_status`, `workflow_cancel`,
+`workflow_delete`, `workflow_export`, `workflow_validate`, `workflow_run_list`,
+`workflow_run_get`. Use this skill whenever a task calls for a multi-step,
+possibly-branching, possibly-parallel piece of work that's worth saving and
+re-running rather than doing once inline.
+
+## The node model — two independent choices per step
+
+Every step ("node") in a workflow is defined by two **orthogonal** choices —
+never conflate them:
+
+1. **`agentSource`** — WHO executes the node:
+   - `{ "kind": "static", "agentId": "<existing-bos-agent-id>" }` — use this
+     when a real BOS agent already fits (check what exists before defaulting
+     to ephemeral).
+   - `{ "kind": "ephemeral", "task": "...", "tools": ["..."], "skills": ["..."] }`
+     — a one-off agent you define inline: a task description plus the tool
+     and skill lists it needs. This is the common case — most workflow steps
+     don't need a dedicated named agent.
+
+2. **`outputType`** — WHAT the node produces, independent of who runs it:
+   - `"delegate"` — a sub-agent's free-form output (the default for most steps).
+   - `"tool"` — a single, tightly-scoped tool call. Also set `toolName`.
+   - `"research"` — fan out several sub-agents in parallel and collect their
+     outputs. Also set `researchAgents`: an array where each entry is either a
+     plain string (a static agent id) or an inline object
+     `{ "task": "...", "tools": [...], "skills": [...] }` (an ephemeral spec).
+     **This is the DEFAULT choice for "run N investigations in parallel and
+     feed them to a synthesis step"** — the entries run concurrently up to
+     `maxConcurrentSteps`, their outputs are collected as first-class
+     structured data your dependent step receives inline (no file handoff),
+     and each sub-agent's live status is individually observable. It is
+     materially faster than wiring N separate delegate steps by hand.
+   - `"ag-ui"` — no delegation at all; the node's `input` is returned directly
+     as a UI artifact. Use this for a fixed value or a UI-only step.
+
+Any combination is valid: an ephemeral agent with research output, a static
+agent with tool output, etc.
+
+## Building the DAG
+
+- Every step has an `id` and a `dependencies: [<step-id>, ...]` array. A step
+  with no dependencies is ready immediately; independent steps (no dependency
+  between them) run **concurrently**, up to `config.maxConcurrentSteps`
+  (workflow-level, default 5) — don't add a fake dependency just to force
+  ordering you don't actually need.
+- Give each step an `outputConvention` describing, in plain language, what it
+  should produce and where a downstream step should expect to find it (the
+  executor passes upstream outputs to dependents automatically, but a clear
+  convention keeps outputs well-formed).
+
+## Latency: prefer research over a hand-rolled serial fan-out
+
+Rough, realistic expectations — use them when you decide how to shape a
+workflow, and when you set expectations for the user:
+
+| Shape | Wall clock |
+| --- | --- |
+| One `delegate` step (a real sub-agent doing real work) | seconds to many minutes; a deep investigation can run 10–40 min |
+| A `research` node with N entries | ≈ the SLOWEST entry, not the sum — they run concurrently up to `maxConcurrentSteps` |
+| N separate `delegate` steps chained by dependencies | ≈ the SUM of all N — materially slower, and usually an authoring mistake |
+| A `tool` step | usually sub-second to seconds |
+| An `ag-ui` step | instant (no delegation at all) |
+| A dry run (`dryRun: true` with fixtures) | seconds for the whole DAG |
+
+So: for independent investigations, use ONE `research` node rather than
+several delegate steps. Two independent 20-minute investigations take ~20
+minutes as a research fan-out and ~40 minutes serially. Tell the user the
+expected order of magnitude before starting a long run, and don't poll faster
+than the work can plausibly progress.
+
+## Dynamic routing — candidates (use sparingly, only when the workflow should adapt)
+
+A step MAY declare `"candidates": [{ "id": "<step-id>", "description": "..." }, ...]`
+— a list of DOWNSTREAM step ids that this step's agent chooses between as its
+**last action**, based on what it learned while executing. Use this when the
+right next step genuinely depends on information only available after this
+step runs (e.g. "classify the company, then route to the Finance,
+Construction, or Shipping handling").
+
+- **Exactly one candidate**: no choice is needed — it's just a delegation,
+  wired automatically. Don't add a routing instruction for a single-candidate
+  step.
+- **Multiple candidates**: the engine gives the node's agent a `select_branch`
+  tool (`{ "selected": ["<candidate-id>", ...] }`, enum-limited to that node's
+  own candidates) and appends the instruction to call it as the last action.
+  **The selection is read only from that structured signal** — a JSON
+  `{"select_branch": {"selected": ["<id>"]}}` object is accepted as an
+  equivalent when the tool is unavailable. Prose is never parsed, so an agent
+  that merely *says* "I'll take the alarm branch" has NOT selected anything.
+  You don't write any of this yourself: declare `candidates` and the engine
+  handles the instruction, the retry-loop, and the read.
+- **No valid selection after the retry-loop → the node FAILS.** The engine
+  never falls back to an arbitrary candidate.
+
+### How a selection propagates (this is the part that trips people up)
+
+Only a node that is **declared a candidate leaf** of a routing node is gated
+by that node's selection. **Every other node is gated purely by its own
+`dependencies`** and runs normally. So:
+
+```
+classify ──► render ──► alarm      (alarm/quiet are classify's candidates)
+                   └──► quiet
+```
+
+`render` is a shared step: it depends on `classify` but is not one of its
+candidates, so it runs regardless of the choice. `alarm` runs only if
+`classify` selected it; `quiet` is then reported `skipped`
+(reason `branch-not-selected`) — not an error, and not a failure.
+
+Two authoring rules follow, and `workflow_validate` enforces both as
+**errors**:
+
+1. **A candidate must be reachable from its routing node** — there has to be a
+   dependency path routing-node → … → candidate. A candidate that doesn't
+   (transitively) depend on its router can never be unlocked.
+2. **A candidate leaf must not double as a shared dependency.** If an ungated
+   node depends on a gated leaf, it is silently blocked whenever that leaf
+   isn't selected. Put shared work ABOVE the branch point (like `render`), and
+   make the leaves terminal — or declare the dependent a candidate of the same
+   routing node.
+
+Finally, if a routing node selects a branch that ends up executing **zero**
+leaves, the run does not report a plain `completed`: it emits a
+`workflow.branch.skipped` event and finishes as **`completed_with_warnings`**.
+Treat that state as "the workflow did nothing useful" and investigate.
+
+## Building a workflow
+
+Prefer constructing the workflow object yourself and passing it via
+`workflow_create`'s `workflow` parameter — you already know the node shapes
+above, and this avoids an extra planning round-trip:
+
+```json
+{
+  "workflow": {
+    "name": "Sustainability Analysis",
+    "config": { "maxConcurrentSteps": 5, "defaultTimeout": 900, "runTimeout": 7200 },
+    "steps": [
+      { "id": "research", "outputType": "research",
+        "researchAgents": [
+          { "task": "Research the company's carbon disclosure history." },
+          { "task": "Research the company's supply-chain sustainability record." },
+          { "task": "Research the company's regulatory exposure." }
+        ] },
+      { "id": "classify", "outputType": "delegate", "dependencies": ["research"],
+        "agentSource": { "kind": "ephemeral", "task": "Classify the company's primary business line from the research findings." },
+        "candidates": [
+          { "id": "finance", "description": "Financial services company" },
+          { "id": "shipping", "description": "Shipping/logistics company" }
+        ] },
+      { "id": "brief", "outputType": "delegate", "dependencies": ["classify"],
+        "agentSource": { "kind": "ephemeral", "task": "Summarize the research findings into a shared brief.", "tools": ["file_write"] } },
+      { "id": "finance", "outputType": "delegate", "dependencies": ["brief"],
+        "agentSource": { "kind": "ephemeral", "task": "Write the final financial-sector sustainability report from the brief." } },
+      { "id": "shipping", "outputType": "delegate", "dependencies": ["brief"],
+        "agentSource": { "kind": "ephemeral", "task": "Write the final shipping-sector sustainability report from the brief." } }
+    ]
+  }
+}
+```
+
+Note the shape: the shared work (`research`, `brief`) sits ABOVE the branch
+point and the two candidate leaves are **terminal**. A merge step that depends
+on both leaves would be blocked whenever one of them isn't selected — which is
+exactly what `workflow_validate` flags as an ambiguous shared/gated node.
+
+If you'd rather describe the goal in plain language and let the engine plan
+it, call `workflow_create` with `taskDescription` instead of `workflow` — it
+costs one extra delegation but needs no node authoring.
+
+Always follow up a create/modify with `workflow_validate` if you're not
+already confident the DAG is acyclic and every dependency/candidate resolves
+— it's cheap and catches authoring mistakes before a run wastes time.
+
+## Executing a workflow — fire-and-poll
+
+`workflow_run` is **asynchronous**: it returns `{ runId, workflowId }`
+immediately and does **not** wait for the run to finish (a multi-step run can
+take minutes; the tool call itself must return well under 30 seconds). After
+calling it:
+
+1. Poll `workflow_status` (or `workflow_run_get` with the `runId`) every so
+   often to observe progress — don't call it in a tight loop; a few seconds
+   between polls is reasonable for most workflows.
+2. `workflow_status` returns a POPULATED per-step map for a live run — for
+   each step: `status`
+   (`pending`/`running`/`completed`/`failed`/`cancelled`/`skipped`/`neutral`),
+   `attempt`/`maxAttempts`, a short `currentAction` string while it runs, a
+   per-sub-agent `subAgents` map for a research fan-out (so you can name the
+   straggler), and an `agentTrace` (the executed prompt, reasoning where
+   exposed, each tool call with its arguments/result/ok, and the response).
+   Use it to answer "what is it doing right now" without guessing. The run is
+   done once `state` is `completed`, `completed_with_warnings`, `failed`, or
+   `cancelled` — treat `completed_with_warnings` as "check the
+   `workflow.branch.skipped` warning, a branch did nothing".
+3. If you need to check on a workflow without already holding a `runId`,
+   `workflow_list` reports each workflow's live `status` (`running`/`idle`)
+   and, when running, its current `run_id` — use that to resume polling.
+4. Call `workflow_cancel` to stop an in-progress run; in-progress steps are
+   marked `cancelled`, steps that never started are marked `neutral`.
+
+## Inspecting historical runs
+
+Every run — completed, failed, or cancelled — is persisted. Use
+`workflow_run_list` to see a workflow's past runs (id, timestamps, final
+state), and `workflow_run_get` with a specific `runId` to see that run's full
+per-step outcomes and event log — useful for "why did step X fail last time"
+or "what did the research step find" after the fact, without needing the app
+open.
+
+## Dry-run mode — validate a workflow in seconds, not an hour
+
+Before committing to a long run, validate the DAG, the branch routing, and
+leaf reachability with fixtures:
+
+```json
+{
+  "workflowId": "sustainability-analysis-1a2b",
+  "dryRun": true,
+  "fixtures": {
+    "research": [{ "label": "carbon", "output": "canned finding" }],
+    "classify": { "select_branch": { "selected": ["finance"] } }
+  }
+}
+```
+
+- A node named in `fixtures` is **not executed at all** — no sub-agent, no
+  network; its canned value is handed to its dependents exactly as a real
+  output would be. A whole research fan-out can be fixture-designated with one
+  entry (key = the node id), or a single sub-agent with `"<nodeId>#<index>"`.
+- A routing node's fixture can BE the selection signal (the `select_branch`
+  shape above), which is how you exercise each branch deterministically.
+- Nodes with no fixture still run for real, so you can dry-run the expensive
+  half and really execute the cheap half.
+- `dryRun` is opt-in: without it, `fixtures` is ignored and behavior is
+  exactly as before.
+
+Use this whenever you are iterating on routing or dependencies — a full run
+just to confirm which branch fired is a waste of an hour.
+
+## Timeouts — nothing hangs forever
+
+The workflow's `config` carries the defaults the engine enforces:
+`defaultTimeout` (per step, seconds), `defaultRetryLimit`, and `runTimeout`
+(the whole run). A step past its timeout is marked `failed` with a timeout
+reason and is NOT retried (a hung agent will just hang again); a run past its
+deadline is halted and marked failed. A node can override the step timeout
+with its own `timeout`. Set these deliberately for long research workflows —
+the built-in defaults (900s per step, 7200s per run) are a safety net, not a
+plan.
+
+## Ephemeral tool lists are honored
+
+An ephemeral node's declared `tools` (and `skills`) really are granted to the
+spawned agent, including tools that are otherwise deferred behind
+`find_tools`. So a node that needs to read or write VFS files should just
+declare `"tools": ["file_read", "file_write"]` — do NOT route file I/O
+through `run_command` heredocs as a workaround. And for a fan-out → merge
+handoff you usually need no files at all: research/delegate outputs are passed
+to dependent steps as structured data automatically.
+
+## Common mistakes to avoid
+
+- Don't add a `dependencies` edge just to force serial execution when steps
+  are actually independent — that defeats the parallel scheduler and slows
+  the workflow down for no reason.
+- Don't use `candidates` for ordinary linear dependencies — it's specifically
+  for run-time, information-dependent branching. If you already know the
+  order at authoring time, just use `dependencies`.
+- Don't hang a merge step off two candidate leaves — under the selection rules
+  above it can never run when one of them is skipped. Put shared work above
+  the branch point and keep leaves terminal (`workflow_validate` errors on
+  this).
+- Don't chain N independent investigations as N delegate steps — use one
+  `research` node so they run concurrently.
+- Don't burn a full run to test routing — use `dryRun` with fixtures.
+- Don't poll `workflow_status` faster than the workflow could plausibly
+  progress — most steps take at least a few seconds.
+- Don't forget `toolName` on a `"tool"`-outputType step, or `researchAgents`
+  on a `"research"`-outputType step — `workflow_validate` will catch both.
