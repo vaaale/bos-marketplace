@@ -1,14 +1,14 @@
-// liveStatus.ts — derives per-step live status from a run's event stream.
+// liveStatus.ts — per-step status for the graph.
 //
-// The service (services/runs.js `startRun`) only assigns the authoritative
-// `steps` map once the whole run settles — `live.steps = result.steps` runs
-// after `runWorkflow()` resolves. While a run is `"running"`, `steps` is
-// still `{}` on every poll; `events` is the only field that updates as each
-// step starts/completes/retries/fails (scheduler.js calls `emit()`
-// synchronously for each). So for a live run we replay events instead of
-// trusting `steps`; once the run is terminal, `steps` is authoritative and
-// matches the persisted run log exactly (including "neutral" for steps that
-// never ran), so we prefer it.
+// The service now owns ONE live projection (services/engine/run-state.js) and
+// returns it populated from the very first poll — `steps` is authoritative
+// for a live run as well as a finished one (FR-036). So the normal path here
+// is simply "use run.steps".
+//
+// The event replay below is kept as a FALLBACK for the older service contract
+// (which only assigned `steps` after the run settled, leaving `steps: {}` for
+// the whole duration of a run) so a newer app bundle installed against an
+// older service build still colors the graph correctly.
 import type { RunEvent, StepState } from "./types";
 
 export function deriveLiveSteps(events: RunEvent[]): Record<string, StepState> {
@@ -17,19 +17,22 @@ export function deriveLiveSteps(events: RunEvent[]): Record<string, StepState> {
     if (!ev.stepId) continue;
     switch (ev.type) {
       case "step.start":
-        steps[ev.stepId] = { status: "running", attempts: ev.attempt };
+        steps[ev.stepId] = { status: "running", attempt: ev.attempt, attempts: ev.attempt };
         break;
       case "step.retry":
-        steps[ev.stepId] = { status: "running", attempts: ev.attempt, error: ev.error };
+        steps[ev.stepId] = { status: "running", attempt: ev.attempt, attempts: ev.attempt, error: ev.error };
         break;
       case "step.complete":
-        steps[ev.stepId] = { status: "completed", attempts: ev.attempt };
+        steps[ev.stepId] = { status: "completed", attempt: ev.attempt, attempts: ev.attempt };
+        break;
+      case "step.skip":
+        steps[ev.stepId] = { status: "skipped", reason: ev.reason };
         break;
       case "step.fail":
         steps[ev.stepId] =
           ev.error === "cancelled"
-            ? { status: "cancelled", attempts: ev.attempt }
-            : { status: "failed", attempts: ev.attempt, error: ev.error };
+            ? { status: "cancelled", attempt: ev.attempt, attempts: ev.attempt }
+            : { status: "failed", attempt: ev.attempt, attempts: ev.attempt, error: ev.error };
         break;
       default:
         break;
@@ -44,9 +47,9 @@ interface RunLike {
   events?: RunEvent[];
 }
 
-/** Live (event-derived) while running; authoritative persisted `steps` once settled. */
+/** The service's own per-step map when it has one; the replayed log otherwise. */
 export function liveStepsFor(run: RunLike | null | undefined): Record<string, StepState> {
   if (!run) return {};
-  if (run.state !== "running" && run.steps && Object.keys(run.steps).length > 0) return run.steps;
+  if (run.steps && Object.keys(run.steps).length > 0) return run.steps;
   return deriveLiveSteps(run.events || []);
 }

@@ -117,5 +117,77 @@ test("runs.js", async (t) => {
     assert.equal(await runs.getRun(wf.id, runId), undefined);
   });
 
+
+  // ===========================================================================
+  // Scope-add: the persisted run log gains agent.* events + a per-step
+  // projection (FR-015/FR-028), and a live run is addressable by runId alone.
+  // ===========================================================================
+
+  await t.test("the persisted run record carries the extended schema (agent events, selected, finalState)", async () => {
+    const wf = {
+      id: "wf-runs-trace",
+      name: "Traced",
+      steps: [{ id: "a", outputType: "delegate", agentSource: { kind: "ephemeral", task: "do the thing" } }],
+    };
+    const { runId } = runs.startRun(wf);
+    await waitUntil(() => runs.isRunning(wf.id) === false);
+
+    const persisted = JSON.parse(await require("../vfs").readText(`/Workflows/.runs/${wf.id}/${runId}.json`));
+    assert.equal(persisted.schemaVersion, 2);
+    assert.equal(persisted.state, "completed");
+    assert.equal(persisted.finalState, "completed");
+    assert.deepEqual(persisted.selected, {});
+    assert.ok(persisted.events.every((e) => typeof e.seq === "number"), "every persisted event carries its monotonic seq");
+    assert.ok(persisted.events.some((e) => e.type === "agent.prompt"), "the executed prompt is persisted (FR-028)");
+    assert.ok(persisted.events.some((e) => e.type === "agent.response"));
+    assert.equal(persisted.steps.a.status, "completed");
+    assert.match(persisted.steps.a.agentTrace.prompt, /do the thing/);
+  });
+
+  await t.test("a persisted run replays through getRun with its full per-node trace (historical mode)", async () => {
+    const wf = {
+      id: "wf-runs-replay",
+      name: "Replayed",
+      steps: [{ id: "a", outputType: "delegate", agentSource: { kind: "ephemeral", task: "replay me" } }],
+    };
+    const { runId } = runs.startRun(wf);
+    await waitUntil(() => runs.isRunning(wf.id) === false);
+    // Drop the in-memory copy so getRun is forced through the disk + replay path.
+    const { unregisterRunState } = require("../engine/run-state");
+    unregisterRunState(runId);
+
+    const run = await runs.getRun(wf.id, runId);
+    assert.equal(run.state, "completed");
+    assert.equal(run.steps.a.status, "completed");
+    assert.match(run.steps.a.agentTrace.prompt, /replay me/);
+    assert.ok(run.events.length > 0);
+    assert.deepEqual(run.events, run.events.slice().sort((x, y) => x.seq - y.seq), "the replayed log stays in seq order");
+  });
+
+  await t.test("getRun(?since) tails the event log without re-sending the whole history", async () => {
+    const wf = { ...linearWorkflow, id: "wf-runs-since" };
+    const { runId } = runs.startRun(wf);
+    await waitUntil(() => runs.isRunning(wf.id) === false);
+    const full = await runs.getRun(wf.id, runId);
+    assert.ok(full.events.length > 2);
+    const tail = await runs.getRun(wf.id, runId, { since: full.seq - 1 });
+    assert.equal(tail.events.length, 1);
+    assert.equal(tail.seq, full.seq);
+    // The per-step map is ALWAYS complete, even on a tail read — the panel
+    // never has to reassemble status from a partial event window.
+    assert.deepEqual(Object.keys(tail.steps).sort(), ["a", "b"]);
+  });
+
+  await t.test("a live run is addressable by runId alone (the GET /run/<runId> registry)", async () => {
+    const wf = { ...linearWorkflow, id: "wf-runs-registry" };
+    const { runId } = runs.startRun(wf);
+    const state = runs.getLiveRunState(runId);
+    assert.ok(state, "the run registers its live state immediately");
+    assert.equal(state.workflowId, wf.id);
+    assert.deepEqual(Object.keys(state.stepsSnapshot()).sort(), ["a", "b"], "steps are seeded before the first dispatch");
+    await waitUntil(() => runs.isRunning(wf.id) === false);
+    assert.equal(runs.getLiveRunState(runId).snapshot().state, "completed");
+  });
+
   await bos.close();
 });

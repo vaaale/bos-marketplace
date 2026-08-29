@@ -10,7 +10,13 @@
 // connection to the service's own port (§11) — never hardcode a port.
 
 interface BosApi {
-  services: { getConfig: (id: string) => Promise<unknown> };
+  services: {
+    getConfig: (id: string) => Promise<unknown>;
+    /** 043: the parent frame performs the request against the service's own
+     *  REST bridge and relays the JSON back — the ONLY channel an
+     *  opaque-origin install has to actually invoke the service. */
+    call?: (id: string, path: string, init?: { method?: string; body?: unknown }) => Promise<unknown>;
+  };
 }
 
 declare global {
@@ -77,9 +83,30 @@ async function resolveBaseUrl(): Promise<string> {
   return cachedBaseUrl;
 }
 
+async function callViaBroker(path: string, init?: RequestInit): Promise<unknown> {
+  const broker = window.__bos?.services?.call;
+  if (!broker) throw new Error("cannot reach the Workflow Manager service: no direct network access and no window.__bos services broker");
+  const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+  return broker(SERVICE_ID, path.replace(/^\//, ""), { method: init?.method || "GET", body });
+}
+
 async function call(path: string, init?: RequestInit): Promise<unknown> {
-  const base = await resolveBaseUrl();
-  const res = await fetch(new URL(path.replace(/^\//, ""), base).toString(), init);
+  let base: string;
+  try {
+    base = await resolveBaseUrl();
+  } catch {
+    // No reachable config (opaque-origin sandbox) — the broker is the fallback.
+    return callViaBroker(path, init);
+  }
+  let res: Response;
+  try {
+    res = await fetch(new URL(path.replace(/^\//, ""), base).toString(), init);
+  } catch {
+    // A direct fetch to the service's own port fails from a sandboxed,
+    // opaque-origin iframe (no CORS on that surface) — relay through the
+    // parent frame instead of surfacing a bare network error.
+    return callViaBroker(path, init);
+  }
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error((body && body.error) || `${path}: HTTP ${res.status}`);
   return body;
@@ -100,5 +127,21 @@ export const api = {
   export: (id: string) => call(`workflows/${encodeURIComponent(id)}/export`),
   validate: (id: string) => call(`workflows/${encodeURIComponent(id)}/validate`, { method: "POST" }),
   runList: (id: string) => call(`workflows/${encodeURIComponent(id)}/runs`),
-  runGet: (id: string, runId: string) => call(`workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`),
+  runGet: (id: string, runId: string, since?: number) =>
+    call(`workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}${since ? `?since=${since}` : ""}`),
+  /**
+   * The service's live run projection, addressed by runId alone
+   * (services/engine/run-state.js + http-bridge.js's GET /run/<runId>). This
+   * is the single source of truth the trajectory panel tails: `since` is the
+   * monotonic event seq from the previous poll, so a long run stays cheap.
+   * `workflowId` lets the service fall back to the persisted log once the run
+   * has aged out of memory — which is also how a HISTORICAL run replays.
+   */
+  runLive: (runId: string, opts?: { since?: number; workflowId?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.since) params.set("since", String(opts.since));
+    if (opts?.workflowId) params.set("workflowId", opts.workflowId);
+    const query = params.toString();
+    return call(`run/${encodeURIComponent(runId)}${query ? `?${query}` : ""}`);
+  },
 };

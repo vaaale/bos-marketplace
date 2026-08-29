@@ -27,11 +27,16 @@ import { test, expect, type APIRequestContext, type Page } from "@playwright/tes
 //      appends "Upstream step outputs:" text after it) — so a root ephemeral
 //      node whose task IS an `@@e2e {...}` directive runs deterministically.
 //      Non-root nodes get upstream context appended (breaking the scripted
-//      match), so every workflow built below either keeps non-root steps as
+//      match), so every workflow built below keeps non-root steps as
 //      `outputType: "ag-ui"` (which never delegates at all — see
-//      node-model.js/executor.js: "no delegate call") or accepts that a
-//      non-root retry falls through to a real model call (only relied on, in
-//      US7's "invalid selection" test, for an invariant that holds either way).
+//      node-model.js/executor.js: "no delegate call").
+//   3. Dry-run FIXTURES (`workflow_run` with `dryRun: true`, FR-037) make a
+//      node's output deterministic with no delegation at all. This is how the
+//      US7 routing tests below stay deterministic: a ROUTING node's task now
+//      has the structured-selection instruction appended to it (FR-018/029),
+//      which breaks the `@@e2e` prefix match, so its selection signal is
+//      supplied as a fixture instead — the exact structured shape the engine
+//      reads (`{ select_branch: { selected: [...] } }`).
 //
 // The app UI (US4/US5/US6) is exercised by navigating directly to the
 // installed item's iframe route (`/apps/workflows/`), which serves the fully
@@ -507,13 +512,13 @@ test.describe.serial("Workflow Manager — service tools + app (001-workflow-man
   // US7 — Dynamic routing to candidate sub-agents
   // -------------------------------------------------------------------------
   test.describe("US7 — dynamic routing", () => {
-    test("a node with candidate sub-agents selects one and the run proceeds only along the chosen path", async ({ request }) => {
+    test("a node with candidate sub-agents selects one structurally and the run proceeds only along the chosen path", async ({ request }) => {
       const created = await svcPost(request, base, "workflows", {
         workflow: {
           name: uniqueName("US7 routing workflow"),
           steps: [
             ephemeralNode("classify", {
-              task: scripted([{ text: "This looks like a financial services company.\nSELECT: finance" }]),
+              task: "Classify the company and select the matching branch.",
               candidates: [
                 { id: "finance", description: "Financial services company" },
                 { id: "shipping", description: "Shipping/logistics company" },
@@ -527,19 +532,25 @@ test.describe.serial("Workflow Manager — service tools + app (001-workflow-man
       const id = created.body.workflow_id as string;
       createdWorkflowIds.push(id);
 
-      const ran = await svcPost(request, base, `workflows/${id}/run`);
+      const ran = await svcPost(request, base, `workflows/${id}/run`, {
+        dryRun: true,
+        // The STRUCTURED selection signal (FR-029) — never prose.
+        fixtures: { classify: { select_branch: { selected: ["finance"] } } },
+      });
       const finalRun = await pollRunUntilTerminal(request, base, id, ran.body.runId, 20000);
 
       expect(finalRun.state).toBe("completed");
       expect(finalRun.steps.classify.status).toBe("completed");
-      // The chosen path ran; the unchosen candidate never did (reported neutral,
-      // not an error — US7 acceptance scenario 1 + the spec's routing model).
+      // The chosen path ran; the unchosen candidate is skipped, not an error
+      // (US7 acceptance scenario 1 + FR-031's selection propagation).
       expect(finalRun.steps.finance.status).toBe("completed");
-      expect(finalRun.steps.shipping.status).toBe("neutral");
+      expect(finalRun.steps.shipping.status).toBe("skipped");
+      expect(finalRun.steps.shipping.reason).toBe("branch-not-selected");
 
       // The selection itself is recorded on the routing node's completion event.
       const completeEvent = finalRun.events.find((e: any) => e.type === "step.complete" && e.stepId === "classify");
       expect(completeEvent?.selected).toEqual(["finance"]);
+      expect(finalRun.selected?.classify).toEqual(["finance"]);
     });
 
     test("a node with exactly one candidate auto-delegates with no choice action required", async ({ request }) => {
@@ -571,14 +582,9 @@ test.describe.serial("Workflow Manager — service tools + app (001-workflow-man
           name: uniqueName("US7 invalid-selection workflow"),
           steps: [
             ephemeralNode("classify2", {
-              // Deliberately no "SELECT:" line on the FIRST (scripted, deterministic)
-              // attempt — router.js's retry-loop (FR-018) must not fabricate a
-              // selection; a retry falls through to a real model call (only the
-              // first attempt is scripted — see the file header), so this test
-              // asserts the outcome invariant rather than a specific final state.
-              task: scripted([{ text: "I am not sure which branch applies here." }]),
+              task: "Classify and select a branch.",
               candidates: [{ id: "route_a" }, { id: "route_b" }],
-              timeout: 8,
+              timeout: 15,
               retryLimit: 1,
             }),
             agUiNode("route_a", ["classify2"]),
@@ -589,15 +595,23 @@ test.describe.serial("Workflow Manager — service tools + app (001-workflow-man
       const id = created.body.workflow_id as string;
       createdWorkflowIds.push(id);
 
-      const ran = await svcPost(request, base, `workflows/${id}/run`);
+      // The fixture names a candidate that does not exist for this node, so
+      // the engine sees NO valid structured selection on every attempt —
+      // deterministic, and with no model call at all.
+      const ran = await svcPost(request, base, `workflows/${id}/run`, {
+        dryRun: true,
+        fixtures: { classify2: { select_branch: { selected: ["not_a_real_branch"] } } },
+      });
       const finalRun = await pollRunUntilTerminal(request, base, id, ran.body.runId, 25000);
 
+      // FR-030: the node FAILS rather than defaulting to a candidate.
+      expect(finalRun.state).toBe("failed");
+      expect(finalRun.steps.classify2.status).toBe("failed");
+      expect(String(finalRun.steps.classify2.error)).toMatch(/no valid structured branch selection/);
       // Core safety invariant (SC-011): routing to BOTH candidates at once is
       // never valid — at most one of the two ever completes.
       const completedBranches = [finalRun.steps.route_a?.status, finalRun.steps.route_b?.status].filter((s) => s === "completed");
-      expect(completedBranches.length).toBeLessThanOrEqual(1);
-      // And the run always settles — it never hangs mid-retry.
-      expect(["completed", "failed"]).toContain(finalRun.state);
+      expect(completedBranches.length).toBe(0);
     });
   });
 
@@ -691,14 +705,22 @@ test.describe.serial("Workflow Manager — service tools + app (001-workflow-man
       await page.getByRole("button", { name: /Run/ }).first().click();
       await expect(page.getByText(/run run-/)).toBeVisible({ timeout: 10000 });
 
-      // While "ingest" is still running, the run view should show it as such.
-      await expect(page.locator(".wf-step-row.wf-step-running", { hasText: "ingest" })).toBeVisible({ timeout: 8000 });
+      // FR-027: the run view no longer carries a per-step status list below
+      // the graph — per-step status is the graph's node coloring plus the
+      // on-demand trajectory panel (US10, covered in 002).
+      await expect(page.locator(".wf-step-row")).toHaveCount(0);
 
       // Eventually every step completes and progress reaches 100%.
       await expect(page.getByText("4 of 4 steps")).toBeVisible({ timeout: 15000 });
       await expect(page.getByText("100%")).toBeVisible();
-      for (const nodeId of ["ingest", "clean", "transform", "report"]) {
-        await expect(page.locator(".wf-step-row.wf-step-completed", { hasText: nodeId })).toBeVisible();
+
+      // Per-step outcome is inspectable per node, on demand.
+      for (const nodeId of ["ingest", "report"]) {
+        await page.locator(`[title^="${nodeId}:"]`).click();
+        const panel = page.locator(".wf-traj-panel");
+        await expect(panel).toBeVisible();
+        await expect(panel).toContainText(nodeId);
+        await expect(panel.locator(".wf-chip-completed")).toBeVisible({ timeout: 10000 });
       }
     });
 

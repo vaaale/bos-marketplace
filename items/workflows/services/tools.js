@@ -9,6 +9,7 @@
 
 const STRING = { type: "string" };
 const OBJECT = { type: "object" };
+const BOOLEAN = { type: "boolean" };
 
 function required(properties, req) {
   return { type: "object", properties, required: req };
@@ -44,12 +45,22 @@ const DECLARATIONS = [
   {
     name: "workflow_run",
     description:
-      "Start a workflow run. Fire-and-poll: returns { runId, workflowId } immediately (well under 30s) — it does NOT wait for the run to finish. Poll workflow_status or workflow_run_get with the returned runId to observe progress and the final state (completed/failed/cancelled). Refused if the workflow fails validation, or if it already has a run in progress.",
-    inputSchema: required({ workflowId: STRING, featureBranch: STRING, conversationId: STRING }, ["workflowId"]),
+      "Start a workflow run. Fire-and-poll: returns { runId, workflowId } immediately (well under 30s) — it does NOT wait for the run to finish. Poll workflow_status or workflow_run_get with the returned runId to observe progress and the final state (completed/completed_with_warnings/failed/cancelled). Refused if the workflow fails validation, or if it already has a run in progress. Set `dryRun: true` with a `fixtures` map ({ \"<nodeId>\": <cannedOutput> }) to validate the DAG, branch routing, and leaf reachability in seconds: a fixture-designated node's real sub-agent execution is skipped and the canned output is used by its dependents instead. A routing node's fixture may itself be the selection signal, e.g. { \"select_branch\": { \"selected\": [\"leaf-id\"] } }. Nodes with no fixture still execute for real; omitting dryRun leaves behavior completely unchanged.",
+    inputSchema: required(
+      {
+        workflowId: STRING,
+        featureBranch: STRING,
+        conversationId: STRING,
+        dryRun: BOOLEAN,
+        fixtures: OBJECT,
+      },
+      ["workflowId"],
+    ),
   },
   readOnly({
     name: "workflow_status",
-    description: "Get a workflow's current run state: if a run is in progress, its live per-step statuses and event log; otherwise the most recent historical run's final state. Use workflow_run_get for a specific historical run by id.",
+    description:
+      "Get a workflow's current run state. Returns a POPULATED per-step map while the run is in progress (never an empty steps:{}) — per step: status, attempt/maxAttempts, a short current-action string while it runs, per-sub-agent status for a research node's fan-out, and the node's agent trace (executed prompt, reasoning, tool calls with arguments/results, response). Plus the run's overall state, the routing selections it made, and its event log. If no run is in progress, returns the most recent historical run. Use workflow_run_get for a specific historical run by id.",
     inputSchema: required({ workflowId: STRING }, ["workflowId"]),
   }),
   {
@@ -69,7 +80,8 @@ const DECLARATIONS = [
   }),
   readOnly({
     name: "workflow_validate",
-    description: "Validate a workflow: DAG acyclicity, node shape (agentSource/outputType), dependency and dynamic-routing candidate resolvability. Pass `workflowId` to validate a saved workflow, or `workflow` to validate one before saving. Returns { ok, errors[], warnings[] }.",
+    description:
+      "Validate a workflow: DAG acyclicity, node shape (agentSource/outputType), dependency and dynamic-routing candidate resolvability, and candidate TOPOLOGY — an unreachable candidate leaf (no dependency path from its routing node) and a node that is ambiguously both a gated candidate leaf and a shared dependency of ungated work are reported as structural errors. Pass `workflowId` to validate a saved workflow, or `workflow` to validate one before saving. Returns { ok, errors[], warnings[] }.",
     inputSchema: required({ workflowId: STRING, workflow: OBJECT }, []),
   }),
   readOnly({
@@ -79,9 +91,42 @@ const DECLARATIONS = [
   }),
   readOnly({
     name: "workflow_run_get",
-    description: "Read one run's full detail: per-step final outcomes (completed/failed/cancelled/neutral) and the complete event log, replayable independent of whether the run is still live.",
+    description:
+      "Read one run's full detail: per-step outcomes (completed/failed/cancelled/skipped/neutral) with attempt counts, current action, per-sub-agent fan-out status and the per-node agent trace (prompt, reasoning, tool calls with arguments/results, response), the routing selections, and the complete event log — replayable identically whether the run is still live or long finished.",
     inputSchema: required({ workflowId: STRING, runId: STRING }, ["workflowId", "runId"]),
   }),
 ];
 
-module.exports = { DECLARATIONS };
+/**
+ * The structured branch-selection signal (FR-029). This is NOT one of the 12
+ * workflow_* tools the service declares to the assistant — it is injected
+ * into a ROUTING node's own ephemeral agent spec by executor.js, so the node's
+ * agent has a machine-readable way to name the candidate(s) it chose and
+ * router.js never has to parse prose. `enum` is filled per node with that
+ * node's own candidate ids, so an invalid id cannot even be expressed.
+ */
+function selectBranchTool(candidateIds, multi) {
+  return {
+    name: "select_branch",
+    description: multi
+      ? "Select one or more of this workflow step's declared downstream candidates. Call this as your LAST action."
+      : "Select exactly one of this workflow step's declared downstream candidates. Call this as your LAST action.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        selected: {
+          type: "array",
+          items: { type: "string", enum: [...candidateIds] },
+          minItems: 1,
+          ...(multi ? {} : { maxItems: 1 }),
+          description: "The candidate step id(s) this step routes to.",
+        },
+      },
+      required: ["selected"],
+    },
+  };
+}
+
+const SELECT_BRANCH_TOOL_NAME = "select_branch";
+
+module.exports = { DECLARATIONS, selectBranchTool, SELECT_BRANCH_TOOL_NAME };

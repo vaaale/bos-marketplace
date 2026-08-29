@@ -388,215 +388,44 @@ With multiple developers:
 
 ---
 
-# §9 Scope-add (US10–US15) — Tasks
-
-**Input**: `design.md` §9 (ADRs 10–14), `plan.md` §9 (file/module delta + delegation split), `spec.md` US10–US15 (FR-025..038, SC-015..023), `mockup.html` (binding UI contract for US10).
-
-**Delegation split** (two mechanisms, never conflated):
-- **Item work** (service facet US10–15 + app facet US10 + skill/docs) → `agent_delegate` (`contentOnly:true`) → `app_build` (no branch).
-- **Bos-core patch** (ADR-12: `runner.ts` + `discovery.ts` + delegate `onEvent`) → `dev_delegate` on the active feature branch `bos/001-workflow-manager-service`.
-
-**Blocking prerequisites** (do these first):
-- **T068** — `engine/run-state.js` (ADR-13 SOT) — US10/11/13 all project from it.
-- **T070–T072** — the ADR-12 bos-core patch — US12 (item side) and US10 event fidelity depend on it being promoted before the item re-install.
-
-**Continuation numbering**: T068+ (base tasks T001–T067 are complete). [P] = different files, no dependencies. Exact paths: item = `data/user-apps/items/workflows/` (`<item>` below); bos-core = `src/...`.
-
----
-
-## Phase 14: Foundational (scope-add blockers)
-
-**Purpose**: The single source of truth for live run state + the platform fix that makes declared tools real. Everything else depends on these.
-
-- [ ] T068 [P] Implement `<item>/services/engine/run-state.js` — `RunState`/`StepRuntimeState` SOT (ADR-13): in-memory `runId → RunState` map, append-only event log (monotonic seq) covering step events + `agent.*` + `workflow.branch.skipped`, live-read, `subscribe(since)` tail, and a `GET /run/<runId>` (+`?since=`) HTTP endpoint on the worker's already-bound port (ADR-11). This is the one canonical live state consumed by the tools AND the app (US13/US10). (Depends on base T014 store, T025 executor.)
-- [ ] T068a [P] [—] Unit test for `run-state.js` in `<item>/services/__tests__/run-state.test.js` — append/replay determinism, `subscribe(since)` tail, live-read, `StepRuntimeState` shape (status/attempt/currentAction/subAgents/outputs), no divergence between projected live state and replayed historical state (ADR-13, SC-016/022).
-- [ ] T068b [P] [—] Unit test for the run-log extended schema in `<item>/services/__tests__/runs-extended.test.js` — an `agent.prompt`/`agent.tool_call`/`agent.tool_result`/`agent.response`/`agent.select_branch`/`workflow.branch.skipped` event round-trips through `<item>/services/runs.js` persistence and re-projects to the same state (FR-028, ADR-13).
-
-**Checkpoint (T069): the ADR-12 bos-core patch — platform fix (dev_delegate, feature branch `bos/001-workflow-manager-service`).** Prerequisite for US12 item-side and US10 event fidelity. Promote before the item re-install.
-
-- [ ] T069 [P] [US12] **bos-core**: modify `src/lib/agent/subagents/runner.ts` (`runLocalHeadless`) — build the ephemeral agent's gate from the in-memory agent object (NOT `getAgent`); honor a declared `deferredTools` set (stop forcing `deferred = new Set()`); route declared frontend-execution tools (e.g. `file_read`/`file_write`) through a server-side VFS bridge so a headless ephemeral agent genuinely has them (ADR-12, FR-034). Scope the edit to the ephemeral-agent branch; keep named-agent behavior byte-identical.
-- [ ] T069a [P] [US12] **bos-core**: modify `src/lib/assistant/tools/server/discovery.ts` — `find_tools`/`find_agent` resolve an ephemeral agent's gate from the in-run agent object (returns its declared deferred tools, not `[]`) (ADR-12, SC-021).
-- [ ] T069b [P] [US10] **bos-core**: modify `src/app/api/subagents/delegate/route.ts` `onEvent` — emit `tool_result` (name + result + ok/error), `reasoning_delta`, and final-text events, in addition to the existing `tool_call`/`done` (ADR-13 stream enrichment, US10 fidelity, FR-028). Confirm the agent loop already computes a per-call ok/error for server tools (open item #2) so this is a forward, not a re-implementation.
-- [ ] T069c [P] [US12/US10] **bos-core unit tests**: (1) a NAMED agent's `find_tools`/tool gate is byte-identical to pre-patch (regression guard — open item #1); (2) an EPHEMERAL agent's `find_tools` returns its declared deferred tools (FR-034/SC-021); (3) the delegate `onEvent` emits `tool_result` (name+result+ok) + final text. (open item #1 blast-radius mitigation.)
-- [ ] T069d [P] **bos-core docs**: note the headless ephemeral tool-granting behavior + the enriched delegate `onEvent` stream in `src/.../docs` (dev/architecture note) (constitution VI).
-
-**Checkpoint**: SOT (`run-state.js`) + the ADR-12 platform patch are in place. User-story work can proceed; the patch must be **promoted before the item re-install** (T094).
-
----
-
-## Phase 15: US11 — Branch Routing Correct, Structured, and Safe (P1) 🎯
-
-**Goal**: selection is a structured signal (never prose); Option A selection propagation (shared steps run by their own deps; only declared candidate leaves are gated); a selected branch with zero executed leaves is never a silent `completed`; `workflow_validate` checks candidate topology (FR-029..033, SC-018..020).
-
-**Independent Test**: Author `A → B(candidates: X, Y)` with a shared step `S` also depending on `B` before the leaves. Run; confirm `B` selects via `select_branch`, `S` runs regardless, the selected leaf runs, the unselected leaf is neutral. Separately, make the selected leaf unreachable and confirm a `workflow.branch.skipped` warning rather than `completed`.
-
-### Tests (unit + e2e) ⚠️
-
-- [ ] T070 [P] [US11] Unit test — Option A gating: a shared (non-candidate) step depending on a routing node runs regardless of selection; the selected leaf runs; the unselected leaf is `step.skip` (reason: branch-not-selected) — in `<item>/services/__tests__/router.test.js` (SC-019).
-- [ ] T071 [P] [US11] Unit test — structured selection: a valid `select_branch` call sets `selected[nodeId]`; a missing/invalid selection retries (retry-loop) then FAILS the node (never defaults); the recorded selection exactly equals the structured signal — in `<item>/services/__tests__/router.test.js` (SC-018, FR-029/030).
-- [ ] T072 [P] [US11] Unit test — zero-leaf guard: a routing node whose selected branch executes zero leaves emits `workflow.branch.skipped` + a non-plain-`completed` final state; and `validate.js` flags an unreachable candidate leaf + an ambiguous shared+leaf node — in `<item>/services/__tests__/scheduler.test.js` + `<item>/services/__tests__/validate.test.js` (SC-020, FR-032/033).
-- [ ] T073 [P] [US11] E2E test — `A → B(candidates:X,Y)`, shared `S` before the leaves: selected leaf runs, unselected neutral, `S` runs; unreachable-leaf variant raises `workflow.branch.skipped` (not `completed`) — in `e2e/001-workflow-manager-service-tools.spec.ts`.
-
-### Implementation
-
-- [ ] T074 [US11] Implement `select_branch` — declare the `select_branch` tool into routing-node ephemeral specs in `<item>/services/engine/executor.js`; read the structured `{ selected:[candidateId] }` in `<item>/services/engine/router.js`; retry-then-fail on invalid (FR-029/030) (depends on T068).
-- [ ] T075 [US11] Implement Option A gating in `<item>/services/engine/scheduler.js` — a node is ready when (a) all declared deps satisfied AND (b) if it is a declared candidate leaf of routing node R, `selected[R]` must contain it; otherwise gated by deps only; unselected leaves → `step.skip` (reason: branch-not-selected) (FR-031) (depends on T074).
-- [ ] T076 [US11] Implement the zero-executed-leaves guard in `<item>/services/engine/scheduler.js` — on completion, per routing node, if the selected branch ran zero leaves emit `workflow.branch.skipped` + set final state `completed_with_warnings`/failed (FR-032) (depends on T075).
-- [ ] T077 [US11] Add candidate-topology checks to `<item>/services/engine/validate.js` — flag an unreachable candidate leaf and an ambiguously shared+leaf node as structural errors (FR-033) (depends on T075).
-
-**Checkpoint**: US11 — routing is deterministic, shared steps flow, and a silent no-op is surfaced.
-
----
-
-## Phase 16: US12 — Ephemeral Agents Get Their Declared Tools (P1)
-
-**Goal**: the declared tool allowlist is genuinely granted to a spawned ephemeral agent (incl. deferred tools via `find_tools`); fan-out outputs are first-class structured data so no file handoff is required (FR-034/035, SC-021). (The platform half is T069/T069a.)
-
-**Independent Test**: Author an ephemeral node with `tools:["file_read","file_write"]`; run it; confirm the agent can call them directly (not via `run_command`) and `find_tools` returns them. Separately, confirm a research→merge handoff works with no file I/O.
-
-### Tests (unit + e2e) ⚠️
-
-- [ ] T078 [P] [US12] Unit test — `executor.js` forwards the node's full declared `tools` + a `deferredTools` list (+ skills, open item #3) to the delegate route, so the spawned agent's effective tool set matches the declaration — in `<item>/services/__tests__/executor.test.js` (FR-034/035).
-- [ ] T079 [P] [US12] E2E test — an ephemeral node listing `file_read`/`file_write` calls them directly (no `run_command` fallback); a research→merge fan-out handoff consumes structured `outputs` with no file I/O — in `e2e/001-workflow-manager-service-tools.spec.ts` (SC-021). (Requires T069 promoted.)
-
-### Implementation
-
-- [ ] T080 [US12] Modify `<item>/services/engine/executor.js` — forward declared `tools` + `deferredTools` + skills to the `/api/subagents/delegate` ephemeral spec (FR-034) (depends on T069 platform patch).
-- [ ] T081 [US12] Ensure research/delegate fan-out `outputs` are stored as first-class structured data in `<item>/services/engine/run-state.js` (`StepRuntimeState.outputs`) and consumed by dependent nodes (FR-035) (depends on T068, T044 research fan-out).
-
-**Checkpoint**: US12 — a declared tool means what it says; the parallel→merge handoff needs no file I/O.
-
----
-
-## Phase 17: US13 — Live Run Progress Is Observable (P1)
-
-**Goal**: `workflow_status`/`workflow_run_get` return a populated per-step map (status + attempt + current-action string) and per-sub-agent status for research nodes; the same live state feeds the app trajectory panel (FR-036, SC-022). (The SOT is T068.)
-
-**Independent Test**: Start a multi-branch run; poll `workflow_status`; confirm each in-progress step returns status + attempt + a current-action string, and a research node returns per-sub-agent status identifying the straggler.
-
-### Tests (unit + e2e) ⚠️
-
-- [ ] T082 [P] [US13] Unit test — `workflow_status`/`workflow_run_get` return a populated per-step map (NOT `steps:{}`): status + attempt + current-action while in progress; per-sub-agent status for a research node — in `<item>/services/__tests__/handlers.test.js` (SC-022, FR-036).
-- [ ] T083 [P] [US13] E2E test — live `workflow_status` reflects the same per-step state the app trajectory panel reads (single source of truth; no divergence) — in `e2e/001-workflow-manager-service-tools.spec.ts` (FR-036, ADR-13).
-
-### Implementation
-
-- [ ] T084 [US13] Modify `<item>/services/handlers.js` — `workflow_status`/`workflow_run_get` read `run-state.js` and return the populated per-step map (status/attempt/currentAction) + per-sub-agent status for research nodes (FR-036) (depends on T068).
-- [ ] T085 [US13] Modify `<item>/services/engine/executor.js` + `<item>/services/engine/scheduler.js` — update `StepRuntimeState.currentAction` and `subAgents` status transitions (pending→running→completed/failed) as the run progresses, appending to the event log (FR-036) (depends on T068).
-
-**Checkpoint**: US13 — a long run is no longer a black box, via both tools and the UI.
-
----
-
-## Phase 18: US10 — Node Trajectory Panel (agent-debug surface) (P2)
-
-**Goal**: clicking a node (live or historical run) opens the right-side, horizontally-resizable panel showing the node's agent trace — executed prompt, reasoning, every tool call (name/args/result/status), sub-agent fan-out status, current-action, agent response, lifecycle events, output/artifact — replayed from the run log; the redundant per-step status list is removed (FR-025/026/027, SC-015/016/017). The mockup is the binding UI contract.
-
-**Independent Test**: Open a live run; click a node; confirm the right-side resizable panel shows the executed prompt, tool calls (name/args/result/status), sub-agent fan-out, current-action, and response, updating live. Select a historical run; click a node; confirm the replayed trajectory; a neutral node shows "no events"; confirm the per-step status list is gone and the divider resizes.
-
-### Tests (e2e) ⚠️
-
-- [ ] T086 [P] [US10] E2E test — Run view: click a node → right-side resizable trajectory panel shows node identity + executed prompt + reasoning + tool calls (name/in/out/ok-error) + sub-agent fan-out + current-action + response + lifecycle events + output; drag the divider resizes (graph reflows); click another node switches; X dismisses — in `e2e/001-workflow-manager-service-tools.spec.ts` (SC-015, mockup contract).
-- [ ] T087 [P] [US10] E2E test — History view: select a run, click a node → replayed agent trace from the persisted log with 100% fidelity (prompt/reasoning/tool calls/response); a neutral/never-ran node shows "no events"; the removed per-step status list is absent (FR-027, SC-016/017) — in `e2e/001-workflow-manager-service-tools.spec.ts`.
-
-### Implementation
-
-- [ ] T088 [US10] Implement `<item>/app/src/components/TrajectoryPanel.tsx` — the node-scoped projection of `run-state.js` (mockup §9.9 mapping): identity + status chip, "currently" current-action line, "retrying N/M" line, executed prompt, reasoning (only when present), tool calls (name/in/out/ok-error/inflight), sub-agent fan-out, agent response (or "generating…"), lifecycle events, output/artifact (FR-025/026) (depends on T068, T085).
-- [ ] T089 [US10] Wire the panel into `<item>/app/src/` Run + History views — node click handler on the graph (selection ring), the right-docked resizable divider (pointer-drag, 260–680px), live state via `window.__bos` → service `GET /run/<runId>?since=` (ADR-11) with `workflow_status` poll fallback, and historical replay from `workflow_run_get` (FR-025/026) (depends on T088, T068).
-- [ ] T090 [US10] Remove the redundant per-step status list from `<item>/app/src/` (FR-027) + add the 5th status chip `completed_with_warnings` to the run/history status-pill set (SC-020, open item #3) (depends on T089).
-
-**Checkpoint**: US10 — each node is debuggable (what its agent did, live and historical), matching the mockup.
-
----
-
-## Phase 19: US14 — Fast Iteration via Dry-Run/Fixture (P2)
-
-**Goal**: `workflow_run` supports an opt-in dry-run/fixture mode that substitutes canned sub-agent outputs for designated nodes, validating DAG/routing/leaves in seconds (FR-037, NFR-006, SC-023). (Scheduler short-circuit — ADR-14, no `src/` change.)
-
-**Independent Test**: Run a workflow with a research node in dry-run mode with a canned research output; confirm the downstream merge + branch routing execute in seconds against the fixture and the leaves are reached; confirm default (non-dry-run) is unchanged.
-
-### Tests (unit + e2e) ⚠️
-
-- [ ] T091 [P] [US14] Unit test — dry-run short-circuit: a fixture-designated node skips the real delegate call, substitutes the canned `outputs`, and still emits a plausible `StepRuntimeState` through the SAME event-append path (replay indistinguishable, ADR-13, open item #5); the `select_branch` signal can be fixture-able so routing evaluates deterministically — in `<item>/services/__tests__/scheduler.test.js` (NFR-006, SC-023).
-- [ ] T092 [P] [US14] E2E test — `workflow_run` with `dryRun`/`fixtures` validates DAG + routing + leaf reachability in seconds (no real research); default run is unchanged — in `e2e/001-workflow-manager-service-tools.spec.ts`.
-
-### Implementation
-
-- [ ] T093 [US14] Add opt-in `dryRun`/`fixtures` input to `workflow_run` in `<item>/services/tools.js` + `<item>/services/handlers.js`; implement the per-node short-circuit (canned `outputs` injection, no delegate call) in `<item>/services/engine/scheduler.js`/`executor.js` (FR-037, ADR-14) (depends on T068).
-
-**Checkpoint**: US14 — DAG/routing/leaf behavior is testable in seconds.
-
----
-
-## Phase 20: US15 — Fail-Fast Timeouts + Latency Docs (P2)
-
-**Goal**: the engine enforces a configurable per-step and per-run timeout so a stuck agent fails fast (step → failed w/ timeout reason; run → failed/timed-out + halted); the skill/docs state realistic relative latency and recommend research for parallel investigations (FR-038, SC-023, FR-023 extended).
-
-**Independent Test**: Author a workflow with a step timeout shorter than a node's expected duration; run it; confirm the timed-out step is marked failed with a timeout reason and the run does not hang; confirm the whole-run timeout halts a long run.
-
-### Tests (unit) ⚠️
-
-- [ ] T094 [P] [US15] Unit test — per-step timeout marks a stuck node failed (timeout reason) and the scheduler proceeds/halts per the on-failure policy; per-run timeout halts the whole run; sensible defaults apply when unconfigured — in `<item>/services/__tests__/scheduler.test.js` (FR-038, SC-023).
-
-### Implementation
-
-- [ ] T095 [US15] Enforce per-step + per-run timeouts in `<item>/services/engine/scheduler.js` — wrap each node's delegate call in a per-step deadline (step → failed w/ timeout reason) and a per-run deadline (run → failed/timed-out + halted), reading the Workflow config's default retry/timeout (FR-038) (depends on T068).
-- [ ] T096 [US15] Update `<item>/skills/workflow-manager/SKILL.md` + `<item>/docs/usage.md` — recommend the native **research** output type as the default for "run N investigations in parallel → synthesis" (noting it sidesteps the file-tool gap + is materially faster than serial delegate fan-out); state realistic delegate-vs-research latency; document dry-run usage (FR-023 extended, US14/US15) (depends on T093).
-
-**Checkpoint**: US15 — stuck agents fail fast; the skill steers toward research and dry-run.
-
----
-
-## Phase 21: Scope-add Polish, Full Validation & Assembly
-
-**Purpose**: Final integration, full suite, and install.
-
-- [ ] T097 [P] Wire the `agent.*` events end-to-end — `executor.js` consumes the enriched delegate `onEvent` (T069b) and emits `agent.prompt`/`agent.tool_call`/`agent.tool_result`/`agent.reasoning`/`agent.response` into `run-state.js` (worker-owned: prompt + select_branch; platform-forwarded: reasoning + per-tool result + response) (FR-028) (depends on T068, T069b).
-- [ ] T098 [P] Run the FULL e2e suite (all base + scope-add stories) + all unit tests (incl. the ADR-12 named-agent regression guard, open item #1); fix failures.
-- [ ] T099 Final assembly — `app_build` the item (service facet US10–15 + app facet US10 + skill/docs); **requires the T069/T069a/T069b bos-core patch PROMOTED first** (US12). Verify: trajectory panel (live + historical, mockup contract), Option A routing + `completed_with_warnings`, ephemeral tool fidelity, live `workflow_status` per-step + per-sub-agent, dry-run in seconds, fail-fast timeouts.
-
-**Checkpoint**: Scope-add complete — the node is debuggable, routing is safe, tools are real, progress is live, iteration is fast, and nothing hangs.
-
----
-
-## Scope-add Dependencies & Execution Order
-
-### Phase Dependencies
-
-- **Phase 14 (Foundational, T068 + T069)**: BLOCKS all scope-add user stories. `run-state.js` (T068) is the SOT; the ADR-12 bos-core patch (T069/T069a/T069b) is prerequisite for US12 item-side + US10 event fidelity.
-- **US11 (Phase 15)**: depends on T068 + T074 (select_branch).
-- **US12 (Phase 16)**: item-side depends on T069 (patch) + T068; `outputs` handoff depends on T044.
-- **US13 (Phase 17)**: depends on T068.
-- **US10 (Phase 18)**: depends on T068 + T085 (live-state updates) + T088; the bos-core patch (T069b) feeds its event fidelity.
-- **US14 (Phase 19)**: depends on T068.
-- **US15 (Phase 20)**: depends on T068.
-- **Polish (Phase 21)**: depends on all; T099 `app_build` requires the bos-core patch promoted.
-
-### Priority Order (P1 → P2)
-
-- **P1 (MVP of the scope-add)**: US11 (routing) + US12 (tool fidelity) + US13 (live progress) — the three correctness/observability fixes from the evaluation.
-- **P2**: US10 (trajectory panel UI) + US14 (dry-run) + US15 (timeouts + docs).
-- **Ordering note**: build the P1 service-side work (US11/12/13) first (they share `run-state.js` + the scheduler/executor/router), then US10 (the panel that consumes the SOT), then US14/US15. The app-side US10 work can proceed in parallel with US14/US15 once `run-state.js` + T085 exist.
-
-### Parallel Opportunities
-
-- T068 / T068a / T068b (SOT + its tests) can run in parallel.
-- The T069 bos-core patch (T069/T069a/T069b/T069c/T069d) is fully [P] (disjoint files) and runs on a **separate branch/delegation** (dev_delegate) — independent of the item work.
-- Within US11/US13/US14/US15, the unit tests are [P] and the `scheduler.js`/`router.js`/`validate.js`/`executor.js`/`handlers.js` edits are largely sequential per file but parallel across files.
-- US10 app-side (T088/T089/T090) is disjoint from the service facet and parallelizable with US14/US15.
-
-### Two-delegation build order (for `implement`)
-
-1. **dev_delegate** the ADR-12 bos-core patch (T069, T069a, T069b, T069c, T069d) on `bos/001-workflow-manager-service` → promote.
-2. **agent_delegate (`contentOnly:true`)** the item scope-add (T068, T070–T081, T084–T097) → **app_build** (T099).
-3. Run full validation (T098) + converge.
-
----
-
-## Scope-add Notes
-
-- **ADR-13 SOT is the linchpin** — US10/11/13 all project from `run-state.js` (T068); get it right first.
-- **ADR-12 is the only new `src/` surface** (T069/T069a) + the delegate `onEvent` enrichment (T069b); blast-radius mitigated by the named-agent regression guard (T069c, open item #1).
-- **The mockup is the binding contract for US10** (T086/T087/T088) — the app must match `mockup.html` exactly.
-- **`completed_with_warnings`** is a NEW run final-state (SC-020) — the app's 5th status chip (T090) + `workflow_status` surfacing the `workflow.branch.skipped` event (T084).
-- **App reachability** (ADR-11, open item #4): the app needs `services:read` granted (Settings → Apps) to read `GET /run/<runId>`; `workflow_status` poll is the fallback (T089).
+## Phase 14: Scope-add — US10-US15 (node trajectory, correct routing, live state, dry run, timeouts)
+
+**Goal**: the six capabilities added on top of the shipped engine — the per-node
+agent-debug trajectory panel (US10), structured/safe branch routing (US11),
+ephemeral tool fidelity + structured fan-out handoff (US12), observable live
+run state (US13), dry-run/fixture mode (US14), and per-step/per-run timeouts
+with documented latency (US15).
+
+**Independent Test**: see each user story's own "Independent Test" in `spec.md`.
+
+### Service facet
+
+- [x] T068 [US13] NEW `services/engine/run-state.js` — the single `RunState`/`StepRuntimeState` projection (status/attempt/maxAttempts/currentAction/subAgents/outputs/agentTrace), the append-only event log with monotonic `seq`, `eventsSince`/`subscribe(since)`, `replayRunState(persisted)`, and the process-wide run registry (FR-036/FR-026/FR-028)
+- [x] T069 [US13] `services/http-bridge.js` — `GET /run/<runId>[?since=][&workflowId=]` on the worker's already-bound port, serving that projection (live, with a persisted-log fallback)
+- [x] T070 [US13] `services/runs.js` — fold every scheduler event into the RunState, persist the extended run record (`schemaVersion: 2`, `agent.*` events, `selected`, `finalState`, `warnings`), and replay a persisted run through the same reducer
+- [x] T071 [US13] `services/handlers.js` — `workflow_status`/`workflow_run_get` return the POPULATED per-step map (+ `?since` tailing), never `steps: {}`
+- [x] T072 [US11] `services/engine/router.js` — structured `select_branch` signal only (tool call → structured output → strict JSON envelope); invalid/missing → retry-loop → FAIL (FR-029/FR-030); Option A gating helpers `buildCandidateIndex`/`selectionAllows`/`selectionRejects` (FR-031)
+- [x] T073 [US11] `services/engine/scheduler.js` — Option A ready-set (dependency edges released for every dependent; only declared candidate leaves gated), explicit `step.skip` for unselected leaves, and the zero-executed-leaves guard → `workflow.branch.skipped` + `completed_with_warnings` (FR-031/FR-032)
+- [x] T074 [US11] `services/engine/validate.js` — candidate-topology structural errors: unreachable candidate leaf, and a node ambiguously both a gated leaf and a shared dependency (FR-033)
+- [x] T075 [US12] `services/engine/executor.js` — forward the node's full declared `tools` + `deferredTools` + `skills` to the delegate's ephemeral spec, and inject the per-node `select_branch` tool for routing nodes (FR-034/FR-029)
+- [x] T076 [US10] `services/engine/executor.js` — emit `agent.prompt`/`agent.reasoning`/`agent.tool_call`/`agent.response`/`agent.action` from the delegate stream, consuming both the historical and the enriched (`tool_result`/`reasoning_delta`/`done.text`) event shapes (FR-028)
+- [x] T077 [US12] `services/engine/executor.js` — render fan-out outputs as first-class structured upstream context so a "research → merge" handoff needs no file I/O (FR-035)
+- [x] T078 [US13] `services/engine/scheduler.js` — research fan-out emits `agent.sub_agent` transitions (pending → running → completed/failed) per entry (FR-022/FR-036)
+- [x] T079 [US14] `services/engine/executor.js` + `scheduler.js` + `tools.js` + `handlers.js` — opt-in `dryRun`/`fixtures` on `workflow_run`: fixture-designated nodes (including a whole research fan-out, one sub-agent via `<nodeId>#<index>`, or a routing node's selection signal) short-circuit with no delegation (FR-037)
+- [x] T080 [US15] `services/engine/scheduler.js` — per-step timeout (non-retryable, `reason: "step-timeout"`) and per-run deadline (halt + failed), both from the workflow config with safe defaults (FR-038)
+
+### App facet
+
+- [x] T081 [US10] NEW `app/src/components/TrajectoryPanel.tsx` — the node-scoped agent-debug panel (identity, "currently", retry line, executed prompt, reasoning, tool calls with in/out + ok/error/inflight, sub-agents · fan-out, agent response / "generating…", lifecycle events, output / artifact), matching `mockup.html`
+- [x] T082 [US10] NEW `app/src/lib/trajectory.ts` — the node-scoped projection of the run detail (lifecycle rows with timestamps + durations, identity fields); one code path for live and historical
+- [x] T083 [US10] `app/src/components/RunView.tsx` — node click + selection ring, the resizable divider (260-680px pointer drag), live tailing via the `window.__bos` broker → `GET /run/<runId>?since=` with a `workflow_status` fallback, and REMOVAL of the per-step status list (FR-027)
+- [x] T084 [US10] `app/src/components/DetailView.tsx` — the same panel + divider over the historical replay, driven by `workflow_run_get`
+- [x] T085 [US11] `app/src/components/StatusPill.tsx` + `Graph.tsx` + `styles.css` — the 5th run status `completed_with_warnings`, the `skipped` node status, and the panel styles
+
+### Tests + docs
+
+- [x] T086 [P] Unit tests: `run-state.test.js` (NEW), `http-bridge.test.js` (NEW), and extensions to `router`/`scheduler`/`validate`/`executor`/`handlers`/`runs`/`tools` — run individually with `node --test <file>` and a timeout
+- [x] T087 [P] E2e: `e2e/002-workflows-node-trajectory-and-routing.spec.ts` — trajectory panel (live + historical, click/switch/resize/dismiss), Option A routing, `completed_with_warnings`, declared-tool fidelity, live per-step + per-sub-agent + agentTrace, dry run in seconds, per-step timeout
+- [x] T088 [P] E2e: update `e2e/001-...spec.ts` — US7 routing now uses the structured signal (via dry-run fixtures) and asserts `skipped`; the US45 UI test asserts the per-step list is GONE and inspects a node via the panel instead
+- [x] T089 [P] `skills/workflow-manager/SKILL.md` — research-as-default for parallel investigation + realistic latency table, the structured-selection/Option A/topology rules, dry-run usage, timeouts, ephemeral tool fidelity
+- [x] T090 [P] `docs/usage.md`, `docs/tool-reference.md`, `docs/dev/architecture.md` — trajectory panel, latency, dry-run examples, the new tool inputs/outputs, and the engine's new modules

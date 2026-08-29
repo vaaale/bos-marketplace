@@ -174,5 +174,177 @@ test("handlers.js", async (t) => {
     }
   });
 
+
+  // ===========================================================================
+  // Scope-add: US13 (populated live per-step state) + US14 (dry run).
+  // ===========================================================================
+
+  await t.test("US13/FR-036: workflow_status returns a POPULATED per-step map while the run is in progress", async () => {
+    const slowBos = await startFakeBos({ delegate: () => new Promise(() => {}) }); // an agent that never answers
+    process.env.NEXT_PUBLIC_APP_ORIGIN = slowBos.origin;
+    for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
+      delete require.cache[require.resolve(mod)];
+    }
+    const live = require("../handlers").makeHandlers({ log: () => {}, defaultMaxConcurrentSteps: 5 });
+    const created = await live.workflow_create({
+      workflow: {
+        name: "Live",
+        steps: [
+          { id: "slow", outputType: "delegate", agentSource: { kind: "ephemeral", task: "takes forever" } },
+          { id: "after", outputType: "ag-ui", input: 1, dependencies: ["slow"] },
+        ],
+      },
+    });
+    const { runId } = await live.workflow_run({ workflowId: created.workflow_id });
+
+    const status = await waitUntil(async () => {
+      const s = await live.workflow_status({ workflowId: created.workflow_id });
+      return s.steps && s.steps.slow && s.steps.slow.status === "running" ? s : null;
+    });
+
+    assert.equal(status.running, true);
+    assert.equal(status.runId, runId);
+    // The whole point of FR-036: NOT an empty steps map.
+    assert.notDeepEqual(status.steps, {});
+    assert.equal(status.steps.slow.status, "running");
+    assert.equal(status.steps.slow.attempt, 1);
+    assert.ok(status.steps.slow.currentAction, "an in-progress step exposes a short current-action string");
+    assert.equal(status.steps.after.status, "pending", "a step that has not started yet is still reported");
+    // The agent trace is live too (FR-026/FR-028) — the executed prompt is
+    // available the moment the delegate call is dispatched.
+    assert.match(status.steps.slow.agentTrace.prompt, /takes forever/);
+    assert.ok(status.seq > 0, "the snapshot carries the event-log head for ?since= tailing");
+
+    await live.workflow_cancel({ workflowId: created.workflow_id });
+    await waitUntil(async () => {
+      const s = await live.workflow_status({ workflowId: created.workflow_id });
+      return s.running === false ? s : null;
+    }, { timeoutMs: 5000 });
+
+    await slowBos.close();
+    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
+      delete require.cache[require.resolve(mod)];
+    }
+  });
+
+  await t.test("US13: a research node's live status exposes per-sub-agent progress", async () => {
+    let released;
+    const gate = new Promise((r) => (released = r));
+    const fanBos = await startFakeBos({
+      delegate: async (body) => {
+        if (body.task.includes("slow one")) await gate;
+        return [{ type: "done", result: { output: "sub-agent output" } }];
+      },
+    });
+    process.env.NEXT_PUBLIC_APP_ORIGIN = fanBos.origin;
+    for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
+      delete require.cache[require.resolve(mod)];
+    }
+    const live = require("../handlers").makeHandlers({ log: () => {}, defaultMaxConcurrentSteps: 5 });
+    const created = await live.workflow_create({
+      workflow: { name: "Fan", steps: [{ id: "r", outputType: "research", researchAgents: [{ task: "quick one" }, { task: "the slow one" }] }] },
+    });
+    await live.workflow_run({ workflowId: created.workflow_id });
+
+    const status = await waitUntil(async () => {
+      const s = await live.workflow_status({ workflowId: created.workflow_id });
+      const subs = s.steps?.r?.subAgents;
+      return subs && Object.values(subs).some((sa) => sa.status === "completed") && Object.values(subs).some((sa) => sa.status === "running") ? s : null;
+    });
+    const subs = Object.values(status.steps.r.subAgents);
+    assert.equal(subs.length, 2);
+    const straggler = subs.find((sa) => sa.status === "running");
+    assert.match(straggler.label, /slow one/, "the in-flight straggler is identifiable by label");
+
+    released();
+    await waitUntil(async () => ((await live.workflow_status({ workflowId: created.workflow_id })).running === false ? true : null), { timeoutMs: 5000 });
+
+    await fanBos.close();
+    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
+      delete require.cache[require.resolve(mod)];
+    }
+  });
+
+  await t.test("US14: workflow_run wires dry-run fixtures end to end, in seconds and with no real delegation", async () => {
+    let delegateCalls = 0;
+    const guardBos = await startFakeBos({
+      delegate: () => {
+        delegateCalls++;
+        return [{ type: "done", result: { output: "REAL" } }];
+      },
+    });
+    process.env.NEXT_PUBLIC_APP_ORIGIN = guardBos.origin;
+    for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
+      delete require.cache[require.resolve(mod)];
+    }
+    const dry = require("../handlers").makeHandlers({ log: () => {}, defaultMaxConcurrentSteps: 5 });
+    const created = await dry.workflow_create({
+      workflow: {
+        name: "Dry",
+        steps: [
+          { id: "research", outputType: "research", researchAgents: [{ task: "a 40-minute investigation" }] },
+          { id: "classify", outputType: "delegate", dependencies: ["research"], agentSource: { kind: "ephemeral", task: "classify" }, candidates: ["alarm", "quiet"] },
+          { id: "alarm", outputType: "ag-ui", input: { alarm: true }, dependencies: ["classify"] },
+          { id: "quiet", outputType: "ag-ui", input: { quiet: true }, dependencies: ["classify"] },
+        ],
+      },
+    });
+    const t0 = Date.now();
+    const started = await dry.workflow_run({
+      workflowId: created.workflow_id,
+      dryRun: true,
+      fixtures: { research: [{ label: "canned", output: "canned finding" }], classify: { select_branch: { selected: ["alarm"] } } },
+    });
+    assert.equal(started.dryRun, true);
+    const final = await waitUntil(async () => {
+      const s = await dry.workflow_status({ workflowId: created.workflow_id });
+      return s.running === false && s.state !== "never_run" ? s : null;
+    });
+    assert.equal(final.state, "completed");
+    assert.equal(delegateCalls, 0, "a dry run performs no real work (NFR-006)");
+    assert.equal(final.steps.alarm.status, "completed");
+    assert.equal(final.steps.quiet.status, "skipped");
+    assert.deepEqual(final.selected.classify, ["alarm"]);
+    assert.ok(Date.now() - t0 < 5000);
+
+    await guardBos.close();
+    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
+      delete require.cache[require.resolve(mod)];
+    }
+  });
+
+  await t.test("FR-033: workflow_validate reports candidate-topology errors", async () => {
+    const unreachable = await handlers.workflow_validate({
+      workflow: {
+        id: "topo-1",
+        name: "Unreachable leaf",
+        steps: [
+          { id: "classify", agentSource: { kind: "static", agentId: "x" }, candidates: ["alarm"] },
+          { id: "alarm", outputType: "ag-ui", input: 1 },
+        ],
+      },
+    });
+    assert.equal(unreachable.ok, false);
+    assert.ok(unreachable.errors.some((e) => e.includes("unreachable candidate leaf")));
+
+    const shared = await handlers.workflow_validate({
+      workflow: {
+        id: "topo-2",
+        name: "Ambiguous leaf",
+        steps: [
+          { id: "classify", agentSource: { kind: "static", agentId: "x" }, candidates: ["alarm", "quiet"] },
+          { id: "alarm", outputType: "ag-ui", input: 1, dependencies: ["classify"] },
+          { id: "quiet", outputType: "ag-ui", input: 1, dependencies: ["classify"] },
+          { id: "publish", outputType: "ag-ui", input: 1, dependencies: ["alarm"] },
+        ],
+      },
+    });
+    assert.equal(shared.ok, false);
+    assert.ok(shared.errors.some((e) => e.includes("ambiguously both a gated candidate leaf")));
+  });
+
   await bos.close();
 });

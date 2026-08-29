@@ -97,7 +97,7 @@
     {
       "id": "terminal",
       "name": "Terminal Service",
-      "description": "WebSocket-based shell daemon — the reference/example service for user-specs/002-service-daemons, bundled with its own Terminal app under app/.",
+      "description": "WebSocket-based shell daemon \u2014 the reference/example service for user-specs/002-service-daemons, bundled with its own Terminal app under app/.",
       "app": {
         "entrypoint": "items/terminal/app",
         "runtime": "iframe",
@@ -111,16 +111,20 @@
     {
       "id": "workflows",
       "name": "Workflow Manager",
-      "description": "Service-owned workflow engine: node model (agent source x output type), dynamic routing, parallel scheduling, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get).",
+      "description": "Service-owned workflow engine: node model (agent source x output type), structured branch routing with Option A selection propagation, parallel scheduling with per-step/per-run timeouts, a live per-step run state (status/attempt/current action/per-sub-agent fan-out/agent trace) served to both the tools and the app, dry-run fixtures, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get).",
       "app": {
-        "entrypoint": "items/workflows/app",
+        "entrypoint": "items/workflow-manager/app",
         "runtime": "iframe",
-        "version": "2.0.0",
-        "icon": "Puzzle"
+        "version": "2.1.0",
+        "icon": "Workflow"
+      },
+      "spec": {
+        "path": "items/workflow-manager/spec",
+        "version": "2.1.0"
       },
       "services": {
-        "entrypoint": "items/workflows",
-        "version": "2.0.0"
+        "entrypoint": "items/workflow-manager",
+        "version": "2.1.0"
       }
     },
     {
@@ -144,7 +148,7 @@
     {
       "id": "live-avatar",
       "name": "Live Avatar",
-      "description": "Lip-synced talking avatar (AVTR-1) — a voice engine with a face. Streams TTS audio to an avatar rendering server; BOS shows the result in the presence window. Not a separate app.",
+      "description": "Lip-synced talking avatar (AVTR-1) \u2014 a voice engine with a face. Streams TTS audio to an avatar rendering server; BOS shows the result in the presence window. Not a separate app.",
       "tags": [
         "voice",
         "avatar",
@@ -201,25 +205,6 @@
       "spec": {
         "path": "items/falling-blocks/spec",
         "version": "0.0.0"
-      }
-    },
-    {
-      "id": "workflow-manager",
-      "name": "Workflow Manager",
-      "description": "Service-owned workflow engine: node model (agent source x output type), structured branch routing with Option A selection propagation, parallel scheduling with per-step/per-run timeouts, a live per-step run state (status/attempt/current action/per-sub-agent fan-out/agent trace) served to both the tools and the app, dry-run fixtures, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get).",
-      "app": {
-        "entrypoint": "items/workflow-manager/app",
-        "runtime": "iframe",
-        "version": "2.1.0",
-        "icon": "Workflow"
-      },
-      "spec": {
-        "path": "items/workflow-manager/spec",
-        "version": "2.1.0"
-      },
-      "services": {
-        "entrypoint": "items/workflow-manager",
-        "version": "2.1.0"
       }
     }
   ]

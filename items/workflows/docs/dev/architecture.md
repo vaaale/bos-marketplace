@@ -61,7 +61,20 @@ running a named or ephemeral agent and streaming NDJSON. `executeNode()`:
   for static, an `ephemeral` object for ephemeral),
 - for `"tool"` nodes, constrains the task text to "call ONLY the tool named X",
 - consumes the NDJSON stream via `delegateOnce()`, resolving to
-  `{ output, toolEvents }` or rejecting on a stream-reported error.
+  `{ output, toolEvents, reasoning, response }` or rejecting on a
+  stream-reported error. The reader normalizes both the historical
+  `{type:"tool", tool, input}` shape and the enriched
+  `{type:"tool"|"tool_result"|"reasoning_delta"}` + `done.result.text` shape,
+  and emits an `agent.*` event per stream event through `ctx.emit` so the run
+  state can build each node's agent trace live (FR-028),
+- forwards an ephemeral node's FULL declared `tools` list plus a
+  `deferredTools` mirror of it and its `skills` (FR-034) — a declared tool must
+  actually be granted AND discoverable via `find_tools`, never silently
+  dropped,
+- injects the per-node `select_branch` tool (enum-limited to that node's own
+  candidate ids) for a routing node (FR-029),
+- substitutes a canned output, with no network call at all, for a node
+  designated in a dry run's `fixtures` (FR-037).
 
 **Origin resolution**: there is no `BOS_PORT` in `workerData`, so `vfs.js`/
 `executor.js` resolve BOS's own HTTP origin from `NEXT_PUBLIC_APP_ORIGIN` or
@@ -86,24 +99,93 @@ transient-looking errors — timeout/network/econnreset/etimedout/fetch
 failed). A `"research"` node internally fans out one delegate call per
 `researchAgents` entry, itself capped at the same concurrency limit.
 
-On completion of a node with `candidates`, the scheduler asks `router.js`
-which candidate(s) to unlock; only those children's dependency counts are
-decremented — the rest stay pending forever and are reported `"neutral"` at
-the end. On cancellation, every still-pending or in-flight step is marked
-`"cancelled"`; on any other still-pending step at run end (failure, or
-routed-away), the terminal status is `"neutral"`.
+**Selection propagation is Option A (FR-031)**: dependency edges are released
+for EVERY dependent when a node completes, and a node is additionally gated by
+a selection ONLY if it is a declared candidate leaf (`router.buildCandidateIndex`
+/ `selectionAllows`). That is what lets a SHARED step that depends on a routing
+node — the `render` between the branch point and the leaves — run normally,
+instead of blocking the whole downstream graph. A candidate leaf the router
+did not select is explicitly `step.skip`ped (`reason: "branch-not-selected"`),
+not left silently pending. On cancellation, every still-pending or in-flight
+step is marked `"cancelled"`; a still-pending step at run end (a sibling
+failure, or a dependency that was skipped) is `"neutral"`.
+
+**Zero-executed-leaves guard (FR-032)**: at the end of a run, any routing node
+whose selection executed no leaf emits `workflow.branch.skipped` and downgrades
+the final state to `completed_with_warnings` — a branch that performed no
+terminal action is never reported as a plain `completed`.
+
+**Timeouts (FR-038)**: `withTimeout` enforces a per-step deadline
+(`node.timeout ?? config.defaultTimeout ?? 900s`) — a step timeout is
+deliberately NOT treated as transient, so a hung agent fails fast instead of
+being retried into the same hang — and an internal `AbortController` enforces
+the per-run deadline (`config.runTimeout ?? 7200s`), halting the run and
+reporting `failed` with a `run-timeout` reason.
+
+**Dry run (FR-037)**: `dryRun` + `fixtures` are threaded into `ctx`; a
+fixture-designated node (including a whole research fan-out, or one sub-agent
+via `<nodeId>#<index>`) returns its canned output without touching the network.
+
+**Fan-out observability (FR-022/FR-036)**: `runResearchFanOut` emits an
+`agent.sub_agent` transition (pending → running → completed/failed) per entry,
+so the straggler in an N-way fan-out is identifiable live.
 
 ## Dynamic routing (`engine/router.js`)
 
-When a node declares more than one candidate, `resolveCandidates()` looks for
-a line of the form `SELECT: <id>[, <id> ...]` in the node's delegate output.
-If missing/invalid, it calls back into the scheduler's `retryDelegate`
-(re-running the SAME node with a clarifying instruction appended) up to a
-retry cap, throwing only after exhausting it. A node with exactly one
-candidate skips this entirely and auto-delegates (no model action needed).
+The selection is a STRUCTURED signal, never prose (FR-029). The prose
+`SELECT: <id>` line this module used to match is gone: it is exactly how an
+agent that said "I'll select the alarm branch" got recorded as having chosen
+`quiet`. `readSelectionSignal()` reads, in priority order:
 
-This selection-line convention is this service's own design — there is no
-prior BOS-source precedent for dynamic routing to port from.
+1. a `select_branch` **tool call** in the delegate's tool-event stream
+   (`{ selected: [...] }`) — the canonical signal, declared per node by
+   `tools.js`'s `selectBranchTool()` with an `enum` of that node's own
+   candidate ids;
+2. a structured output OBJECT carrying `select_branch` / `selected` (also the
+   shape a dry-run fixture uses);
+3. a strict JSON envelope embedded in the output text — a fenced ```json block
+   or a balanced `{...}`, parsed with `JSON.parse` and accepted only if it is a
+   `select_branch` envelope.
+
+A signal naming any id outside the node's candidates invalidates the WHOLE
+signal (never a partial route). If nothing valid is produced,
+`resolveCandidates()` calls back into the scheduler's `retryDelegate`
+(re-running the SAME node with a clarifying instruction appended) up to a
+retry cap and then THROWS — the node fails (FR-030); the engine never defaults
+to an arbitrary candidate. A node with exactly one candidate skips all of this
+and auto-delegates (FR-019).
+
+`buildCandidateIndex()` / `selectionAllows()` / `selectionRejects()` are the
+Option A gating helpers the scheduler uses (see above).
+
+## Live run state (`engine/run-state.js`)
+
+ONE reducer folds every engine event into the run's projection — this is the
+single source of truth both the `workflow_*` tools and the app's trajectory
+panel read (FR-036), so they cannot disagree:
+
+```
+RunState { runId, workflowId, status, finalState?, startedAt, endedAt?,
+           selected: Map<nodeId, candidateId[]>,
+           steps: Map<nodeId, StepRuntimeState> }
+StepRuntimeState { status, attempt, maxAttempts, currentAction?,
+                   subAgents?: Map<subAgentId, {label,status,action}>,
+                   outputs?, agentTrace?: { prompt?, thinking?,
+                                            toolCalls: [{name,args,result,ok,inflight}],
+                                            response? } }
+```
+
+- The event log is append-only with a monotonic `seq`; `eventsSince(seq)` and
+  `subscribe(since, cb)` make tailing cheap, and `GET /run/<runId>?since=` on
+  the worker's already-bound port exposes it to the app.
+- `agent.tool_call` events are MERGED: an inflight call is updated in place by
+  its completion rather than appended twice. A new attempt resets the trace so
+  the panel shows the current attempt's activity.
+- Steps are seeded `pending` from the workflow definition at run start, so a
+  poll never sees `steps: {}`.
+- `replayRunState(persisted)` rebuilds the identical projection from a
+  persisted run, which is what makes a historical run replayable in the panel
+  with its full agent trace.
 
 ## Persistence (`engine/store.js`, `runs.js`, `vfs.js`)
 
@@ -114,8 +196,11 @@ directory.
 
 - Workflows: `/Workflows/<id>-workflow.json`.
 - Runs (first-class entities, distinct from a workflow's own JSON):
-  `/Workflows/.runs/<workflowId>/<runId>.json` — `{ runId, workflowId,
-  startedAt, endedAt, state, steps, events, error? }`.
+  `/Workflows/.runs/<workflowId>/<runId>.json` — `{ schemaVersion: 2, runId,
+  workflowId, startedAt, endedAt, state, finalState, selected, steps, warnings,
+  events, error? }`. The event log includes the `agent.*` execution events
+  (FR-028) alongside the step lifecycle, which is what makes a historical run
+  fully replayable — same file, richer schema.
 
 `runs.js` also holds an in-memory `LIVE` map (`runId -> live run state`) and
 an `ACTIVE_BY_WORKFLOW` map (`workflowId -> runId`, only while a run is
@@ -146,7 +231,8 @@ and are safe/idempotent to run on every boot.
 
 The app is not the assistant, so it needs an ordinary HTTP surface rather
 than worker-IPC tool dispatch. `http-bridge.js` is a small router (list/read/
-create/modify/delete/run/cancel/status/export/validate/run-list/run-get)
+create/modify/delete/run/cancel/status/export/validate/run-list/run-get, plus
+`GET /run/<runId>[?since=][&workflowId=]` for the live run projection)
 bound on the service's own configurable port (default `0`) — every route is a
 thin wrapper over the SAME `handlers.js` functions the tool surface calls, so
 the app and the assistant can never observe divergent behavior.

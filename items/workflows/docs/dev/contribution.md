@@ -40,12 +40,33 @@ its own code follows. Read `architecture.md` first for the module map.
 ## Adding a candidate-agent / routing feature
 
 Dynamic routing lives entirely in `services/engine/router.js` and the
-scheduler's integration point in `runNode()` (the `hasCandidates(node)`
-branch). The selection wire format (`SELECT: <id>[, <id>...]`) is this
-service's own convention — if you change it, update the bundled skill
-(`skills/workflow-manager/SKILL.md`) in the same change, since the assistant
-relies on that document to know the contract exists at all (there's no other
-discovery mechanism).
+scheduler's integration points in `runNode()` (the `hasCandidates(node)`
+branch) and the ready-set (`selectionAllows`). Two rules are load-bearing and
+must not be softened:
+
+1. **The selection is a structured signal** — a `select_branch` tool call, a
+   structured output object, or a strict JSON envelope; never prose
+   (`readSelectionSignal`). If you add a new signal form, add it there, with a
+   unit test proving prose still yields `null`.
+2. **Only declared candidate leaves are gated** by a selection (Option A);
+   every other node is gated by its own `dependencies`. `buildCandidateIndex`
+   is the single place that decides what "gated" means.
+
+The corresponding authoring rules are enforced by `validate.js`
+(`candidateTopologyErrors`) and documented in the bundled skill
+(`skills/workflow-manager/SKILL.md`) — if you change the contract, update the
+skill in the same change, since the assistant relies on that document to know
+the contract exists at all (there's no other discovery mechanism).
+
+## Adding an event type
+
+Engine events flow `scheduler/executor → runs.js → engine/run-state.js`. To
+add one: emit it via `ctx.emit(type, patch)`, fold it into the projection in
+`RunState.apply()`, and — if it should appear as a lifecycle row rather than
+trace data — add it to `EVENT_KIND` in `app/src/lib/trajectory.ts` and give it
+a glyph in `TrajectoryPanel.tsx`'s `EVENT_GLYPH`. Everything persists and
+replays for free, since the persisted log and the live projection go through
+the same reducer.
 
 ## The 039 service-declared-tool contract
 

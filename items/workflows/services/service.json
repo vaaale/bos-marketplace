@@ -1,8 +1,8 @@
 {
   "id": "workflows",
   "name": "Workflow Manager",
-  "version": "2.0.0",
-  "description": "Service-owned workflow engine: node model (agent source x output type), dynamic routing, parallel scheduling, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get).",
+  "version": "2.1.0",
+  "description": "Service-owned workflow engine: node model (agent source x output type), structured branch routing with Option A selection propagation, parallel scheduling with per-step/per-run timeouts, a live per-step run state (status/attempt/current action/per-sub-agent fan-out/agent trace) served to both the tools and the app, dry-run fixtures, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get).",
   "entry": "index.js",
   "deploymentMode": "tools",
   "configSchema": {
@@ -11,7 +11,7 @@
       "port": {
         "type": "number",
         "default": 0,
-        "description": "HTTP port for the app-facing REST bridge (list/read/run/etc.) used by the Workflow Manager app. 0 lets the OS assign one automatically — never give this a fixed non-zero default."
+        "description": "HTTP port for the app-facing REST bridge (list/read/run/etc.) used by the Workflow Manager app. 0 lets the OS assign one automatically \u2014 never give this a fixed non-zero default."
       },
       "host": {
         "type": "string",

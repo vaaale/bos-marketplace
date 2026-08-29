@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type { RunDetail, RunSummary, StepLiveStatus, Workflow, ValidationResult } from "../lib/types";
 import { Graph, GraphLegend } from "./Graph";
 import { GraphEditor } from "./GraphEditor";
 import { WorkflowStatusPill } from "./StatusPill";
+import { PanelDivider, TrajectoryPanel, usePanelWidth } from "./TrajectoryPanel";
+import { nodeTrajectory } from "../lib/trajectory";
 import { api } from "../lib/bridge";
 
 interface DetailViewProps {
@@ -22,6 +24,9 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
   const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [exportText, setExportText] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  // Historical replay: which node's trajectory is open, and how wide.
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const { width, dividerProps } = usePanelWidth();
 
   useEffect(() => {
     let cancelled = false;
@@ -39,6 +44,8 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
   async function openRun(runId: string) {
     const run = (await api.runGet(workflow.id, runId)) as RunDetail;
     setSelectedRun(run);
+    // Switching runs resets the panel; the user picks a node in the new run.
+    setSelectedNode(null);
   }
 
   async function runValidate() {
@@ -50,12 +57,18 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
     setExportText(JSON.stringify(wf, null, 2));
   }
 
+  // The persisted per-step outcomes are already the exact status vocabulary
+  // the graph renders (completed/failed/cancelled/skipped/neutral) — a
+  // skipped leaf must stay distinguishable from one that simply never ran.
   const historicalOutcomes: Record<string, StepLiveStatus | undefined> = {};
   if (selectedRun?.steps) {
-    for (const [id, s] of Object.entries(selectedRun.steps)) {
-      historicalOutcomes[id] = s.status === "completed" ? "completed" : s.status === "failed" ? "failed" : s.status === "cancelled" ? "cancelled" : "neutral";
-    }
+    for (const [id, s] of Object.entries(selectedRun.steps)) historicalOutcomes[id] = s.status;
   }
+
+  const historicalTrajectory = useMemo(
+    () => (selectedNode && selectedRun ? nodeTrajectory(selectedNode, workflow.steps, selectedRun) : null),
+    [selectedNode, selectedRun, workflow.steps],
+  );
 
   return (
     <div className="wf-view">
@@ -182,11 +195,39 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
               Exit replay
             </button>
           </div>
-          <h3 className="wf-section-title">
-            Graph — final outcome <span className="wf-tool-label">historical · static</span>
-          </h3>
-          <Graph steps={workflow.steps} statuses={historicalOutcomes} />
-          <GraphLegend historical />
+          {selectedRun.warnings?.length ? (
+            <div className="wf-warning-banner" style={{ marginBottom: 8 }}>
+              ⚠ Selected branch executed no leaf step: {selectedRun.warnings.map((w) => w.stepId).join(", ")}
+            </div>
+          ) : null}
+          <div className="wf-split">
+            <div className="wf-split-main">
+              <div className="wf-row" style={{ marginBottom: 6 }}>
+                <h3 className="wf-section-title" style={{ margin: 0 }}>
+                  Graph — final outcome
+                </h3>
+                <span className="wf-tool-label">historical · static</span>
+                <div style={{ flex: 1 }} />
+                <span className="wf-dim" style={{ fontSize: 10 }}>
+                  ⊹ click a node to debug it
+                </span>
+              </div>
+              <Graph steps={workflow.steps} statuses={historicalOutcomes} selectedId={selectedNode} onSelectNode={setSelectedNode} />
+              <GraphLegend historical />
+            </div>
+            {historicalTrajectory ? (
+              <>
+                <PanelDivider {...dividerProps} />
+                <TrajectoryPanel
+                  trajectory={historicalTrajectory}
+                  runBadge={`run ${selectedRun.runId.slice(4, 14)}`}
+                  mode="historical"
+                  width={width}
+                  onClose={() => setSelectedNode(null)}
+                />
+              </>
+            ) : null}
+          </div>
           <h3 className="wf-section-title" style={{ marginTop: 12 }}>
             Replayed event stream <span className="wf-tool-label">workflow_run_get</span>
           </h3>

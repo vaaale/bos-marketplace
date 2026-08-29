@@ -1,8 +1,8 @@
 # Workflow Manager — Service-Owned Workflow Engine (Engine Pivot) Design
 
 **Spec**: `user-specs/workflow-manager/001-workflow-manager-service-tools/`
-**App Target (spec.md)**: `marketplace-item` + `bos-core` retirement — **agreed**; **§9 scope-add (US10–US15)** appends a scoped `bos-core` patch on top of the base design (see §9.1)
-**Date**: 2026-08-20 (engine-pivot base design, §1–§8) → **2026-08-29 (scope-add §9: US10–US15 appended — §1–§8 unchanged)**
+**App Target (spec.md)**: `marketplace-item` + `bos-core` retirement — **agreed, with a scope expansion**
+**Date**: 2026-08-20 (REWRITTEN — engine pivot; supersedes the prior design whose ADR-1 held the engine in BOS source)
 
 > **This is a rework.** The previous `design.md` was written under the now-reversed
 > assumption "the execution engine stays in BOS source." Per the user-approved engine
@@ -10,14 +10,6 @@
 > `/api/workflows/*`) is **retired** and the workflow engine is **fully
 > re-implemented inside the Workflow Manager service** (a worker-thread `marketplace-item`
 > service facet). This document is the authoritative structural design for the new scope.
->
-> **§9 scope-add (2026-08-29, US10–US15).** A scope was appended **on top of** the engine-pivot
-> base design — **§1–§8 are unchanged**. It adds: branch routing (Option A selection
-> propagation + zero-executed-leaves guard + candidate-topology validation), ephemeral-agent
-> **tool fidelity** (a **scoped `bos-core` patch** to the headless ephemeral path — the one
-> place in the scope that touches `src/`), live run-progress as a **single source of truth**,
-> the **agent-execution-event run-log schema**, **dry-run/fixture** mode, and
-> **per-step/per-run timeouts**. See **§9** (ADR-10/12/13/14 new; ADR-11 carried & reaffirmed).
 
 ---
 
@@ -208,8 +200,8 @@ This is grounded in source:
   Rejected: worker IPC (`MainToWorkerMessage`/`WorkerToMainMessage` in
   `src/core/service/types.ts`) is a fixed protocol — the worker is the *callee* for
   `tool_call`, and there is no main→worker direction that lets the worker *invoke*
-  main-thread logic. Adding a worker→main "execute this node" message would require a
-  BOS-source change to `workerIpc.ts`/`ServiceManager.ts` to handle a new
+  main-thread logic. Adding a worker→main "execute this node" message would require
+  a BOS-source change to `workerIpc.ts`/`ServiceManager.ts` to handle a new
   `WorkerToMainMessage` type and route it into the assistant stack — new bos-core
   plumbing that the loopback route already provides for free. (Also, the worker→main
   channel is the *response* direction; the worker cannot hold a `Worker` handle.)
@@ -289,7 +281,6 @@ workflows/                                  # item root
 │   │   ├── validate.js                     # NEW — DAG acyclicity + node schema validation (re-implemented from old validate.ts)
 │   │   ├── generate.js                     # NEW — workflow generation from a task description (re-implemented from old generate.ts)
 │   │   ├── store.js                        # NEW — workflow + run CRUD over loopback /api/fs (re-implements old store.ts)
-│   │   ├── run-state.js                    # NEW (§9) — RunState/StepRuntimeState single source of truth + event log + live-read + subscribe(since) tail
 │   │   └── executor.js                     # NEW — the execution contract: loopback /api/subagents/delegate per node (§3.2/ADR-1)
 │   ├── vfs.js                              # NEW — loopback /api/fs bridge helpers (FR-004, NFR-004)
 │   ├── migration.js                        # NEW — additive legacy-workflow migration (FR-005)
@@ -344,36 +335,26 @@ they overlap, plus the new list/read/delete/run_list/run_get tools:
 | `workflow_create` | Generate + persist a workflow from a task description | FR-002/014 |
 | `workflow_read` | Read a workflow's full JSON | FR-002 |
 | `workflow_modify` | JSON-merge patch + re-validate | FR-002/014 |
-| `workflow_run` | Fire-and-poll: returns `runId` immediately (ADR-8); §9 adds opt-in `dryRun`/`fixtures` input | FR-002/008/014/037 |
-| `workflow_status` | Live run state + per-step statuses (FR-013); §9: populated per-step map with attempt + current-action + per-sub-agent status (FR-036) | FR-002/036 |
+| `workflow_run` | Fire-and-poll: returns `runId` immediately (ADR-8) | FR-002/008/014 |
+| `workflow_status` | Live run state + per-step statuses (FR-013) | FR-002 |
 | `workflow_cancel` | Cancel a running workflow; mark in-progress steps cancelled | FR-002/009/014 |
 | `workflow_delete` | Delete a workflow + its run logs | FR-002/014 |
 | `workflow_export` | Return workflow JSON as string | FR-002/014 |
-| `workflow_validate` | Validate DAG + nodes; §9 adds candidate-topology checks (FR-033) | FR-002/014/033 |
+| `workflow_validate` | Validate DAG + nodes | FR-002/014 |
 | `workflow_run_list` | List historical runs for a workflow (id, timestamp, final state) | FR-016 |
-| `workflow_run_get` | Read a run's details, per-step outcomes, event log; §9 includes agent-execution events (FR-028) | FR-016/028 |
+| `workflow_run_get` | Read a run's details, per-step outcomes, event log | FR-016 |
 
 `workflow_run` is **fire-and-poll** (ADR-8): the handler starts the worker's engine run,
 returns `{ runId, workflowId }` in <1s (well within the 30s `TOOL_CALL_TIMEOUT_MS`
 kernel timeout), and the caller polls `workflow_status`/`workflow_run_get`.
 
-#### 3.4.4 Run state & live status (engine/store.js + runs.js + run-state.js)
+#### 3.4.4 Run state & live status (engine/store.js + runs.js)
 
 The worker owns a per-workflow in-memory `runId → RunState` map (mirroring the old
 `store.ts` `RUNTIME` map) and persists each run to the real VFS at
 `/Workflows/.runs/<workflowId>/<runId>.json` (FR-015). `workflow_list` derives live
 status by checking this map (running → includes `run_id`); `workflow_status`/
 `workflow_run_get` read the live map or the persisted run entity.
-
-**§9 extension (engine/run-state.js):** `RunState` is the single source of truth for
-per-step live state (status, attempt count, current-action string, per-sub-agent status
-for research nodes, and first-class structured outputs). The event log (step events +
-agent-execution events + `workflow.branch.skipped`) is an append-only stream with
-monotonic seq; `workflow_status`/`workflow_run_get` and the app's trajectory panel both
-**project** per-step state from it (ADR-13). Live = tail the running log; historical =
-replay the persisted log from VFS. The worker exposes `GET /run/<runId>` (and `?since=`
-for streaming) on its already-bound port; the app reaches it via `window.__bos` with
-`services:read` (ADR-11).
 
 ---
 
@@ -545,8 +526,8 @@ dependencies, not deliverables:
 
 ### ADR-7 (SUBSUMED → expanded) — Retire the entire old engine + routes + dependents (full bos-core retirement)
 
-- **Context**: The prior ADR-7 retired only `workflowTools()` (MF-3). The pivot requires the
-  **full** retirement: `src/lib/workflows/*` + `/api/workflows/*` + `workflowTools()`
+- **Context**: The prior ADR-7 retired only `workflowTools()` (MF-3). The pivot requires
+  the **full** retirement: `src/lib/workflows/*` + `/api/workflows/*` + `workflowTools()`
   + `WorkflowActions.tsx` + `CopilotProvider` + the static `workflow_*` capabilities.
   This is necessary (a) so service tools aren't shadowed (registry.ts spreads service
   tools first, built-ins win — verified `src/lib/assistant/registry.ts`), and (b) because
@@ -634,196 +615,3 @@ runs are refused (FR-007). The **empty-state copy** ("the engine, Files, and the
 read the same location") is the UX statement of ADR-2's invisible-content fix. The graph
 renders node labels as `outputType · sub` (e.g. `tool · fetch:csv`, `ag-ui · normalize`,
 `delegate · db`) — consistent with the node-model axes (§3.4.2).
-
----
-
-# §9 — Scope-add (US10–US15)
-
-## 9.1 Classification
-
-App Target: marketplace-item (primary) + a scoped bos-core patch. This is a scope-add to an already-installed item, so the classification agrees with spec.md's marketplace-item for the bulk of the work. It does NOT change the dual-scope story from the base design — but it adds a new, smaller bos-core surface on top of the already-done engine retirement: a scoped fix to the headless ephemeral-agent tool-granting path (US12) plus a delegate-stream enrichment (the US10 event-fidelity half). Everything else — routing, live state, the run-log schema, dry-run, timeouts, the trajectory panel — is service-side (worker) or app-side (iframe).
-
-The reason a bos-core patch is required (and can't be sidestepped item-side) is settled in ADR-12. The two target shapes are two delegation mechanisms and must not be conflated: the bos-core patch runs on the active feature branch via dev_delegate; the item work (service + app facets) goes through agent_delegate + app_build.
-
-## 9.2 Constitution check
-
-- II. Server Authority & SSR Boundary — Complies. The service still talks to BOS only over loopback HTTP (/api/fs, /api/subagents/delegate) and worker IPC; it never imports @/ code. The live-state single source of truth lives INSIDE the service (the worker is the execution authority — it owns the run), and is exposed to the app over the service's own HTTP server. The app (an installed-marketplace-origin iframe) reaches that server only through the window.__bos broker + a granted services:read capability, never a raw fetch() to an opaque origin.
-- IV. Minimize Blast Radius — Complies. The new bos-core surface is exactly two small, localized changes to the headless ephemeral path (runner.ts runLocalHeadless gate + the delegate route's onEvent vocabulary). No new subsystem, no new registry entry, no new API area. Scoped and feature-branch-isolated.
-- V. The VFS Is Not the Source — Complies. The expanded run log (now including agent-execution events) persists to the same real-VFS location /Workflows/.runs/<workflowId>/<runId>.json via loopback /api/fs — no new store, no host path (FR-028, NFR-004).
-- VI. Specs & Docs Stay in Sync — Complies; the new event schema + the bos-core fix get a docs/dev/ note.
-- VII. Respect Boundaries — Complies. Item files stay under data/user-apps/items/workflows/. The one src/ change is a scoped platform fix, justified by source (ADR-12), not a "Next.js can't do it" shortcut — the routing/state/validation work does NOT reach src/ at all.
-
-No conflicts. The only place this could drift is if ADR-12's premise were wrong — it is verified against runner.ts, discovery.ts, frontend-declarations.ts, and types.ts, so the bos-core patch is genuinely required, not an over-reach.
-
-## 9.3 Context / Container (delta)
-
-Base context (assistant drives via service-declared tools; user drives via the graph app; the worker owns model/scheduler/routing/persistence; node execution is a loopback delegate call) is unchanged. The scope-add adds three things:
-
-1. The live-state producer/consumer split (US13). The worker's in-memory run state (the runId → RunState map, now in engine/run-state.js) becomes the single source of truth for per-step live state (status + attempt + current-action + per-sub-agent status). It is consumed by TWO readers: the workflow_status/workflow_run_get tool handlers (same worker, in-memory read) and the app's trajectory panel (over the service's own HTTP server, which the worker already binds — ADR-3/ADR-11). No second store, no divergence: both readers read the same RunState (live) or the same persisted run log (historical).
-2. The run-log as the agent-debug surface (US10/US12/FR-028). The existing runId + execution-log entity is enriched in place with an agent-execution event vocabulary (executed prompt, reasoning, per-tool-call name/args/result/status, response) per node and per attempt. The trajectory panel is a node-scoped PROJECTION of that one log — live (streamed) or historical (replayed). The mockup is the binding contract for what the panel renders (§9.9).
-3. The headless ephemeral-agent platform fix (US12). The worker's executor.js spawn path already sends the declared tool allowlist to the delegate route; the platform was dropping frontend-executed tools and returning empty find_tools for ephemeral agents. ADR-12 fixes the platform so the declared allowlist means what it says.
-
-## 9.4 Component design (the delta)
-
-### US11 — Branch routing: structured signal + Option A propagation + guard + validation
-All service-side (engine/router.js, engine/scheduler.js, engine/validate.js, engine/run-state.js):
-- Structured selection signal (FR-029/030). A routing node's agent is given a select_branch tool (declared into its ephemeral spec's tool list) that emits { selected: [candidateId, …] }. The engine reads the selection deterministically from that structured call — it never parses prose. If the node's agent finishes with no valid structured selection, the retry-loop re-runs the node (FR-018); after the retry limit, the node FAILS with a clear reason (FR-030). Selection is captured as the run-state token selected[nodeId] = [candidateId, …] (Key Entities: Selection) and recorded in the run log for replay.
-- Option A — general selection propagation (FR-031, SC-019). The scheduler gates a node on: (a) all its declared dependencies satisfied, AND (b) if and only if it is declared a candidate leaf of some routing node R — selected[R] must contain it. Every other node is gated only by its own declared dependencies. This is precisely what lets a shared step (e.g. render) that depends on B but is not a leaf of B run regardless of B's selection, while the leaves run only when their routing node picked them. The unselected leaves become neutral/never-ran (a step.skip with reason: branch-not-selected). ADR-10 records why Option A beats a "direct-parent-of-leaf" rule.
-- The zero-executed-leaves guard (FR-032, SC-020). On run completion, for each routing node the engine checks: did the selected branch produce ≥ 1 executed leaf? If a selected path executes zero leaves (unreachable, or its leaves were all neutral for another reason), the engine emits a workflow.branch.skipped event and sets the run's final state to completed_with_warnings (or failed if the workflow's on-failure policy escalates) — never a plain completed.
-- workflow_validate candidate-topology checks (FR-033, US11-5). validate.js adds two structural errors: (1) a candidate leaf unreachable from its routing node; (2) a node that is ambiguously both a shared dependency (a non-leaf node that another routing node or shared step depends on) AND a gated candidate leaf of R — because under Option A that node's gating is ambiguous and the author almost certainly mis-declared it.
-
-### US12 — Ephemeral tool fidelity (the boundary)
-- Service side (item): executor.js must pass the node's full declared tool list through to the delegate route as the ephemeral spec's tools, and — the new part — also pass a deferredTools list (the node's tools that are deferred/discoverable), plus forward skills (open item #3). This makes the intent correct end-to-end: the worker tells the platform exactly which tools the spawned agent may use and which should be deferred.
-- Platform side (bos-core patch, ADR-12): the headless path must (a) honor the declared allowlist for tools whose registry execution is frontend (by routing them through a server-side VFS bridge) and (b) make find_tools work for ephemeral agents (by gating from the in-memory agent object rather than a getAgent lookup). Both scoped to runner.ts runLocalHeadless + discovery.ts/delegate route.
-
-### US13 — Live run progress, single source of truth
-The worker's RunState (in-memory, engine/run-state.js) gains a per-step structure that is the one canonical live state:
-
-```
-RunState {
-  runId, workflowId, status, finalState?, startedAt, endedAt?,
-  selected: Map<nodeId, candidateId[]>          // US11 selection tokens
-  steps: Map<nodeId, StepRuntimeState>
-}
-StepRuntimeState {
-  status: pending|running|completed|failed|cancelled|neutral,
-  attempt: number, maxAttempts: number,
-  currentAction?: string,                        // short, e.g. "streaming rows 4–8k…"
-  subAgents?: Map<subAgentId, { label, status, action }>,   // research fan-out (FR-036)
-  outputs?: structuredData                        // first-class handoff (FR-035)
-}
-```
-
-Two readers, one source. workflow_status/workflow_run_get read RunState in-memory (same worker). The app's trajectory panel reads it over the service's own HTTP server: GET /run/<runId> (or ?since= for streaming) — the worker already binds a port (ADR-3) and the app reaches it via the window.__bos broker with services:read. Live state changes (step start/retry/running/complete/fail/cancel, attempt increments, currentAction updates, sub-agent status transitions) are appended to the same event log that becomes the persisted run (US10), so a live read and a historical replay can never disagree — they are the same append-only stream, the live reader just tails it. This mirrors BOS's own RunManager (run-manager.ts): append-only log + subscribe(since) replay-then-tail + terminal finish().
-
-### US10 — Agent-execution-event run-log schema (the debug surface)
-The existing run-log event vocabulary (step.start / step.retry(attempt) / step.running / step.complete / step.fail(error) / step.cancel / step.skip(reason)) is extended, in the same file, with agent-execution events (FR-028). No new store. Per node and per attempt:
-
-```
-agent.prompt        { node, attempt, prompt }               // assembled task + upstream context
-agent.reasoning     { node, attempt, text }                 // where the provider exposes it
-agent.tool_call     { node, attempt, seq, name, args, inflight:true }
-agent.tool_result   { node, attempt, callId, result, status: ok|error }
-agent.select_branch { node, attempt, selected:[candidateId] }  // US11 structured signal (also a run event)
-agent.response      { node, attempt, text }
-workflow.branch.skipped { runId, nodeId, selected, executedLeaves:0 }   // US11 guard
-```
-
-The trajectory panel is a node-scoped projection of this single log: filter events by node (and, for live, by attempt/inflight), order by log seq, and render the sections the mockup defines (§9.9). A neutral/never-ran node projects to "no events" (FR-026). Because the log is the source for both live (tail) and historical (replay) views, US10 and US13 are the same mechanism viewed two ways — one store, two consumers, no divergence.
-
-Where the events come from: the worker's executor.js consumes the delegate stream. The prompt is worker-owned (it assembles task + upstream context → emit agent.prompt). select_branch is worker-owned (it declares that tool and reads the structured call). reasoning / per-tool-call name+args+result+status / response must be streamed from the platform — today the delegate onEvent only forwards tool_call (name+args) and the final result only. ADR-12 therefore enriches the delegate onEvent vocabulary (server-side tool_result name+result+ok, reasoning_delta, response/final text) so the worker can emit the full agent.* events without a round-trip reconstruction. This is the US10 half that touches src/.
-
-### US14 — Dry-run / fixture mode (FR-037, NFR-006)
-Service-side, in the scheduler/executor. workflow_run gains an opt-in dryRun / fixtures input: { fixtures: { <nodeId>: <cannedOutput>, … } }. When a designated node is reached in dry-run mode, the executor skips the real delegate call and substitutes the canned output as that node's structured outputs, then proceeds. The DAG, selection (the select_branch signal can itself be a fixture so routing is evaluated deterministically), and leaf reachability all run in seconds with no real sub-agent or network for fixture-designated nodes (NFR-006). Default (non-dry-run) behavior is unchanged. Because the service owns the whole engine, this is a scheduler short-circuit — no src/ change.
-
-### US15 — Per-step + per-run timeout + latency docs (FR-038)
-Service-side. The Workflow config already carries a default retry/timeout (base design config / node-model); the engine now enforces it: the scheduler wraps each node's delegate call in a per-step timeout (step → failed with a timeout reason, scheduler proceeds or halts per the on-failure policy) and a per-run deadline (run → failed/timed-out and halted). Neither may hang. The skill (skills/workflow-manager/SKILL.md) + docs/usage.md state realistic relative latency (research ≫ faster than serial delegate fan-out) and recommend research for parallel investigations feeding a synthesis step.
-
-## 9.5 Concrete file/module plan (the delta)
-
-**Item — service facet (`data/user-apps/items/workflows/services/`):**
-
-| Path | Action | Purpose |
-|---|---|---|
-| `engine/router.js` | **Modify** | Structured select_branch read; Option A gating (selection tokens); retry-then-fail; single-child auto-delegate. |
-| `engine/scheduler.js` | **Modify** | Option A ready-set (candidate-leaf gate vs. dependency-only gate); per-step + per-run timeout enforcement; dry-run fixture short-circuit; zero-leaf guard. |
-| `engine/run-state.js` | **Create** (or extend `store.js`) | The RunState/StepRuntimeState single source of truth (US13) + event log append (US10) + live-read + subscribe(since) tail. |
-| `engine/validate.js` | **Modify** | Candidate-topology structural errors (FR-033): unreachable leaf; ambiguous shared+leaf. |
-| `engine/executor.js` | **Modify** | Emit agent.* events (prompt/select_branch/…); forward declared tools + deferredTools + skills to the delegate; consume enriched delegate stream (reasoning/tool_result/response). |
-| `tools.js` | **Modify** | Add dryRun/fixtures to workflow_run schema; add workflow_status/workflow_run_get per-step + per-sub-agent output (FR-036); select_branch declared into routing-node ephemeral specs. |
-| `handlers.js` | **Modify** | workflow_status/workflow_run_get return the populated live per-step map (read from run-state.js); workflow_validate returns the new topology errors; workflow_run wires dry-run. |
-| `runs.js` | **Modify** | Persist the extended run log (incl. agent.* events) to /Workflows/.runs/... — same file, richer schema. |
-
-**Item — app facet (`app/src/`):**
-
-| Path | Action | Purpose |
-|---|---|---|
-| `app/src/` (trajectory panel + graph) | **Rewrite/extend** | Right-side resizable trajectory panel (node identity, executed prompt, reasoning, tool calls, sub-agent fan-out, current-action, response, lifecycle events, output/artifact) — mockup is the binding contract; read live state over window.__bos → service GET /run/<runId>?since=; historical replay from workflow_run_get. Remove the redundant per-step status list (FR-027). |
-| `docs/usage.md`, `skills/workflow-manager/SKILL.md` | **Modify** | Latency guidance + dry-run usage (US15/US14). |
-
-**BOS-core patch (feature branch) — scoped, two changes:**
-
-| Path | Action | Purpose |
-|---|---|---|
-| `src/lib/agent/subagents/runner.ts` (`runLocalHeadless`) | **Modify** | Build the ephemeral gate from the in-memory agent object (not getAgent); honor declared deferredTools; route declared frontend-execution tools through a server-side VFS bridge so the headless agent genuinely has them. |
-| `src/lib/assistant/tools/server/discovery.ts` (`find_tools`/`find_agent`) + delegate route `onEvent` | **Modify** | find_tools resolves an ephemeral agent's gate from the in-run agent (returns its declared deferred tools, not []); delegate onEvent gains tool_result (name+result+ok), reasoning_delta, and final-text emission so executor.js can log full agent-execution events. |
-| `docs/dev/...` (assistant / services) | **Modify** | Note the headless ephemeral tool-granting behavior + the enriched delegate stream. |
-
-## 9.6 Integration points (existing BOS mechanisms this scope calls into, not modifies)
-
-- Sub-agent delegate route `src/app/api/subagents/delegate/route.ts` — the node execution primitive (base ADR-1); the US12/US10 patch extends its gate + onEvent (the only src/ change).
-- Headless local execution `src/lib/agent/subagents/runner.ts` `runLocalHeadless` — the function US12 fixes (gate construction from in-memory agent, `deferred = new Set()` today).
-- Tool registry + gate `src/lib/assistant/tools.ts` (`visibleTools`), `src/lib/assistant/gate.ts` (`gateFromAgent`), `src/lib/agent/capabilities-registry.ts` — how the declared allowlist / deferred set become the visible tool set.
-- Frontend tool declarations `src/lib/assistant/tools/frontend-declarations.ts` — establishes `file_read`/`file_write` as `execution: "frontend"` (the reason the headless gate drops them today).
-- Server-side VFS file tools `src/lib/assistant/tools/server/files.ts` (`file_edit`/`file_patch`/`file_search`/`file_glob`) — the server-executed VFS surface the US12 bridge can route headless file access through.
-- `window.__bos` broker + app capabilities (`src/lib/apps/store.ts` `setAppCapabilities`) — how the installed-marketplace-origin app reaches the service's own HTTP server for live state (ADR-11).
-- Real VFS bridge `src/app/api/fs/route.ts` (`/api/fs`) — persists the extended run log (US10) + workflow/run storage, unchanged.
-- RunManager `src/lib/assistant/run-manager.ts` — the pattern (append-only log, `subscribe(since)`, terminal `finish`) the service mirrors in `run-state.js`; not imported by the worker, just mirrored in shape.
-
-## 9.7 ADRs
-
-### ADR-10 (new) — Selection propagation: Option A (general selection propagation) over a direct-parent-of-leaf rule
-
-- **Context:** US11 requires a routing node's selection to propagate so a shared step (`render`) that depends on the routing node `B` but is not one of `B`'s candidate leaves still runs, while the leaves run only when selected. The old failure was exactly this: `render` blocked all downstream nodes.
-- **Options:** (a) **Option A — general selection propagation:** a node is gated by a selection only if it is declared a candidate leaf of a routing node; otherwise it is gated purely by its own declared dependencies. (b) **Direct-parent rule:** a node is gated by a selection if its parent is a routing node.
-- **Decision:** (a). Option A expresses the rule in the author's actual intent ("these nodes are the branch leaves; everything else is normal flow"), which is exactly what FR-031/SC-019 state.
-- **Consequences:** The shared-step case works by construction — `render` is not a leaf, so it runs on its own dependencies. (b) is rejected because "direct parent of a leaf" ≠ "the author's branch boundary": it still gates any direct child (shared or not) of a routing node, so a shared step that happens to sit directly after B is still wrongly blocked — the very bug US11 fixes. Option A also makes the zero-leaf guard (FR-032) well-defined (a "leaf" is a concrete declared thing), and makes `workflow_validate`'s topology check (FR-033) decidable (ambiguity = a node both a declared leaf and a required shared dependency).
-
-### ADR-11 (new) — The app reads live state from the service's own HTTP server via the broker
-
-- **Context:** US13's live per-step state lives in the worker (the execution authority). The app is an installed marketplace-origin iframe that cannot `fetch()` an opaque origin directly.
-- **Decision:** The worker exposes `GET /run/<runId>` (+ `?since=`) on its already-bound port (ADR-3); the app reaches it through the `window.__bos` broker with a granted `services:read` capability. The same endpoint serves the trajectory panel and the graph's active-step highlight; `workflow_status`/`workflow_run_get` read the identical in-memory `RunState`.
-- **Consequences:** One source, two consumers, no divergence; no new BOS source, no new port (NFR-003). The `services:read` grant is a Settings → Apps step (open item #5, carried). If the grant is missing, the app degrades to polling `workflow_status` (slower but correct).
-
-### ADR-12 (new) — Ephemeral-agent tool fidelity is a platform concern; fix it in the headless path, scoped
-
-- **Context (verified against source):** A US12 ephemeral node declares `tools: ["file_read","file_write"]`. But (1) `file_read`/`file_write` are `execution: "frontend"` (`frontend-declarations.ts`), and `runLocalHeadless` (`runner.ts`) filters the gate's `allow` to `execution === "server"` and forces `deferred = new Set()` — so the headless agent silently loses the file tools; (2) `find_tools`/`find_agent` (`discovery.ts`) call `gateFor(ctx.agentId)` → `getAgent(id)`, which is **undefined** for an ephemeral (non-persisted) agent, so `find_tools` returns `[]` and the "deferred" path can never surface a tool. The worker already sends the right `tools` list to the delegate route; the platform is what drops it.
-- **Options:** (a) **Item-side only** — have the service avoid frontend tools (use the server-side `file_*` variants / a VFS bridge) and rely on `find_tools`. (b) **Platform fix** — make the headless path honor the declared allowlist (route frontend-execution tools through a server-side VFS bridge) and make `find_tools` gate from the in-memory `agent` for ephemeral agents.
-- **Decision:** (b), scoped to `runLocalHeadless` + `discovery.ts`/delegate route. The declared tool list must mean what it says (FR-034/SC-021) — a service cannot grant a tool the platform refuses to resolve to the spawned agent. (a) alone is a workaround that leaves the root cause: an author who lists `file_read` still gets an agent that can't see it, and deferred tools are still undiscoverable headlessly. The service side also changes (forward `tools` + `deferredTools` correctly), but the root cause is platform-side.
-- **Consequences:** This is the only new `src/` surface in the scope (besides the delegate-stream enrichment for US10). It is small and localized — two functions + an event-vocabulary add — on the active feature branch. Fan-out outputs remain first-class structured data (`outputs` in `RunState.steps`), so the "parallel research → merge" handoff needs no file I/O at all (FR-035); file tools are available on top of that for nodes that declare them (FR-034). The fix is generic to all ephemeral headless agents, not workflow-specific — a clean, low-blast-radius platform improvement.
-
-### ADR-13 (new) — Live state and the run log are one append-only stream; the panel is a projection
-
-- **Context:** US10 (debug surface), US13 (live progress), and US6 (historical replay) all need per-node/per-attempt state. Two obvious designs: keep a separate "live state" object AND a separate "event log," or make the log the source and derive state.
-- **Options:** (a) Separate live-state object + separate event log (two writers, must be kept consistent). (b) **Single append-only event log; live per-step state is derived by tailing it; historical replay re-derives from the persisted copy** (mirrors BOS's `RunManager`).
-- **Decision:** (b). The event log (step + `agent.*` + `workflow.branch.skipped`) is appended once, in order, with monotonic seq. `workflow_status`/`workflow_run_get` and the trajectory panel both **project** per-step state from it. Live = tail the running log; historical = replay the persisted log from VFS.
-- **Consequences:** No second store (satisfies "without a separate store"), no divergence between what the UI shows and what the agent sees (US13 "single source of truth"), and US10's 100%-fidelity replay (SC-016/SC-017) is automatic because there is nothing to reconcile — it is the same stream. Cost: the projection must be incremental (derive deltas from appended events) to keep `workflow_status` O(1)-ish per poll; that's a worker-internal detail, not a schema change.
-
-### ADR-14 (new) — Dry-run fixtures short-circuit in the scheduler, not the delegate
-
-- **Context:** US14 needs to validate DAG/routing/leaves in seconds without real research (NFR-006).
-- **Options:** (a) Stub the delegate route to return canned output. (b) **Short-circuit in the scheduler/executor:** when `dryRun` + a fixture is present for a node, never call the delegate; inject the canned structured output directly.
-- **Decision:** (b). The engine already owns scheduling; the fixture is a per-node `outputs` injection the scheduler consumes. No `src/` change, no network, no sub-agent.
-- **Consequences:** Deterministic, fast, and lets the `select_branch` signal itself be fixture-able so routing (US11) is evaluated without a live agent. Default behavior untouched (FR-037).
-
-## 9.8 Risks / open questions
-
-1. **US12 blast radius (highest).** The `find_tools`-from-in-memory-agent change touches a generic headless path used by every ephemeral local agent (not just workflows). It is correct (an ephemeral agent should see its own declared tools), but it widens the surface beyond workflows. Mitigation: scope the `runner.ts`/`discovery.ts` edits to the ephemeral-agent branch, keep named-agent behavior byte-identical, and cover with a unit test that a named agent's `find_tools` is unchanged.
-2. **US10 stream fidelity vs. provider support.** "Reasoning (where exposed)" is provider-dependent; the delegate stream only carries `reasoning_delta` if the provider/model emits it. The design treats reasoning as optional (the panel renders the section only when present — the mockup already does). Per-tool-call `result`/`status` require the enriched `tool_result` event; confirm the agent loop already computes a per-call `ok`/error for server tools so the enrichment is a forward, not a re-implementation.
-3. **US11 zero-leaf guard + `completed_with_warnings` state.** Adding a non-`completed` final state touches the run's final-state vocabulary (tools + app history chips). Confirm the app's status-pill set (mockup: completed/failed/cancelled/neutral) gains a `completed_with_warnings` chip, and that `workflow_status` surfaces the `workflow.branch.skipped` event in its log.
-4. **US13 app reachability of the worker port.** The app must have `services:read` granted (Settings → Apps) to reach the worker's own server via the broker; if the grant is missing the live panel degrades to polling `workflow_status` (slower but correct). Decide whether to also poll as a fallback.
-5. **US14 fixture + live-state interaction.** A fixture-designated node must still emit a plausible `StepRuntimeState` (status=completed, outputs=canned) so the live panel and guard behave identically to a real run; ensure the short-circuit goes through the same event-append path as real execution (ADR-13) so replay is indistinguishable.
-6. **Skill scope for ephemeral nodes (open item #3, carried).** The delegate route builds the skills index from the parent context; per-node skill scoping for a worker-initiated ephemeral call may need folding skills into the task text. Unchanged by this scope-add but interacts with US12's tool-forwarding.
-
-## 9.9 UI mockup reference
-
-**Path:** `item-workflows/mockup.html` (binding UI contract, same spec directory). The scope-add's UI work is concentrated in the **Run view** and **History view** right-side **Node trajectory panel** (`#run-panel` / `#history-panel`, resizable 260–680px via `#run-resize`/`#history-resize`), which is the per-node **agent-debug surface** (FR-025/FR-026). Its rendered sections map onto the run-log projection (§9.4):
-
-| Mockup panel section | Run-log event / state source |
-|---|---|
-| Node identity (name, agent source, output type) + status chip | `StepRuntimeState.status` + node model |
-| "Currently" current-action line | `StepRuntimeState.currentAction` (live) |
-| "Retrying — attempt N/M" line | `step.retry` / `StepRuntimeState.attempt` |
-| Executed prompt | `agent.prompt` |
-| Reasoning | `agent.reasoning` (rendered only when present) |
-| Tool calls (name / in / out / ok-error / inflight) | `agent.tool_call` + `agent.tool_result` (inflight = `tool_call` with no matching `tool_result` yet) |
-| Sub-agents · fan-out (per-sub-agent status) | `StepRuntimeState.subAgents` (research node, FR-036) |
-| Agent response | `agent.response` |
-| Lifecycle events (start/retry/running/complete/fail/cancel/skip, ts + duration) | step events + `workflow.branch.skipped` |
-| Output / artifact | `StepRuntimeState.outputs` / node output |
-
-The **list / detail** views are unchanged from the base design except the detail's historical-run selector now feeds the trajectory panel; the redundant per-step status list below the graph is **removed** (FR-027). The **neutral · never-ran** graph state (mockup history legend) is the visual of an unselected leaf / downstream-of-failure node (US11/FR-031).
-
----
-
-**Biggest risks:** (1) US12's root cause is confirmed platform-side (the headless path drops frontend-executed tools and `find_tools` returns `[]` for ephemeral agents), so this scope legitimately adds a *small, scoped* `bos-core` patch — the one place in the scope that touches `src/`, and the one that most widens blast radius; (2) US10's full per-tool-call + reasoning fidelity depends on an enriched delegate `onEvent` stream, which is the second scoped `src/` change and is provider-dependent for reasoning. Everything else (routing, live-state SOT, run-log schema, dry-run, timeouts, the panel) is service- or app-side.
