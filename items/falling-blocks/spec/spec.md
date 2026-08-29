@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-27
 
-**Status**: Draft
+**Status**: Complete
 
 **App Target**: marketplace-item
 
