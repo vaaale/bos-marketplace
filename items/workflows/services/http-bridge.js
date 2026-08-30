@@ -9,6 +9,7 @@
 // calls, so app and assistant always see identical behavior.
 
 const { URL } = require("url");
+const { getRunState } = require("./engine/run-state");
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -48,6 +49,26 @@ function createRequestHandler({ handlers, getRuntime }) {
     try {
       if (parts.length === 1 && parts[0] === "health" && req.method === "GET") {
         return send(res, 200, { ok: true, ...getRuntime() });
+      }
+
+      // GET /run/<runId>[?since=<seq>] — the live run projection by run id
+      // alone (US13/FR-036). This is what the app's trajectory panel tails:
+      // `?since` returns only the events after that monotonic seq, with the
+      // full current per-step map, so a 1s poll stays cheap for a long run.
+      // A run that is no longer in memory falls back to the persisted log via
+      // workflow_run_get when `?workflowId=` is supplied.
+      if (parts.length === 2 && parts[0] === "run" && req.method === "GET") {
+        const runId = decodeURIComponent(parts[1]);
+        const sinceRaw = url.searchParams.get("since");
+        const since = sinceRaw !== null && Number.isFinite(Number(sinceRaw)) ? Number(sinceRaw) : undefined;
+        const runState = getRunState(runId);
+        if (runState) return send(res, 200, runState.snapshot({ since }));
+        const workflowId = url.searchParams.get("workflowId");
+        if (workflowId) {
+          const run = await handlers.workflow_run_get({ workflowId, runId, since });
+          return send(res, 200, run);
+        }
+        return send(res, 404, { error: `no live run state for ${runId} (pass ?workflowId= to read it from the persisted log)` });
       }
 
       if (parts.length === 1 && parts[0] === "workflows") {

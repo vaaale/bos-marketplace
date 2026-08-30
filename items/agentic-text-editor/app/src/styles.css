@@ -1,0 +1,1305 @@
+/* Agentic Text Editor — visual system.
+ *
+ * Installed apps are bundled with esbuild and served as a standalone document,
+ * so there is no Tailwind runtime in here. This stylesheet is the app's
+ * equivalent: the same dark-only BOS palette (white/black at fractional
+ * opacity, violet reserved for agent surfaces, amber for "needs attention"),
+ * expressed as plain CSS and matched to the spec's ui-mockup.html.
+ *
+ * Everything the Settings panel controls is a `--ate-*` custom property set on
+ * the document root by index.tsx, so a settings change repaints both the edit
+ * and preview surfaces without re-rendering the app.
+ */
+
+:root {
+  /* Overridden at runtime from EditorSettings — see settingsToCssVars(). */
+  --ate-font-family: "SF Mono", "Fira Code", "JetBrains Mono", Consolas, monospace;
+  --ate-font-size: 13px;
+  --ate-text: #c8d0dc;
+  --ate-h1: #f5f5f5;
+  --ate-h2: #d0d0d0;
+  --ate-h3: #c4b5fd;
+  --ate-link: #a78bfa;
+  --ate-code-bg: rgba(0, 0, 0, 0.25);
+  --ate-code-fg: #c8d0dc;
+
+  /* Chrome — fixed, not user-configurable. */
+  --ate-accent: #8b5cf6;
+  --ate-accent-soft: rgba(139, 92, 246, 0.2);
+  --ate-warn: #f59e0b;
+  --ate-ok: #22c55e;
+  --ate-bg-editor: #1a1c24;
+  --ate-bg-chat: #15171e;
+  --ate-bg-chrome: #1e2028;
+  --ate-bg-toolbar: #232633;
+  --ate-border: rgba(255, 255, 255, 0.08);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0f1117;
+  color: #e0e0e0;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.ate-app {
+  display: flex;
+  height: 100%;
+  width: 100%;
+}
+
+.ate-editor-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 300px;
+  min-height: 0;
+  background: var(--ate-bg-editor);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.ate-chat-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 400px;
+  min-height: 0;
+  background: var(--ate-bg-chat);
+}
+
+/* ---------------------------------------------------------------- resizer */
+
+.ate-resizer {
+  width: 6px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: var(--ate-bg-editor);
+  transition: background 0.2s;
+}
+
+.ate-resizer:hover,
+.ate-resizer[data-dragging="true"] {
+  background: var(--ate-accent);
+}
+
+.ate-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* ---------------------------------------------------------------- toolbar */
+
+.ate-toolbar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--ate-bg-toolbar);
+  border-bottom: 1px solid var(--ate-border);
+}
+
+.ate-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ate-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--ate-border);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e0e0e0;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.ate-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.ate-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.ate-btn-icon {
+  padding: 5px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  display: inline-flex;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.ate-btn-icon:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e0e0e0;
+}
+
+.ate-btn-icon:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.ate-mode-toggle {
+  display: flex;
+  border: 1px solid var(--ate-border);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.ate-mode-btn {
+  padding: 4px 12px;
+  border: none;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.ate-mode-btn:hover:not(.ate-active) {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.ate-mode-btn.ate-active {
+  background: var(--ate-accent-soft);
+  color: #c4b5fd;
+}
+
+/* ---------------------------------------------------------------- tabs */
+
+.ate-tab-bar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-end;
+  gap: 1px;
+  height: 34px;
+  padding: 0 6px;
+  background: var(--ate-bg-editor);
+  border-bottom: 1px solid var(--ate-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.ate-tab-bar::-webkit-scrollbar {
+  height: 0;
+}
+
+.ate-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px 0 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: rgba(255, 255, 255, 0.02);
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.ate-tab:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.ate-tab.ate-active {
+  background: var(--ate-bg-editor);
+  color: #e0e0e0;
+  border-bottom-color: var(--ate-accent);
+}
+
+.ate-tab-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ate-warn);
+  flex-shrink: 0;
+}
+
+.ate-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.3);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.ate-tab:hover .ate-tab-close,
+.ate-tab.ate-active .ate-tab-close {
+  opacity: 0.6;
+}
+
+.ate-tab-close:hover {
+  opacity: 1;
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.ate-tab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ate-tab-add:hover {
+  color: #e0e0e0;
+}
+
+/* ---------------------------------------------------------------- editor body */
+
+.ate-editor-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+}
+
+.ate-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.3);
+  text-align: center;
+  padding: 24px;
+}
+
+.ate-empty h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.ate-empty p {
+  font-size: 11.5px;
+  max-width: 280px;
+  line-height: 1.6;
+}
+
+/* Edit mode */
+
+.ate-edit {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ate-line-numbers {
+  width: 50px;
+  flex-shrink: 0;
+  padding: 16px 8px 16px 12px;
+  text-align: right;
+  font-family: var(--ate-font-family);
+  font-size: var(--ate-font-size);
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.15);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  user-select: none;
+  overflow: hidden;
+  white-space: pre;
+}
+
+.ate-textarea {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  padding: 16px;
+  font-family: var(--ate-font-family);
+  font-size: var(--ate-font-size);
+  line-height: 1.7;
+  color: var(--ate-text);
+  background: var(--ate-bg-editor);
+  tab-size: 2;
+  overflow-y: scroll;
+}
+
+.ate-textarea::placeholder {
+  color: rgba(255, 255, 255, 0.15);
+}
+
+/* Preview mode */
+
+.ate-preview {
+  flex: 1;
+  min-height: 0;
+  padding: 24px 28px;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--ate-text);
+  font-size: calc(var(--ate-font-size) + 1px);
+}
+
+.ate-preview h1 {
+  font-size: calc(var(--ate-font-size) * 2);
+  font-weight: 700;
+  color: var(--ate-h1);
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid rgba(139, 92, 246, 0.3);
+  letter-spacing: -0.02em;
+}
+
+.ate-preview h2 {
+  font-size: calc(var(--ate-font-size) * 1.45);
+  font-weight: 600;
+  color: var(--ate-h2);
+  margin: 24px 0 12px;
+  padding-left: 8px;
+  border-left: 3px solid var(--ate-accent);
+}
+
+.ate-preview h3,
+.ate-preview h4,
+.ate-preview h5,
+.ate-preview h6 {
+  font-size: calc(var(--ate-font-size) * 1.15);
+  font-weight: 600;
+  color: var(--ate-h3);
+  margin: 20px 0 10px;
+}
+
+.ate-preview p {
+  line-height: 1.8;
+  margin-bottom: 16px;
+}
+
+.ate-preview strong {
+  color: #f5f5f5;
+  font-weight: 600;
+}
+
+.ate-preview em {
+  color: #a0a0b0;
+  font-style: italic;
+}
+
+.ate-preview del {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.ate-preview a {
+  color: var(--ate-link);
+  text-decoration: underline;
+}
+
+.ate-preview code {
+  font-family: var(--ate-font-family);
+  font-size: calc(var(--ate-font-size) - 0.5px);
+  background: rgba(139, 92, 246, 0.15);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #c4b5fd;
+}
+
+.ate-preview pre {
+  background: var(--ate-code-bg);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+  overflow-x: auto;
+}
+
+.ate-preview pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--ate-code-fg);
+  line-height: 1.65;
+}
+
+.ate-preview ul,
+.ate-preview ol {
+  padding-left: 24px;
+  margin: 14px 0;
+}
+
+.ate-preview li {
+  line-height: 1.75;
+  margin-bottom: 6px;
+}
+
+.ate-preview ul > li {
+  list-style-type: disc;
+}
+
+.ate-preview ol > li {
+  list-style-type: decimal;
+}
+
+.ate-preview blockquote {
+  border-left: 4px solid var(--ate-accent);
+  margin: 18px 0;
+  padding: 12px 18px;
+  background: rgba(139, 92, 246, 0.08);
+  color: #b0b0c0;
+  font-style: italic;
+  border-radius: 0 8px 8px 0;
+}
+
+.ate-preview hr {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 22px 0;
+}
+
+.ate-preview img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+.ate-plaintext {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--ate-font-family);
+  font-size: var(--ate-font-size);
+  line-height: 1.7;
+  color: var(--ate-text);
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* ---------------------------------------------------------------- status bar */
+
+.ate-status-bar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 10px;
+  background: var(--ate-accent);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.ate-status-left,
+.ate-status-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ate-status-right {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.ate-status-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40ch;
+}
+
+.ate-status-dirty {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #ffe9bd;
+}
+
+.ate-status-flash {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  padding: 0 7px;
+  animation: ate-fade-in 0.2s ease-out;
+}
+
+@keyframes ate-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------------- chat */
+
+.ate-chat-header {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--ate-bg-chrome);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ate-header-spacer {
+  flex: 1;
+}
+
+.ate-online-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ate-ok);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+  flex-shrink: 0;
+}
+
+.ate-online-dot[data-busy="true"] {
+  background: var(--ate-accent);
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.5);
+  animation: ate-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ate-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.ate-chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ate-chat-empty {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.3);
+  text-align: center;
+  padding: 20px;
+}
+
+.ate-chat-empty h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.ate-chat-empty p {
+  font-size: 11.5px;
+  max-width: 300px;
+  line-height: 1.6;
+}
+
+/* The way out of the "Assistant unavailable" state. Sits under the copy, so it
+   reads as the next step rather than as a fifth header control. */
+.ate-retry-btn {
+  margin-top: 4px;
+}
+
+.ate-message {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 80%;
+}
+
+.ate-message.ate-user {
+  align-self: flex-end;
+}
+
+.ate-message.ate-agent,
+.ate-message.ate-system {
+  align-self: flex-start;
+}
+
+.ate-bubble {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ate-message.ate-user .ate-bubble {
+  background: rgba(139, 92, 246, 0.2);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  color: #e0d6fc;
+  border-bottom-right-radius: 4px;
+}
+
+.ate-message.ate-agent .ate-bubble {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: #d0d0d0;
+  border-bottom-left-radius: 4px;
+}
+
+.ate-message.ate-system .ate-bubble {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 11.5px;
+}
+
+.ate-bubble.ate-error {
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.25);
+  color: #fca5a5;
+}
+
+.ate-msg-time {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+  padding: 0 4px;
+}
+
+.ate-message.ate-user .ate-msg-time {
+  text-align: right;
+}
+
+
+.ate-typing {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.4);
+  animation: ate-pulse 1s ease-in-out infinite;
+}
+
+.ate-chat-input-area {
+  flex-shrink: 0;
+  padding: 12px 16px;
+  background: var(--ate-bg-chrome);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ate-chat-input-wrap {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--ate-border);
+  border-radius: 10px;
+  padding: 6px 6px 6px 14px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.ate-chat-input-wrap:focus-within {
+  border-color: rgba(139, 92, 246, 0.4);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
+}
+
+.ate-chat-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: none;
+  max-height: 140px;
+  padding: 6px 0;
+}
+
+.ate-chat-input::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.ate-send-btn {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: none;
+  background: rgba(139, 92, 246, 0.25);
+  color: #c4b5fd;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s, opacity 0.2s;
+}
+
+.ate-send-btn:hover:not(:disabled) {
+  background: rgba(139, 92, 246, 0.4);
+  transform: scale(1.05);
+}
+
+.ate-send-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---------------------------------------------------------------- dialogs */
+
+.ate-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+  padding: 24px;
+}
+
+.ate-dialog {
+  width: 460px;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #15171e;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+
+.ate-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--ate-border);
+}
+
+.ate-dialog-header h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e0e0;
+  flex: 1;
+}
+
+.ate-dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.6;
+}
+
+.ate-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--ate-border);
+}
+
+.ate-btn-primary {
+  background: rgba(139, 92, 246, 0.3);
+  border-color: rgba(139, 92, 246, 0.35);
+  color: #ddd0ff;
+}
+
+.ate-btn-primary:hover:not(:disabled) {
+  background: rgba(139, 92, 246, 0.45);
+}
+
+.ate-btn-danger {
+  background: rgba(248, 113, 113, 0.16);
+  border-color: rgba(248, 113, 113, 0.28);
+  color: #fca5a5;
+}
+
+.ate-btn-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.28);
+}
+
+.ate-field {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ate-field label {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.ate-input,
+.ate-select {
+  width: 100%;
+  border: 1px solid var(--ate-border);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.3);
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  outline: none;
+}
+
+.ate-input:focus,
+.ate-select:focus {
+  border-color: rgba(139, 92, 246, 0.45);
+}
+
+.ate-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ate-color-row input[type="color"] {
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--ate-border);
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ate-path-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  padding-bottom: 10px;
+}
+
+.ate-crumb {
+  border: none;
+  background: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.ate-crumb:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e0e0e0;
+}
+
+.ate-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ate-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #d5d5dd;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ate-file-row:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.ate-file-row[data-selected="true"] {
+  background: rgba(139, 92, 246, 0.2);
+  color: #e6dcff;
+}
+
+.ate-file-row .ate-file-meta {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.ate-note {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 8px;
+}
+
+.ate-error-text {
+  font-size: 11.5px;
+  color: #fca5a5;
+  margin-top: 8px;
+}
+
+.ate-settings-group {
+  margin-bottom: 16px;
+}
+
+.ate-settings-group h4 {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 8px;
+}
+
+/* ---------------------------------------------------------------- scrollbars */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* ================================================================= */
+/* v2 — agent + conversation selectors in the chat header (FR-023/024) */
+/* ================================================================= */
+
+.ate-dropdown {
+  position: relative;
+  display: inline-flex;
+}
+
+.ate-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #d0d0dc;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.ate-selector:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.ate-selector:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ate-selector-icon {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* The agent glyph is the one violet thing in the header: it marks the surface
+   that belongs to the agent, exactly as the accent does everywhere else. */
+.ate-selector-icon.ate-accent-icon {
+  color: #a78bfa;
+}
+
+.ate-selector-chevron {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.ate-selector-label {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ate-header-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #c0c0d0;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.ate-header-icon-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.ate-header-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.ate-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  z-index: 30;
+  min-width: 220px;
+  max-width: 300px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--ate-bg-chrome);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  padding: 5px;
+}
+
+.ate-dropdown-menu.ate-align-left {
+  left: 0;
+}
+
+.ate-dropdown-menu.ate-align-right {
+  right: 0;
+}
+
+.ate-menu-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.3);
+  padding: 6px 10px 4px;
+  font-weight: 600;
+}
+
+.ate-menu-empty {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.35);
+  padding: 6px 10px 8px;
+}
+
+.ate-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #d0d0dc;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ate-dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ate-dropdown-item.ate-active {
+  background: rgba(139, 92, 246, 0.12);
+}
+
+.ate-di-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.ate-dropdown-item.ate-active .ate-di-icon {
+  color: #a78bfa;
+}
+
+.ate-di-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.ate-di-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ate-di-sub {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ate-di-check {
+  margin-left: auto;
+  display: inline-flex;
+  flex-shrink: 0;
+  color: #a78bfa;
+}
+
+/* ================================================================= */
+/* v2 — the reply's tool row (FR-025)                                */
+/* ================================================================= */
+/*
+ * Two variants, one pill. The shape is identical on purpose: these are all
+ * things the agent did in the same turn, and the colour — not the form — is
+ * what says whether it touched the user's document.
+ */
+
+.ate-tool-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 0 2px;
+  margin-top: 1px;
+}
+
+.ate-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.ate-tool-chip.ate-editor {
+  background: rgba(139, 92, 246, 0.16);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  color: #c4b5fd;
+}
+
+.ate-tool-chip.ate-other {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.ate-tool-chip.ate-other svg {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* Still executing — dimmed rather than animated, so a row of chips settling
+   one by one doesn't turn the transcript into a light show. */
+.ate-tool-chip[data-status="running"] {
+  opacity: 0.6;
+}
+
+/* ---------------------------------------------------------------- v2 empty states */
+
+.ate-empty-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 8px;
+  color: rgba(139, 92, 246, 0.7);
+}
+
+.ate-chat-input-wrap[data-disabled] {
+  opacity: 0.55;
+}
+
+.ate-chat-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  color: #fcd9a0;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.ate-chat-banner svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}

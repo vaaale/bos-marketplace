@@ -163,8 +163,14 @@ test("scheduler.js", async (t) => {
 
   await t.test("dynamic routing: a node with candidates only unlocks the selected child", async () => {
     const { runWorkflow: rw } = require("../engine/scheduler");
+    // FR-029: the selection arrives as a structured `select_branch` tool call
+    // in the delegate stream — the prose in `output` is deliberately WRONG to
+    // prove the engine never reads it.
     const selectiveBos = await startFakeBos({
-      delegate: () => [{ type: "done", result: { output: "reasoning...\nSELECT: finance" } }],
+      delegate: () => [
+        { type: "tool", name: "select_branch", args: { selected: ["finance"] } },
+        { type: "done", result: { output: "On reflection I think shipping is interesting too." } },
+      ],
     });
     process.env.NEXT_PUBLIC_APP_ORIGIN = selectiveBos.origin;
     delete require.cache[require.resolve("../vfs")];
@@ -184,7 +190,9 @@ test("scheduler.js", async (t) => {
     assert.equal(state, "completed");
     assert.equal(steps.classify.status, "completed");
     assert.equal(steps.finance.status, "completed");
-    assert.equal(steps.shipping.status, "neutral");
+    // FR-031: an unselected leaf is explicitly SKIPPED, not left silently pending.
+    assert.equal(steps.shipping.status, "skipped");
+    assert.equal(steps.shipping.reason, "branch-not-selected");
     await selectiveBos.close();
     process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
     delete require.cache[require.resolve("../vfs")];
@@ -205,6 +213,266 @@ test("scheduler.js", async (t) => {
     const { state, steps } = await rw(wf, { runId: "run-8", abortSignal: new AbortController().signal, emit: () => {} });
     assert.equal(state, "completed");
     assert.equal(steps.only.status, "completed");
+  });
+
+
+  // ===========================================================================
+  // Scope-add: US11 (Option A + zero-leaf guard), US13 (fan-out observability),
+  // US14 (dry-run fixtures), US15 (per-step + per-run timeouts).
+  // ===========================================================================
+
+  /** Fresh scheduler bound to a purpose-built fake BOS (module cache reset so
+   *  vfs.js/executor.js re-read NEXT_PUBLIC_APP_ORIGIN). */
+  async function withBos(delegate, fn) {
+    const fake = await startFakeBos({ delegate });
+    const previous = process.env.NEXT_PUBLIC_APP_ORIGIN;
+    process.env.NEXT_PUBLIC_APP_ORIGIN = fake.origin;
+    for (const mod of ["../vfs", "../engine/executor", "../engine/scheduler"]) delete require.cache[require.resolve(mod)];
+    try {
+      return await fn(require("../engine/scheduler"), fake);
+    } finally {
+      await fake.close();
+      process.env.NEXT_PUBLIC_APP_ORIGIN = previous;
+      for (const mod of ["../vfs", "../engine/executor", "../engine/scheduler"]) delete require.cache[require.resolve(mod)];
+    }
+  }
+
+  function selectBranch(ids) {
+    return [
+      { type: "tool", name: "select_branch", args: { selected: ids } },
+      { type: "done", result: { output: "selection emitted structurally" } },
+    ];
+  }
+
+  await t.test("FR-031 Option A: a SHARED step between the branch point and the leaves runs regardless of the selection", async () => {
+    await withBos(
+      (body) => (body.task.includes("classify") || body.ephemeral?.name === "workflow-node-classify" ? selectBranch(["alarm"]) : [{ type: "done", result: { output: "ok" } }]),
+      async ({ runWorkflow: rw }) => {
+        const events = [];
+        const wf = {
+          id: "wf-optionA",
+          name: "Option A",
+          steps: [
+            { id: "classify", outputType: "delegate", agentSource: { kind: "ephemeral", task: "classify the signal" }, candidates: ["alarm", "quiet"] },
+            // `render` depends on the routing node but is NOT one of its
+            // candidates — under Option A it must run normally. (This is the
+            // exact node that used to block the entire downstream graph.)
+            { id: "render", outputType: "ag-ui", input: { rendered: true }, dependencies: ["classify"] },
+            { id: "alarm", outputType: "ag-ui", input: { alarm: true }, dependencies: ["render"] },
+            { id: "quiet", outputType: "ag-ui", input: { quiet: true }, dependencies: ["render"] },
+          ],
+        };
+        const { state, steps, selected } = await rw(wf, { runId: "run-optionA", abortSignal: new AbortController().signal, emit: (ev) => events.push(ev) });
+        assert.equal(state, "completed");
+        assert.equal(steps.render.status, "completed", "the shared step must not be gated by the selection");
+        assert.equal(steps.alarm.status, "completed");
+        assert.equal(steps.quiet.status, "skipped");
+        assert.deepEqual(selected.classify, ["alarm"]);
+        const skip = events.find((e) => e.type === "step.skip" && e.stepId === "quiet");
+        assert.equal(skip.reason, "branch-not-selected");
+      },
+    );
+  });
+
+  await t.test("FR-032: a selected branch that executes ZERO leaves reports completed_with_warnings, not completed", async () => {
+    await withBos(
+      () => selectBranch(["second"]),
+      async ({ runWorkflow: rw }) => {
+        const events = [];
+        const wf = {
+          id: "wf-zero-leaf",
+          name: "Zero leaves",
+          steps: [
+            { id: "classify", outputType: "delegate", agentSource: { kind: "ephemeral", task: "classify" }, candidates: ["first", "second"] },
+            { id: "first", outputType: "ag-ui", input: 1, dependencies: ["classify"] },
+            // `second` was selected, but it can only run after `first`, which
+            // the same selection skipped — so the branch performs NOTHING.
+            { id: "second", outputType: "ag-ui", input: 2, dependencies: ["first"] },
+          ],
+        };
+        const { state, steps } = await rw(wf, { runId: "run-zero-leaf", abortSignal: new AbortController().signal, emit: (ev) => events.push(ev) });
+        assert.equal(state, "completed_with_warnings");
+        assert.equal(steps.first.status, "skipped");
+        assert.equal(steps.second.status, "neutral");
+        const warning = events.find((e) => e.type === "workflow.branch.skipped");
+        assert.ok(warning, "a workflow.branch.skipped event must be emitted");
+        assert.equal(warning.stepId, "classify");
+        assert.deepEqual(warning.selected, ["second"]);
+        assert.equal(events.find((e) => e.type === "workflow.complete").finalState, "completed_with_warnings");
+      },
+    );
+  });
+
+  await t.test("FR-030: a routing node that never produces a structured selection FAILS (it never defaults)", async () => {
+    await withBos(
+      () => [{ type: "done", result: { output: "I think the alarm branch is right." } }],
+      async ({ runWorkflow: rw }) => {
+        const wf = {
+          id: "wf-no-signal",
+          name: "No signal",
+          steps: [
+            { id: "classify", outputType: "delegate", agentSource: { kind: "ephemeral", task: "classify" }, candidates: ["alarm", "quiet"] },
+            { id: "alarm", outputType: "ag-ui", input: 1, dependencies: ["classify"] },
+            { id: "quiet", outputType: "ag-ui", input: 2, dependencies: ["classify"] },
+          ],
+        };
+        const { state, steps } = await rw(wf, { runId: "run-no-signal", abortSignal: new AbortController().signal, emit: () => {} });
+        assert.equal(state, "failed");
+        assert.equal(steps.classify.status, "failed");
+        assert.match(steps.classify.error, /no valid structured branch selection/);
+        assert.equal(steps.alarm.status, "neutral");
+        assert.equal(steps.quiet.status, "neutral");
+      },
+    );
+  });
+
+  await t.test("FR-022/FR-036: research fan-out really is invoked, once per entry, with per-sub-agent events", async () => {
+    let delegateCalls = 0;
+    await withBos(
+      (body) => {
+        delegateCalls++;
+        return [{ type: "done", result: { output: `handled: ${body.task}` } }];
+      },
+      async ({ runWorkflow: rw }) => {
+        const events = [];
+        const wf = {
+          id: "wf-fanout",
+          name: "Fan-out",
+          steps: [{ id: "r", outputType: "research", researchAgents: ["finance-agent", { task: "shipping analysis" }, { task: "legal analysis" }] }],
+        };
+        const { state, steps } = await rw(wf, { runId: "run-fanout", abortSignal: new AbortController().signal, emit: (ev) => events.push(ev) });
+        assert.equal(state, "completed");
+        assert.equal(delegateCalls, 3, "one real delegate call per researchAgents entry — the fan-out is not dead code");
+        assert.equal(steps.r.output.length, 3);
+        // Outputs are first-class structured data (FR-035), not a file handoff.
+        assert.match(steps.r.output[0].output, /^handled: /);
+        assert.equal(steps.r.output[1].label.includes("shipping analysis"), true);
+
+        const subEvents = events.filter((e) => e.type === "agent.sub_agent");
+        const byId = new Map();
+        for (const e of subEvents) byId.set(e.subAgentId, [...(byId.get(e.subAgentId) || []), e.status]);
+        assert.equal(byId.size, 3);
+        for (const [, statuses] of byId) {
+          assert.deepEqual(statuses, ["pending", "running", "completed"]);
+        }
+      },
+    );
+  });
+
+  await t.test("FR-037 dry run: fixture-designated nodes are substituted, no delegate call is made, and routing still resolves", async () => {
+    let delegateCalls = 0;
+    await withBos(
+      () => {
+        delegateCalls++;
+        return [{ type: "done", result: { output: "REAL CALL — should not happen in this dry run" } }];
+      },
+      async ({ runWorkflow: rw }) => {
+        const wf = {
+          id: "wf-dry",
+          name: "Dry run",
+          steps: [
+            { id: "research", outputType: "research", researchAgents: [{ task: "expensive investigation A" }, { task: "expensive investigation B" }] },
+            { id: "classify", outputType: "delegate", agentSource: { kind: "ephemeral", task: "classify" }, dependencies: ["research"], candidates: ["alarm", "quiet"] },
+            { id: "alarm", outputType: "ag-ui", input: { alarm: true }, dependencies: ["classify"] },
+            { id: "quiet", outputType: "ag-ui", input: { quiet: true }, dependencies: ["classify"] },
+          ],
+        };
+        const t0 = Date.now();
+        const { state, steps } = await rw(wf, {
+          runId: "run-dry",
+          abortSignal: new AbortController().signal,
+          emit: () => {},
+          dryRun: true,
+          fixtures: {
+            research: [{ label: "A", output: "canned finding A" }, { label: "B", output: "canned finding B" }],
+            // The select_branch signal can itself be a fixture.
+            classify: { select_branch: { selected: ["alarm"] } },
+          },
+        });
+        assert.equal(state, "completed");
+        assert.equal(delegateCalls, 0, "a dry run must not invoke a single real sub-agent (NFR-006)");
+        assert.equal(steps.research.output[0].output, "canned finding A");
+        assert.equal(steps.alarm.status, "completed");
+        assert.equal(steps.quiet.status, "skipped");
+        assert.ok(Date.now() - t0 < 2000, "the evaluated path completes in seconds");
+      },
+    );
+  });
+
+  await t.test("FR-037: without dryRun, fixtures are ignored entirely (default behavior unchanged)", async () => {
+    let delegateCalls = 0;
+    await withBos(
+      () => {
+        delegateCalls++;
+        return [{ type: "done", result: { output: "real output" } }];
+      },
+      async ({ runWorkflow: rw }) => {
+        const wf = {
+          id: "wf-no-dry",
+          name: "Not a dry run",
+          steps: [{ id: "a", outputType: "delegate", agentSource: { kind: "ephemeral", task: "do it" } }],
+        };
+        const { state, steps } = await rw(wf, {
+          runId: "run-no-dry",
+          abortSignal: new AbortController().signal,
+          emit: () => {},
+          fixtures: { a: "canned" },
+        });
+        assert.equal(state, "completed");
+        assert.equal(delegateCalls, 1);
+        assert.equal(steps.a.output, "real output");
+      },
+    );
+  });
+
+  await t.test("FR-038: a step exceeding its per-step timeout fails fast with a timeout reason", async () => {
+    await withBos(
+      () => new Promise(() => {}), // a hung agent: the delegate never answers
+      async ({ runWorkflow: rw }) => {
+        const events = [];
+        const wf = {
+          id: "wf-step-timeout",
+          name: "Step timeout",
+          steps: [
+            { id: "hangs", outputType: "delegate", agentSource: { kind: "ephemeral", task: "never returns" }, timeout: 0.2, retryLimit: 1 },
+            { id: "after", outputType: "ag-ui", input: 1, dependencies: ["hangs"] },
+          ],
+        };
+        const t0 = Date.now();
+        const { state, steps } = await rw(wf, { runId: "run-step-timeout", abortSignal: new AbortController().signal, emit: (ev) => events.push(ev) });
+        assert.equal(state, "failed");
+        assert.equal(steps.hangs.status, "failed");
+        assert.equal(steps.hangs.timedOut, true);
+        assert.match(steps.hangs.error, /timed out after 0\.2s/);
+        assert.equal(steps.after.status, "neutral");
+        assert.ok(Date.now() - t0 < 5000, "it must not hang waiting for the agent");
+        const fail = events.find((e) => e.type === "step.fail" && e.stepId === "hangs");
+        assert.equal(fail.reason, "step-timeout");
+      },
+    );
+  });
+
+  await t.test("FR-038: a run exceeding its per-run deadline is halted and reported failed", async () => {
+    await withBos(
+      () => new Promise(() => {}),
+      async ({ runWorkflow: rw }) => {
+        const events = [];
+        const wf = {
+          id: "wf-run-timeout",
+          name: "Run timeout",
+          config: { runTimeout: 0.3 },
+          steps: [{ id: "hangs", outputType: "delegate", agentSource: { kind: "ephemeral", task: "never returns" }, timeout: 60, retryLimit: 1 }],
+        };
+        const t0 = Date.now();
+        const { state, timedOut } = await rw(wf, { runId: "run-run-timeout", abortSignal: new AbortController().signal, emit: (ev) => events.push(ev) });
+        assert.equal(state, "failed");
+        assert.equal(timedOut, true);
+        assert.ok(Date.now() - t0 < 5000);
+        const fail = events.find((e) => e.type === "workflow.fail");
+        assert.equal(fail.reason, "run-timeout");
+        assert.match(fail.error, /run timed out after 0\.3s/);
+      },
+    );
   });
 
   await bos.close();

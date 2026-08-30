@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import type { StepLiveStatus, WorkflowStep } from "../lib/types";
+import { describeStep } from "../lib/trajectory";
 
 interface GraphProps {
   steps: WorkflowStep[];
@@ -16,13 +17,6 @@ const NODE_W = 140;
 const NODE_H = 52;
 const GAP_X = 60;
 const GAP_Y = 20;
-
-function describeStep(step: WorkflowStep): string {
-  if (step.outputType === "tool") return step.toolName || "unnamed-tool";
-  if (step.outputType === "research") return `${(step.researchAgents || step.candidates || []).length} agent(s)`;
-  if (step.outputType === "ag-ui") return step.outputConvention || "artifact";
-  return step.agentSource?.kind === "ephemeral" ? "ephemeral" : step.agentSource?.agentId || "agent";
-}
 
 function layerOf(steps: WorkflowStep[]): Map<string, number> {
   const byId = new Map(steps.map((s) => [s.id, s]));
@@ -58,6 +52,10 @@ function statusStyle(status: StepLiveStatus | undefined, isActive: boolean) {
       return { border: "#f87171", bg: "#261b20", text: "#fecaca", edge: "#f87171", glow: false };
     case "cancelled":
       return { border: "rgba(255,255,255,0.2)", bg: "#191b20", text: "rgba(255,255,255,0.4)", edge: "#ffffff40", glow: false };
+    case "skipped":
+      // A leaf its routing node did not select (FR-031) — deliberately styled
+      // like "neutral": nothing ran, and that is not an error.
+      return { border: "rgba(251,191,36,0.25)", bg: "#1c1a17", text: "rgba(253,230,138,0.6)", edge: "#ffffff20", glow: false };
     case "neutral":
       return { border: "rgba(255,255,255,0.15)", bg: "#14161c", text: "rgba(255,255,255,0.35)", edge: "#ffffff20", glow: false };
     default:
@@ -165,6 +163,7 @@ export function GraphLegend({ historical = false }: { historical?: boolean }) {
         ["completed", "completed"],
         ["failed", "failed"],
         ["cancelled", "cancelled"],
+        ["skipped · branch not selected", "skipped"],
         ["neutral · never ran", "neutral"],
       ]
     : [

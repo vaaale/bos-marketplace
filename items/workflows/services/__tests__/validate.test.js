@@ -75,14 +75,68 @@ test("validate.js", async (t) => {
     assert.ok(r.errors.some((e) => e.includes('unknown candidate "ghost"')));
   });
 
-  await t.test("warns (not errors) when a candidate doesn't declare the parent as a dependency", () => {
+  // ---------------------------------------------------------------------------
+  // FR-033 — candidate topology. Both shapes below silently produce a run that
+  // "completes" having done nothing, so both are structural ERRORS.
+  // ---------------------------------------------------------------------------
+
+  await t.test("flags an UNREACHABLE candidate leaf (no dependency path from its routing node)", () => {
     const r = validateWorkflow(
       wf([
         { id: "a", agentSource: { kind: "static", agentId: "x" }, candidates: ["b"] },
         { id: "b", agentSource: { kind: "static", agentId: "x" }, dependencies: [] },
       ]),
     );
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => e.includes("unreachable candidate leaf")), JSON.stringify(r.errors));
+  });
+
+  await t.test("accepts a candidate leaf reached THROUGH a shared step (Option A, FR-031)", () => {
+    const r = validateWorkflow(
+      wf([
+        { id: "classify", agentSource: { kind: "static", agentId: "x" }, candidates: ["alarm", "quiet"] },
+        { id: "render", agentSource: { kind: "static", agentId: "x" }, dependencies: ["classify"] },
+        { id: "alarm", outputType: "ag-ui", input: 1, dependencies: ["render"] },
+        { id: "quiet", outputType: "ag-ui", input: 1, dependencies: ["render"] },
+      ]),
+    );
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  await t.test("flags a node that is ambiguously BOTH a gated candidate leaf and a shared dependency", () => {
+    const r = validateWorkflow(
+      wf([
+        { id: "classify", agentSource: { kind: "static", agentId: "x" }, candidates: ["alarm", "quiet"] },
+        { id: "alarm", outputType: "ag-ui", input: 1, dependencies: ["classify"] },
+        { id: "quiet", outputType: "ag-ui", input: 1, dependencies: ["classify"] },
+        // `publish` is NOT gated by classify, yet depends on a gated leaf —
+        // it can never run whenever `alarm` is not the selected branch.
+        { id: "publish", outputType: "ag-ui", input: 1, dependencies: ["alarm"] },
+      ]),
+    );
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => e.includes("ambiguously both a gated candidate leaf")), JSON.stringify(r.errors));
+  });
+
+  await t.test("does not flag a dependent that is gated by the SAME routing node", () => {
+    const r = validateWorkflow(
+      wf([
+        { id: "classify", agentSource: { kind: "static", agentId: "x" }, candidates: ["alarm", "escalate"] },
+        { id: "alarm", outputType: "ag-ui", input: 1, dependencies: ["classify"] },
+        { id: "escalate", outputType: "ag-ui", input: 1, dependencies: ["alarm"] },
+      ]),
+    );
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  await t.test("a workflow with no candidates at all is unaffected by the topology checks", () => {
+    const r = validateWorkflow(
+      wf([
+        { id: "a", agentSource: { kind: "static", agentId: "x" } },
+        { id: "b", agentSource: { kind: "static", agentId: "x" }, dependencies: ["a"] },
+      ]),
+    );
     assert.equal(r.ok, true);
-    assert.ok(r.warnings.some((w) => w.includes("will never become ready")));
+    assert.deepEqual(r.errors, []);
   });
 });

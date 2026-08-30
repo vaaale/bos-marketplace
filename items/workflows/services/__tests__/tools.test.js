@@ -6,7 +6,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { DECLARATIONS } = require("../tools");
+const { DECLARATIONS, selectBranchTool, SELECT_BRANCH_TOOL_NAME } = require("../tools");
 
 const EXPECTED_NAMES = [
   "workflow_list",
@@ -76,5 +76,38 @@ test("tools.js", async (t) => {
   await t.test("no duplicate tool names", () => {
     const names = DECLARATIONS.map((d) => d.name);
     assert.equal(new Set(names).size, names.length);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Scope-add: dry-run inputs (US14/FR-037) + the structured select_branch
+  // signal (US11/FR-029), which is NOT one of the 12 assistant-facing tools.
+  // ---------------------------------------------------------------------------
+
+  await t.test("workflow_run accepts opt-in dryRun + fixtures without making them required", () => {
+    const d = DECLARATIONS.find((x) => x.name === "workflow_run");
+    assert.equal(d.inputSchema.properties.dryRun.type, "boolean");
+    assert.equal(d.inputSchema.properties.fixtures.type, "object");
+    assert.deepEqual(d.inputSchema.required, ["workflowId"]);
+    assert.match(d.description, /dry/i);
+  });
+
+  await t.test("workflow_status/workflow_run_get document the populated per-step live state (FR-036)", () => {
+    const status = DECLARATIONS.find((x) => x.name === "workflow_status");
+    assert.match(status.description, /per-step/i);
+    assert.match(status.description, /sub-agent/i);
+    const runGet = DECLARATIONS.find((x) => x.name === "workflow_run_get");
+    assert.match(runGet.description, /agent trace|tool calls/i);
+  });
+
+  await t.test("select_branch is a per-node signal tool, enum-limited to that node's candidates", () => {
+    assert.equal(SELECT_BRANCH_TOOL_NAME, "select_branch");
+    assert.equal(DECLARATIONS.some((d) => d.name === "select_branch"), false, "it is never declared to the assistant as a workflow tool");
+    const single = selectBranchTool(["alarm", "quiet"], false);
+    assert.deepEqual(single.inputSchema.properties.selected.items.enum, ["alarm", "quiet"]);
+    assert.equal(single.inputSchema.properties.selected.maxItems, 1);
+    assert.deepEqual(single.inputSchema.required, ["selected"]);
+    const multi = selectBranchTool(["a", "b", "c"], true);
+    assert.equal(multi.inputSchema.properties.selected.maxItems, undefined);
+    assert.equal(multi.inputSchema.properties.selected.minItems, 1);
   });
 });

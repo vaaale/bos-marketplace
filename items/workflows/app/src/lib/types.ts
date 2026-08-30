@@ -54,27 +54,81 @@ export interface WorkflowListEntry {
   run_id?: string;
 }
 
-export type StepLiveStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "neutral";
+export type StepLiveStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "skipped" | "neutral";
 
+/** One tool call inside a node's agent trace (FR-028). */
+export interface AgentToolCall {
+  name: string;
+  args?: unknown;
+  result?: unknown;
+  ok?: boolean;
+  inflight?: boolean;
+}
+
+export interface AgentTrace {
+  prompt?: string;
+  thinking?: string;
+  response?: string;
+  toolCalls: AgentToolCall[];
+}
+
+/** A research node's fan-out entry (FR-022/FR-036). */
+export interface SubAgentState {
+  id?: string;
+  label: string;
+  status: StepLiveStatus;
+  action?: string;
+  error?: string;
+  agentTrace?: AgentTrace;
+}
+
+/**
+ * The service's per-step live projection (services/engine/run-state.js
+ * `StepRuntimeState`). This is the SAME object `workflow_status`,
+ * `workflow_run_get` and `GET /run/<runId>` return — the app never
+ * re-derives it (FR-036, "one live state, two consumers").
+ */
 export interface StepState {
   status: StepLiveStatus;
+  attempt?: number;
+  /** v1 field name for `attempt`, still emitted for compatibility. */
   attempts?: number;
+  maxAttempts?: number;
+  currentAction?: string;
+  reason?: string;
+  timedOut?: boolean;
+  selected?: string[];
+  subAgents?: Record<string, SubAgentState>;
+  outputs?: unknown;
   output?: unknown;
+  agentTrace?: AgentTrace;
   error?: string;
 }
 
-export type RunFinalState = "running" | "completed" | "failed" | "cancelled" | "never_run";
+export type RunFinalState = "running" | "completed" | "completed_with_warnings" | "failed" | "cancelled" | "never_run";
 
 export interface RunEvent {
   type: string;
+  seq?: number;
   runId: string;
   workflowId: string;
   ts: number;
   stepId?: string;
+  subAgentId?: string;
+  label?: string;
   attempt?: number;
+  maxAttempts?: number;
+  action?: string;
+  reason?: string;
   error?: string;
   payload?: unknown;
   selected?: string[];
+}
+
+export interface BranchWarning {
+  stepId?: string;
+  selected?: string[];
+  reason?: string;
 }
 
 export interface RunSummary {
@@ -82,13 +136,19 @@ export interface RunSummary {
   startedAt?: number;
   endedAt?: number;
   state: RunFinalState;
+  finalState?: RunFinalState;
 }
 
 export interface RunDetail extends RunSummary {
   workflowId: string;
   running?: boolean;
+  finalState?: RunFinalState;
   steps?: Record<string, StepState>;
   events?: RunEvent[];
+  selected?: Record<string, string[]>;
+  warnings?: BranchWarning[];
+  /** Head of the append-only event log — feed it back as `?since=` to tail. */
+  seq?: number;
   error?: string;
 }
 

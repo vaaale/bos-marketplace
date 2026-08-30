@@ -45,6 +45,7 @@ Hard rules:
 - Use "research" for a step that should fan out several sub-agents concurrently and collect their outputs (e.g. several independent research questions).
 - Use "tool" only for a single, well-defined tool invocation.
 - Use "candidates" only when the workflow should adapt at run time based on information gathered earlier (e.g. routing to different downstream handling depending on a classification made by an upstream step).
+- When you DO use "candidates": every candidate must be reachable from its routing node through "dependencies" (directly, or through a shared step in between), and a candidate must be a TERMINAL step — never make an ungated step depend on a candidate, since a candidate only runs when it is selected. Put shared work ABOVE the branch point instead.
 - Return ONLY the JSON in a fenced \`\`\`json block, nothing else.`;
 
 function extractJson(text) {

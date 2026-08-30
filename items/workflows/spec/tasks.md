@@ -385,3 +385,47 @@ With multiple developers:
 - **Documentation (usage + dev) is a first-class deliverable** — written against the implemented code, not the pre-implementation design
 - Docs drift (T061) + spec/code drift tracking per constitution
 - **NFR-005 structured logging** is covered in T015 (log channel) + T022 (tool_call dispatch/resolve/schema-rejected/timeout logs)
+
+---
+
+## Phase 14: Scope-add — US10-US15 (node trajectory, correct routing, live state, dry run, timeouts)
+
+**Goal**: the six capabilities added on top of the shipped engine — the per-node
+agent-debug trajectory panel (US10), structured/safe branch routing (US11),
+ephemeral tool fidelity + structured fan-out handoff (US12), observable live
+run state (US13), dry-run/fixture mode (US14), and per-step/per-run timeouts
+with documented latency (US15).
+
+**Independent Test**: see each user story's own "Independent Test" in `spec.md`.
+
+### Service facet
+
+- [x] T068 [US13] NEW `services/engine/run-state.js` — the single `RunState`/`StepRuntimeState` projection (status/attempt/maxAttempts/currentAction/subAgents/outputs/agentTrace), the append-only event log with monotonic `seq`, `eventsSince`/`subscribe(since)`, `replayRunState(persisted)`, and the process-wide run registry (FR-036/FR-026/FR-028)
+- [x] T069 [US13] `services/http-bridge.js` — `GET /run/<runId>[?since=][&workflowId=]` on the worker's already-bound port, serving that projection (live, with a persisted-log fallback)
+- [x] T070 [US13] `services/runs.js` — fold every scheduler event into the RunState, persist the extended run record (`schemaVersion: 2`, `agent.*` events, `selected`, `finalState`, `warnings`), and replay a persisted run through the same reducer
+- [x] T071 [US13] `services/handlers.js` — `workflow_status`/`workflow_run_get` return the POPULATED per-step map (+ `?since` tailing), never `steps: {}`
+- [x] T072 [US11] `services/engine/router.js` — structured `select_branch` signal only (tool call → structured output → strict JSON envelope); invalid/missing → retry-loop → FAIL (FR-029/FR-030); Option A gating helpers `buildCandidateIndex`/`selectionAllows`/`selectionRejects` (FR-031)
+- [x] T073 [US11] `services/engine/scheduler.js` — Option A ready-set (dependency edges released for every dependent; only declared candidate leaves gated), explicit `step.skip` for unselected leaves, and the zero-executed-leaves guard → `workflow.branch.skipped` + `completed_with_warnings` (FR-031/FR-032)
+- [x] T074 [US11] `services/engine/validate.js` — candidate-topology structural errors: unreachable candidate leaf, and a node ambiguously both a gated leaf and a shared dependency (FR-033)
+- [x] T075 [US12] `services/engine/executor.js` — forward the node's full declared `tools` + `deferredTools` + `skills` to the delegate's ephemeral spec, and inject the per-node `select_branch` tool for routing nodes (FR-034/FR-029)
+- [x] T076 [US10] `services/engine/executor.js` — emit `agent.prompt`/`agent.reasoning`/`agent.tool_call`/`agent.response`/`agent.action` from the delegate stream, consuming both the historical and the enriched (`tool_result`/`reasoning_delta`/`done.text`) event shapes (FR-028)
+- [x] T077 [US12] `services/engine/executor.js` — render fan-out outputs as first-class structured upstream context so a "research → merge" handoff needs no file I/O (FR-035)
+- [x] T078 [US13] `services/engine/scheduler.js` — research fan-out emits `agent.sub_agent` transitions (pending → running → completed/failed) per entry (FR-022/FR-036)
+- [x] T079 [US14] `services/engine/executor.js` + `scheduler.js` + `tools.js` + `handlers.js` — opt-in `dryRun`/`fixtures` on `workflow_run`: fixture-designated nodes (including a whole research fan-out, one sub-agent via `<nodeId>#<index>`, or a routing node's selection signal) short-circuit with no delegation (FR-037)
+- [x] T080 [US15] `services/engine/scheduler.js` — per-step timeout (non-retryable, `reason: "step-timeout"`) and per-run deadline (halt + failed), both from the workflow config with safe defaults (FR-038)
+
+### App facet
+
+- [x] T081 [US10] NEW `app/src/components/TrajectoryPanel.tsx` — the node-scoped agent-debug panel (identity, "currently", retry line, executed prompt, reasoning, tool calls with in/out + ok/error/inflight, sub-agents · fan-out, agent response / "generating…", lifecycle events, output / artifact), matching `mockup.html`
+- [x] T082 [US10] NEW `app/src/lib/trajectory.ts` — the node-scoped projection of the run detail (lifecycle rows with timestamps + durations, identity fields); one code path for live and historical
+- [x] T083 [US10] `app/src/components/RunView.tsx` — node click + selection ring, the resizable divider (260-680px pointer drag), live tailing via the `window.__bos` broker → `GET /run/<runId>?since=` with a `workflow_status` fallback, and REMOVAL of the per-step status list (FR-027)
+- [x] T084 [US10] `app/src/components/DetailView.tsx` — the same panel + divider over the historical replay, driven by `workflow_run_get`
+- [x] T085 [US11] `app/src/components/StatusPill.tsx` + `Graph.tsx` + `styles.css` — the 5th run status `completed_with_warnings`, the `skipped` node status, and the panel styles
+
+### Tests + docs
+
+- [x] T086 [P] Unit tests: `run-state.test.js` (NEW), `http-bridge.test.js` (NEW), and extensions to `router`/`scheduler`/`validate`/`executor`/`handlers`/`runs`/`tools` — run individually with `node --test <file>` and a timeout
+- [x] T087 [P] E2e: `e2e/002-workflows-node-trajectory-and-routing.spec.ts` — trajectory panel (live + historical, click/switch/resize/dismiss), Option A routing, `completed_with_warnings`, declared-tool fidelity, live per-step + per-sub-agent + agentTrace, dry run in seconds, per-step timeout
+- [x] T088 [P] E2e: update `e2e/001-...spec.ts` — US7 routing now uses the structured signal (via dry-run fixtures) and asserts `skipped`; the US45 UI test asserts the per-step list is GONE and inspects a node via the panel instead
+- [x] T089 [P] `skills/workflow-manager/SKILL.md` — research-as-default for parallel investigation + realistic latency table, the structured-selection/Option A/topology rules, dry-run usage, timeouts, ephemeral tool fidelity
+- [x] T090 [P] `docs/usage.md`, `docs/tool-reference.md`, `docs/dev/architecture.md` — trajectory panel, latency, dry-run examples, the new tool inputs/outputs, and the engine's new modules

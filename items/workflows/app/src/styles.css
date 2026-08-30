@@ -399,3 +399,641 @@ body {
     opacity: 0.3;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Node trajectory panel (US10 / FR-025-028) — the per-node agent-debug
+ * surface docked to the right of the graph, plus its draggable divider.
+ * Colors/section order follow spec/mockup.html (the binding UI contract).
+ * ------------------------------------------------------------------------ */
+
+.wf-split {
+  display: flex;
+  align-items: stretch;
+  min-height: 0;
+  gap: 0;
+}
+
+.wf-split-main {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.wf-resize-handle {
+  width: 6px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 0 4px;
+  touch-action: none;
+}
+
+.wf-resize-handle:hover {
+  background: rgba(167, 139, 250, 0.35);
+}
+
+.wf-traj-panel {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  max-height: 620px;
+}
+
+.wf-traj-panel-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 8px 10px;
+}
+
+.wf-traj-panel-icon {
+  color: #ddd6fe;
+}
+
+.wf-traj-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.6);
+  white-space: nowrap;
+}
+
+.wf-traj-panel-badge {
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 9px;
+}
+
+.wf-badge-live {
+  background: rgba(56, 189, 248, 0.15);
+  color: #bae6fd;
+}
+
+.wf-badge-historical {
+  background: rgba(167, 139, 250, 0.15);
+  color: #ddd6fe;
+}
+
+.wf-traj-panel-tag {
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 2px 6px;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.wf-traj-panel-close {
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.wf-traj-panel-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.wf-traj-panel-body {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.wf-traj-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 10px;
+}
+
+.wf-traj-identity-icon {
+  display: flex;
+  height: 32px;
+  width: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(139, 92, 246, 0.25);
+  color: #ddd6fe;
+}
+
+.wf-traj-identity-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wf-traj-identity-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.wf-traj-identity-meta {
+  margin-top: 2px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.wf-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid;
+  padding: 1px 6px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.wf-chip-running {
+  border-color: rgba(56, 189, 248, 0.3);
+  background: rgba(56, 189, 248, 0.1);
+  color: #bae6fd;
+}
+
+.wf-chip-completed {
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.1);
+  color: #a7f3d0;
+}
+
+.wf-chip-failed {
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.1);
+  color: #fecaca;
+}
+
+.wf-chip-cancelled {
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.1);
+  color: #fde68a;
+}
+
+.wf-chip-neutral {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.wf-traj-currently {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  background: rgba(56, 189, 248, 0.05);
+  padding: 6px 8px;
+  font-size: 11px;
+  color: #e0f2fe;
+}
+
+.wf-traj-currently-glyph {
+  color: #7dd3fc;
+}
+
+.wf-traj-currently-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.wf-traj-currently-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-traj-retrying {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  background: rgba(251, 191, 36, 0.1);
+  padding: 6px 8px;
+  font-size: 11px;
+  color: #fef3c7;
+}
+
+.wf-traj-empty {
+  margin-top: 12px;
+  border-radius: 6px;
+  border: 1px dashed rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.wf-panel-section {
+  margin-top: 12px;
+}
+
+.wf-ps-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.wf-ps-glyph {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.wf-ps-count {
+  font-family: ui-monospace, monospace;
+  text-transform: none;
+  letter-spacing: normal;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.wf-stack > * + * {
+  margin-top: 6px;
+}
+
+.wf-traj-prompt {
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.75);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wf-traj-reasoning {
+  border-radius: 6px;
+  border: 1px solid rgba(129, 140, 248, 0.2);
+  background: rgba(129, 140, 248, 0.06);
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(224, 231, 255, 0.8);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wf-traj-response {
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.8);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wf-traj-generating {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  background: rgba(56, 189, 248, 0.05);
+  padding: 10px;
+  font-size: 11px;
+  color: rgba(186, 230, 253, 0.8);
+}
+
+.wf-traj-selected {
+  border-radius: 6px;
+  border: 1px solid rgba(167, 139, 250, 0.25);
+  background: rgba(167, 139, 250, 0.08);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: #ddd6fe;
+}
+
+.wf-traj-output {
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 10px;
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.7);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wf-traj-error {
+  border-radius: 6px;
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  background: rgba(248, 113, 113, 0.08);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: #fecaca;
+}
+
+/* Tool calls -------------------------------------------------------------- */
+
+.wf-toolcall {
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px;
+}
+
+.wf-toolcall-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wf-toolcall-badge {
+  display: flex;
+  height: 18px;
+  width: 18px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid;
+  font-size: 10px;
+}
+
+.wf-toolcall-name {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.wf-toolcall-tag {
+  margin-left: auto;
+  font-size: 9px;
+}
+
+.wf-tc-ok {
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.15);
+  color: #6ee7b7;
+}
+
+.wf-tc-error {
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.15);
+  color: #fca5a5;
+}
+
+.wf-tc-running {
+  border-color: rgba(56, 189, 248, 0.3);
+  background: rgba(56, 189, 248, 0.15);
+  color: #7dd3fc;
+}
+
+.wf-tc-pending {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.wf-toolcall-tag.wf-tc-ok,
+.wf-toolcall-tag.wf-tc-error,
+.wf-toolcall-tag.wf-tc-running {
+  border: none;
+  background: transparent;
+}
+
+.wf-toolcall-io {
+  margin-top: 5px;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.wf-io-label {
+  margin-top: 2px;
+  font-size: 9px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.wf-io-value {
+  flex: 1;
+  margin: 0;
+  overflow-x: auto;
+  font-size: 10px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.wf-io-error {
+  color: rgba(254, 202, 202, 0.8);
+}
+
+/* Sub-agent fan-out ------------------------------------------------------- */
+
+.wf-subagent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 6px 8px;
+}
+
+.wf-subagent-glyph {
+  border: none;
+  background: transparent;
+  font-size: 11px;
+}
+
+.wf-subagent-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.wf-subagent-action {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: none;
+  background: transparent;
+  font-size: 10px;
+}
+
+/* Lifecycle timeline ------------------------------------------------------ */
+
+.wf-traj-events {
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 8px;
+}
+
+.wf-traj-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 5px 0;
+}
+
+.wf-traj-row::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 26px;
+  bottom: -6px;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.wf-traj-row:last-child::before {
+  display: none;
+}
+
+.wf-traj-badge {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  height: 24px;
+  width: 24px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 11px;
+}
+
+.wf-ev-start {
+  border-color: rgba(56, 189, 248, 0.3);
+  background: rgba(56, 189, 248, 0.15);
+  color: #7dd3fc;
+}
+
+.wf-ev-running {
+  border-color: rgba(56, 189, 248, 0.3);
+  background: rgba(56, 189, 248, 0.15);
+  color: #bae6fd;
+}
+
+.wf-ev-retry {
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.15);
+  color: #fde68a;
+}
+
+.wf-ev-complete {
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.15);
+  color: #6ee7b7;
+}
+
+.wf-ev-fail {
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.15);
+  color: #fca5a5;
+}
+
+.wf-ev-cancel {
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.15);
+  color: #fde68a;
+}
+
+.wf-ev-skip {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.wf-traj-body {
+  min-width: 0;
+  flex: 1;
+  padding-top: 2px;
+}
+
+.wf-traj-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wf-traj-time {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.wf-traj-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.wf-traj-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  word-break: break-word;
+}
+
+.wf-traj-meta-error {
+  color: rgba(254, 202, 202, 0.9);
+}
+
+.wf-warning-banner {
+  border-radius: 6px;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  background: rgba(251, 191, 36, 0.1);
+  color: #fde68a;
+  padding: 6px 10px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.wf-spin {
+  display: inline-block;
+  animation: wf-spin 1.1s linear infinite;
+}
+
+@keyframes wf-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

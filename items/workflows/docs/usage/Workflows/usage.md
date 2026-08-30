@@ -26,7 +26,31 @@ A step can also declare that its outcome determines which of several
 downstream steps to take next — the workflow "routes" itself at run time
 based on what an earlier step learned. You'll see this as a node with more
 than one outgoing path in the graph, only one (or a chosen few) of which
-lights up during a given run.
+lights up during a given run. The step that isn't chosen is shown as
+**skipped** ("branch not selected") — that's a normal outcome, not an error.
+Only the steps that were explicitly declared as branch choices are gated this
+way; a shared step that sits between the branch point and the branches runs
+regardless of the choice.
+
+If a run chooses a branch but that branch ends up doing nothing at all, the
+run deliberately does **not** report a plain success — it finishes as
+"Completed · warnings", so a workflow that silently skipped its real work is
+visible instead of looking green.
+
+## How long things take
+
+- A **research** step runs all of its sub-agents at the same time, so it takes
+  about as long as its slowest one — not the sum. Two 20-minute
+  investigations take ~20 minutes, not 40.
+- The same investigations wired as separate delegate steps run one after
+  another and take the sum. If the work is independent, prefer one research
+  step.
+- A tool step is usually seconds; an ag-ui step is instant.
+- A **dry run** (below) evaluates the whole graph in seconds.
+
+A stuck agent can't run forever: the engine enforces a per-step timeout and a
+whole-run deadline (both configurable on the workflow, with safe defaults), so
+a hung step fails with a timeout reason rather than quietly consuming an hour.
 
 ## Example: building a workflow from a one-line trigger
 
@@ -72,9 +96,11 @@ buttons for every workflow lifecycle operation — Run, Edit, Export, Validate,
 Delete. A **historical runs** strip lists every past run of this workflow;
 clicking one that has finished opens a **replay panel** showing exactly what
 happened on that run — each step's final outcome (completed, failed,
-cancelled, or "neutral" if it never ran, e.g. because an earlier step failed
-or a routing choice skipped it) and the full event log, replayed from the
-persisted run record rather than from the live engine.
+cancelled, "skipped" if a routing choice passed it over, or "neutral" if it
+never ran at all) and the full event log, replayed from the persisted run
+record rather than from the live engine. Clicking a node in that replayed
+graph opens the same **node trajectory panel** described below, with the
+agent's prompt, tool calls, and response from that historical run.
 
 **Edit** opens the graph editor in place: click a node in the graph (or its
 row in the step list) to select it, edit its fields in the panel below
@@ -91,10 +117,59 @@ panel switches to raw-JSON editing for anyone who prefers it.
 
 Opens automatically when you start (or resume watching) a run. Shows a
 progress bar, the live graph with the **currently-executing step
-highlighted**, each step's real-time status, and the raw event stream as it
-happens. A **Cancel run** button stops it — in-progress steps are marked
-cancelled and the scheduler halts; anything that hadn't started yet is marked
-"neutral."
+highlighted**, and the raw event stream as it happens. A **Cancel run** button
+stops it — in-progress steps are marked cancelled and the scheduler halts;
+anything that hadn't started yet is marked "neutral."
+
+Per-step status lives on the graph itself (node colors) plus the trajectory
+panel below — there's no separate status list repeating what the graph already
+shows.
+
+### The node trajectory panel (debugging what an agent actually did)
+
+**Click any node** on the graph — in a live run or in a historical replay — and
+a panel opens to the right of the graph showing that node's full execution
+trajectory. Drag the divider between the graph and the panel to resize it; the
+graph reflows into whatever space is left. Click another node to switch, or the
+✕ to dismiss it.
+
+The panel is the per-node debugging surface. It shows:
+
+- **Identity** — the node's name, its current/final status, the agent behind it
+  (a named agent, an ephemeral one, or a tool node), and what it produces.
+- **Currently** — a one-line "what is it doing right now" while it runs, and a
+  **Retrying — attempt 2/3** line when a step is on a retry.
+- **Executed prompt** — the exact instructions the node's agent received,
+  including the upstream context that was fed into it.
+- **Reasoning** — the agent's thinking, where the provider exposes it.
+- **Tool calls** — every tool the agent called, with its arguments (`in`), its
+  return value (`out`), and whether it succeeded, failed, or is still running.
+- **Sub-agents · fan-out** — for a research step, each parallel sub-agent with
+  its own status, so you can see which one is the straggler.
+- **Agent response** — the text the agent produced (or a live "generating…"
+  indicator while it streams).
+- **Lifecycle events** — start / retry / running / complete / fail / cancel /
+  skip, with timestamps and durations.
+- **Output / artifact** — what the step handed downstream.
+
+For a live run this updates in real time; for a historical run it is replayed
+from the persisted log, so a run from last week is just as inspectable. A node
+that never ran shows "No events yet — this node never ran in this run."
+
+### Dry runs — check a workflow in seconds
+
+Before committing to a long run you (or the assistant) can run a workflow in
+**dry-run mode**: name any nodes you want to fake, give each one a canned
+output, and the engine skips their real execution entirely while running
+everything else normally. It's the fast way to confirm the graph is wired
+correctly and the right branch is taken, without waiting for a 40-minute
+research step. Ask the assistant for it in so many words:
+
+> Dry-run the sustainability workflow with a canned research result and force
+> the finance branch.
+
+which becomes a `workflow_run` with `dryRun: true` and
+`fixtures: { "research": …, "classify": { "select_branch": { "selected": ["finance"] } } }`.
 
 ## The bundled skill
 

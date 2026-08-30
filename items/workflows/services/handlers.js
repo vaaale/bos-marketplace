@@ -95,20 +95,32 @@ function makeHandlers(ctx) {
       const validation = validateWorkflow(wf);
       if (!validation.ok) throw new Error(`workflow ${id} failed validation: ${validation.errors.join("; ")}`);
       if (runs.isRunning(id)) throw new Error(`workflow ${id} already has a run in progress: ${runs.activeRunId(id)}`);
+      // US14/FR-037 — dry-run is opt-in: `fixtures` alone does nothing unless
+      // dryRun is set, and a run with neither behaves exactly as before.
+      const fixtures = args && typeof args.fixtures === "object" && args.fixtures ? args.fixtures : undefined;
+      const dryRun = args?.dryRun === true;
+      if (dryRun && !fixtures) log("warn", `workflow_run: dryRun requested for ${id} with no fixtures — every node will still execute for real`);
       const { runId } = runs.startRun(wf, {
         featureBranch: args.featureBranch,
         conversationId: args.conversationId,
         maxConcurrentSteps: ctx.defaultMaxConcurrentSteps,
+        dryRun,
+        fixtures,
       });
-      log("info", `workflow_run: started run ${runId} for workflow ${id} (fire-and-poll)`);
-      return { runId, workflowId: id };
+      log("info", `workflow_run: started run ${runId} for workflow ${id} (fire-and-poll${dryRun ? `, dry-run with ${Object.keys(fixtures || {}).length} fixture(s)` : ""})`);
+      return { runId, workflowId: id, ...(dryRun ? { dryRun: true, fixtures: Object.keys(fixtures || {}) } : {}) };
     },
 
+    // US13/FR-036: this NEVER returns an empty `steps: {}` for a run that has
+    // started — the per-step map (status, attempt/maxAttempts, current action,
+    // per-sub-agent fan-out status, agent trace) is the same live projection
+    // the app's trajectory panel reads (engine/run-state.js).
     workflow_status: async (args) => {
       const id = requireString(args, "workflowId");
       const wf = await store.getWorkflow(id);
       if (!wf) throw new Error(`no such workflow: ${id}`);
-      return runs.getStatus(id);
+      const since = Number.isFinite(Number(args?.since)) ? Number(args.since) : undefined;
+      return runs.getStatus(id, { since });
     },
 
     workflow_cancel: async (args) => {
@@ -153,7 +165,8 @@ function makeHandlers(ctx) {
     workflow_run_get: async (args) => {
       const workflowId = requireString(args, "workflowId");
       const runId = requireString(args, "runId");
-      const run = await runs.getRun(workflowId, runId);
+      const since = Number.isFinite(Number(args?.since)) ? Number(args.since) : undefined;
+      const run = await runs.getRun(workflowId, runId, { since });
       if (!run) throw new Error(`no such run: ${runId} for workflow ${workflowId}`);
       return run;
     },

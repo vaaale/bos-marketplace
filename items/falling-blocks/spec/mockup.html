@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Falling Blocks — UI Mockup</title>
+<style>
+  :root{
+    --bg:#0f1117;
+    --window:#15171e;
+    --panel:#1b1e26;
+    --panel-deep:#0c0e13;
+    --line:rgba(255,255,255,0.10);
+    --line-soft:rgba(255,255,255,0.06);
+    --text:rgba(255,255,255,0.92);
+    --text-2:rgba(255,255,255,0.64);
+    --text-3:rgba(255,255,255,0.42);
+    /* piece colours (high-contrast on dark) */
+    --pI:#22d3ee; --pO:#fde047; --pT:#c084fc; --pS:#4ade80;
+    --pZ:#f87171; --pJ:#60a5fa; --pL:#fb923c;
+    --accent:#c084fc;
+    --amber:#fbbf24;
+    --red:#f87171;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; }
+  body{
+    margin:0;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    overflow:auto;
+    background:
+      radial-gradient(1100px 560px at 50% -8%, #1a1e28 0%, rgba(26,30,40,0) 60%),
+      var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+    padding:28px 20px;
+  }
+
+  .stage{ display:flex; flex-direction:column; align-items:center; gap:14px; }
+
+  /* ---- preview-state switch (mockup affordance, not part of the app) ---- */
+  .switch-wrap{ display:flex; align-items:center; gap:10px; }
+  .switch-wrap .swl{ font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-3); }
+  .switch{
+    display:inline-flex; gap:3px; padding:3px;
+    background:rgba(255,255,255,0.05);
+    border:1px solid var(--line);
+    border-radius:10px;
+  }
+  .switch button{
+    border:0; background:transparent; color:var(--text-2);
+    font-family:var(--sans); font-size:12px; font-weight:500;
+    padding:5px 14px; border-radius:7px; cursor:pointer;
+    transition:background .12s ease, color .12s ease;
+  }
+  .switch button:hover{ color:var(--text); }
+  .switch button.active{ background:rgba(255,255,255,0.14); color:var(--text); }
+
+  /* ---- app window ---- */
+  .window{
+    width:672px;
+    background:var(--window);
+    border:1px solid var(--line);
+    border-radius:16px;
+    box-shadow:0 30px 70px rgba(0,0,0,0.55), 0 2px 0 rgba(255,255,255,0.03) inset;
+    overflow:hidden;
+  }
+  .titlebar{
+    display:flex; align-items:center; height:42px; padding:0 14px;
+    background:rgba(255,255,255,0.02);
+    border-bottom:1px solid var(--line);
+    user-select:none;
+  }
+  .tl{ display:flex; gap:8px; }
+  .tl span{ width:12px; height:12px; border-radius:50%; }
+  .tl .r{ background:#ff5f57; } .tl .y{ background:#febc2e; } .tl .g{ background:#28c840; }
+  .title{ flex:1; text-align:center; font-size:12px; font-weight:600; letter-spacing:.02em; color:var(--text-2); }
+  .tb-right{ width:52px; text-align:right; font-size:11px; color:var(--text-3); }
+
+  .body{
+    display:flex; gap:14px;
+    padding:18px 20px 20px;
+    align-items:flex-start;
+  }
+  .col{ width:190px; display:flex; flex-direction:column; gap:12px; }
+  .col.center{ width:auto; align-items:center; }
+
+  .panel{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:12px;
+  }
+  .ph{
+    display:flex; align-items:center; gap:7px;
+    font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.09em;
+    color:var(--text-3); margin-bottom:10px;
+  }
+  .ph .dot{ width:7px; height:7px; border-radius:2px; }
+
+  /* ---- stats ---- */
+  .stat{ display:flex; flex-direction:column; gap:3px; }
+  .stat + .stat{ margin-top:12px; }
+  .stat .label{ font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.09em; color:var(--text-3); }
+  .stat .value{
+    font-family:var(--mono); font-variant-numeric:tabular-nums;
+    font-weight:600; color:var(--text);
+    font-size:22px; line-height:1;
+  }
+  .stat.hero .value{ font-size:26px; color:var(--text); }
+  .stat .value.small{ font-size:18px; }
+
+  /* ---- next preview ---- */
+  .next-wrap{ display:flex; justify-content:center; }
+  canvas#next{
+    background:var(--panel-deep);
+    border:1px solid var(--line-soft);
+    border-radius:10px;
+  }
+
+  /* ---- high scores ---- */
+  .hs{ list-style:none; margin:0; padding:0; }
+  .hs li{
+    display:flex; align-items:center; justify-content:space-between;
+    font-size:12px; padding:2px 7px; border-radius:6px;
+  }
+  .hs li .rank{ font-family:var(--mono); color:var(--text-3); width:18px; font-size:11px; }
+  .hs li .val{ font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--text); }
+  .hs li.top{ background:rgba(255,255,255,0.05); }
+  .hs li.top .val{ color:#fff; font-weight:600; }
+  .hs li.new{ background:rgba(52,211,153,0.16); box-shadow:inset 0 0 0 1px rgba(52,211,153,0.42); }
+  .hs li.new .val{ color:#34d399; font-weight:700; }
+  .hs li.new .rank{ color:#34d399; }
+
+  /* ---- controls legend ---- */
+  .ctrl{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .ctrl + .ctrl{ margin-top:9px; }
+  .ctrl .lbl{ font-size:11px; color:var(--text-2); }
+  .ctrl .keys{ display:flex; gap:4px; }
+  .key{
+    display:inline-flex; align-items:center; justify-content:center;
+    min-width:22px; height:21px; padding:0 6px;
+    border-radius:5px;
+    background:rgba(255,255,255,0.09);
+    border:1px solid rgba(255,255,255,0.14);
+    border-bottom-width:2px;
+    font-family:var(--mono); font-size:11px; color:var(--text-2);
+  }
+  .key.wide{ min-width:46px; }
+
+  /* ---- playfield ---- */
+  .playfield-wrap{ position:relative; }
+  canvas#board{
+    display:block;
+    background:var(--panel-deep);
+    border:1px solid var(--line);
+    border-radius:10px;
+    box-shadow:inset 0 0 46px rgba(0,0,0,0.55);
+  }
+
+  /* ---- game-over overlay ---- */
+  .overlay{
+    position:absolute; inset:0;
+    display:none; align-items:center; justify-content:center;
+    background:rgba(15,17,23,0.74);
+    backdrop-filter:blur(3px);
+    border-radius:10px;
+  }
+  .go-card{
+    width:198px; text-align:center;
+    background:rgba(21,23,30,0.94);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:15px 13px 14px;
+    box-shadow:0 24px 60px rgba(0,0,0,0.6);
+  }
+  .go-title{ font-size:20px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; color:var(--text); }
+  .go-sub{ font-size:11px; color:var(--text-3); margin-top:3px; }
+  .go-score{ margin-top:14px; }
+  .go-score .label{ font-size:10px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--text-3); }
+  .go-score .value{ font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:28px; font-weight:700; color:var(--text); line-height:1.05; margin-top:2px; }
+  .go-badge{
+    display:inline-flex; align-items:center; gap:5px;
+    margin-top:9px; padding:3px 9px; border-radius:999px;
+    font-size:10px; font-weight:600; letter-spacing:.05em;
+    color:#6ee7b7; background:rgba(52,211,153,0.14);
+    border:1px solid rgba(52,211,153,0.32);
+  }
+  .go-list-head{ margin-top:14px; font-size:10px; font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--text-3); }
+  .go-card .hs{ margin-top:6px; }
+  .go-card .hs li{ font-size:11px; padding:2px 6px; }
+  .go-restart{
+    margin-top:14px; display:flex; align-items:center; justify-content:center; gap:7px;
+    font-size:12px; color:var(--text-2);
+    animation:pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes pulse{ 0%,100%{ opacity:1; } 50%{ opacity:0.5; } }
+
+  .caption{ font-size:11px; color:rgba(255,255,255,0.30); text-align:center; }
+  .caption b{ color:rgba(255,255,255,0.46); font-weight:600; }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="switch-wrap">
+      <span class="swl">Preview state</span>
+      <div class="switch" role="tablist">
+        <button data-state="playing" class="active" onclick="setState('playing')">Playing</button>
+        <button data-state="over" onclick="setState('over')">Game Over</button>
+      </div>
+    </div>
+
+    <div class="window">
+      <div class="titlebar">
+        <div class="tl"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+        <div class="title">Falling Blocks</div>
+        <div class="tb-right">v1.0</div>
+      </div>
+
+      <div class="body">
+        <!-- LEFT: next + controls -->
+        <div class="col">
+          <div class="panel">
+            <div class="ph"><span class="dot" style="background:var(--pL)"></span>Next</div>
+            <div class="next-wrap"><canvas id="next"></canvas></div>
+          </div>
+
+          <div class="panel">
+            <div class="ph">Controls</div>
+            <div class="ctrl"><span class="lbl">Move</span><span class="keys"><span class="key">&#8592;</span><span class="key">&#8594;</span></span></div>
+            <div class="ctrl"><span class="lbl">Rotate</span><span class="keys"><span class="key">&#8593;</span></span></div>
+            <div class="ctrl"><span class="lbl">Soft drop</span><span class="keys"><span class="key">&#8595;</span></span></div>
+            <div class="ctrl"><span class="lbl">Hard drop</span><span class="keys"><span class="key wide">Space</span></span></div>
+            <div class="ctrl"><span class="lbl">Restart</span><span class="keys"><span class="key">Enter</span></span></div>
+          </div>
+        </div>
+
+        <!-- CENTER: playfield + overlay -->
+        <div class="col center">
+          <div class="playfield-wrap">
+            <canvas id="board"></canvas>
+            <div class="overlay" id="overlay">
+              <div class="go-card">
+                <div class="go-title">Game Over</div>
+                <div class="go-sub">The stack reached the top</div>
+                <div class="go-score">
+                  <div class="label">Final score</div>
+                  <div class="value">21,480</div>
+                </div>
+                <div class="go-badge">&#9733; New high score</div>
+                <div class="go-list-head">Top 10</div>
+                <ul class="hs" id="hsGo"></ul>
+                <div class="go-restart"><span class="key">Enter</span> Restart</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: HUD + high scores -->
+        <div class="col">
+          <div class="panel">
+            <div class="ph"><span class="dot" style="background:var(--accent)"></span>Status</div>
+            <div class="stat hero">
+              <div class="label">Score</div>
+              <div class="value" id="score">12,450</div>
+            </div>
+            <div class="stat">
+              <div class="label">Lines</div>
+              <div class="value small" id="lines">18</div>
+            </div>
+            <div class="stat">
+              <div class="label">Level</div>
+              <div class="value small" id="level">2</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="ph"><span class="dot" style="background:var(--pI)"></span>High Scores</div>
+            <ul class="hs" id="hsSide"></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="caption"><b>Falling Blocks</b> &middot; UI mockup &mdash; binding visual contract &middot; canvas-rendered, single self-contained file</div>
+  </div>
+
+<script>
+  const COLS=10, ROWS=20, CELL=22;
+  const COLORS={ I:'#22d3ee', O:'#fde047', T:'#c084fc', S:'#4ade80', Z:'#f87171', J:'#60a5fa', L:'#fb923c' };
+
+  // Playing board: believable mid-game stack (6 locked colours) + active T (7th).
+  const LOCKED=[
+    "..........", // 0
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "....IIII..",
+    "..SSIIII..",
+    ".JJSS..O..",
+    ".JJSS..OJ.",
+    "LLJSSZZJLL",
+    "LLJSSZZJLL"
+  ];
+  // Active T (violet), mid-fall, main row 8 + nub row 7.
+  const ACTIVE=[[7,4],[8,3],[8,4],[8,5]];
+  // Drop-ghost of the active T resting on the stack (main row 13 + nub row 12).
+  const GHOST=[[12,4],[13,3],[13,4],[13,5]];
+
+  // Game-over board: stack piled to the ceiling, top row blocked.
+  const LOCKED_GO=[
+    "..........",
+    "..II......",
+    "..II..SS..",
+    "LLOOZZJJSS",
+    "LLOOZZJJSS",
+    "OOJJSSZZLL",
+    "OOJJSSZZLL",
+    "ZZLLOOJJSS",
+    "ZZLLOOJJSS",
+    "JJSSZZOOLT",
+    "JJSSZZOOLT",
+    "SSOOLTJJZZ",
+    "SSOOLTJJZZ",
+    "OOLTJJZZSS",
+    "OOLTJJZZSS",
+    "TTJJSSOOLL",
+    "TTJJSSOOLL",
+    "JJSSOOLLTT",
+    "JJSSOOLLTT",
+    "SSOOLLTTJJ"
+  ];
+
+  // Next piece: L (orange), spawn orientation, centred in a 4x4 preview.
+  const NEXT=[[1,1],[2,1],[3,1],[3,2]], NEXT_COLOR='L';
+
+  // High scores (score-only, descending).
+  const HS_SIDE=[48720,41350,36900,33120,29140,24600,19850,17200,15300,9800];
+  const HS_GO=[48720,41350,36900,33120,29140,24600,21480,19850,17200,15300];
+  const HS_GO_NEW=21480;
+
+  const HUD={ playing:{score:'12,450',lines:'18',level:'2'}, over:{score:'21,480',lines:'27',level:'3'} };
+
+  // ---- canvas helpers ----
+  function setupCanvas(cv,w,h){
+    const dpr=Math.max(1, window.devicePixelRatio||1);
+    cv.width=Math.round(w*dpr); cv.height=Math.round(h*dpr);
+    cv.style.width=w+'px'; cv.style.height=h+'px';
+    const ctx=cv.getContext('2d');
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    return ctx;
+  }
+  function rr(ctx,x,y,w,h,r){
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+  function rgba(hex,a){
+    const n=parseInt(hex.slice(1),16);
+    return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+  }
+  function drawBlock(ctx,x,y,s,color,glow){
+    const r=4;
+    ctx.save();
+    if(glow){ ctx.shadowColor=rgba(color,0.9); ctx.shadowBlur=10; }
+    rr(ctx,x,y,s,s,r); ctx.fillStyle=color; ctx.fill();
+    ctx.restore();
+    ctx.save();
+    rr(ctx,x,y,s,s,r); ctx.clip();
+    const g=ctx.createLinearGradient(0,y,0,y+s);
+    g.addColorStop(0,'rgba(255,255,255,0.40)');
+    g.addColorStop(0.45,'rgba(255,255,255,0.06)');
+    g.addColorStop(1,'rgba(0,0,0,0.30)');
+    ctx.fillStyle=g; ctx.fillRect(x,y,s,s);
+    ctx.restore();
+    ctx.save();
+    rr(ctx,x+0.5,y+0.5,s-1,s-1,r);
+    ctx.lineWidth=1; ctx.strokeStyle='rgba(0,0,0,0.45)'; ctx.stroke();
+    ctx.restore();
+  }
+  function drawGhost(ctx,x,y,s,color){
+    ctx.save();
+    rr(ctx,x,y,s,s,4);
+    ctx.fillStyle=rgba(color,0.10); ctx.fill();
+    ctx.setLineDash([4,3]); ctx.lineWidth=1.4;
+    ctx.strokeStyle=rgba(color,0.55); ctx.stroke();
+    ctx.restore();
+  }
+
+  const bctx=setupCanvas(document.getElementById('board'), COLS*CELL, ROWS*CELL);
+  const nctx=setupCanvas(document.getElementById('next'), 88, 88);
+
+  function renderBoard(state){
+    const ctx=bctx;
+    ctx.clearRect(0,0,COLS*CELL,ROWS*CELL);
+    ctx.fillStyle='#0c0e13'; ctx.fillRect(0,0,COLS*CELL,ROWS*CELL);
+    ctx.strokeStyle='rgba(255,255,255,0.045)'; ctx.lineWidth=1;
+    for(let c=1;c<COLS;c++){ ctx.beginPath(); ctx.moveTo(c*CELL+0.5,0); ctx.lineTo(c*CELL+0.5,ROWS*CELL); ctx.stroke(); }
+    for(let r=1;r<ROWS;r++){ ctx.beginPath(); ctx.moveTo(0,r*CELL+0.5); ctx.lineTo(COLS*CELL,r*CELL+0.5); ctx.stroke(); }
+    const locked = state==='over'? LOCKED_GO : LOCKED;
+    for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+      const k=locked[r][c];
+      if(k!=='.') drawBlock(ctx, c*CELL+1, r*CELL+1, CELL-2, COLORS[k]);
+    }
+    if(state==='playing'){
+      for(const [r,c] of GHOST) drawGhost(ctx, c*CELL+1, r*CELL+1, CELL-2, COLORS.T);
+      for(const [r,c] of ACTIVE) drawBlock(ctx, c*CELL+1, r*CELL+1, CELL-2, COLORS.T, true);
+    } else {
+      const g=ctx.createLinearGradient(0,0,0,3*CELL);
+      g.addColorStop(0,'rgba(248,113,113,0.26)');
+      g.addColorStop(1,'rgba(248,113,113,0)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,COLS*CELL,3*CELL);
+      ctx.fillStyle='rgba(248,113,113,0.55)'; ctx.fillRect(0,0,COLS*CELL,2);
+    }
+  }
+
+  function renderNext(){
+    const ctx=nctx; const P=22, inset=1;
+    ctx.clearRect(0,0,88,88);
+    for(const [r,c] of NEXT) drawBlock(ctx, c*P+inset, r*P+inset, P-2, COLORS[NEXT_COLOR]);
+  }
+
+  function renderList(el, arr, highlight){
+    el.innerHTML='';
+    arr.forEach((v,i)=>{
+      const li=document.createElement('li');
+      if(v===highlight) li.className='new';
+      else if(i===0) li.className='top';
+      const rk=document.createElement('span'); rk.className='rank'; rk.textContent=i+1;
+      const vl=document.createElement('span'); vl.className='val'; vl.textContent=v.toLocaleString();
+      li.appendChild(rk); li.appendChild(vl);
+      el.appendChild(li);
+    });
+  }
+
+  let cur='playing';
+  function setState(s){
+    cur=s;
+    document.getElementById('score').textContent=HUD[s].score;
+    document.getElementById('lines').textContent=HUD[s].lines;
+    document.getElementById('level').textContent=HUD[s].level;
+    document.getElementById('overlay').style.display = (s==='over')?'flex':'none';
+    renderBoard(s);
+    document.querySelectorAll('.switch button').forEach(b=>b.classList.toggle('active', b.dataset.state===s));
+  }
+
+  renderNext();
+  renderList(document.getElementById('hsSide'), HS_SIDE, null);
+  renderList(document.getElementById('hsGo'), HS_GO, HS_GO_NEW);
+  setState('playing');
+</script>
+</body>
+</html>

@@ -47,19 +47,50 @@ wholesale, not merged element-wise), then re-validate.
 Start a run. **Fire-and-poll** — returns immediately (well under the 30s tool
 timeout) and does NOT wait for the workflow to finish.
 
-- Input: `{ workflowId, featureBranch?, conversationId? }`
-- Output: `{ runId, workflowId }`
+- Input: `{ workflowId, featureBranch?, conversationId?, dryRun?, fixtures? }`
+- Output: `{ runId, workflowId, dryRun?, fixtures? }`
 - Refused (throws) if the workflow fails validation, or if it already has a
   run in progress (one concurrent run per workflow).
+
+**Dry-run / fixture mode (opt-in).** With `dryRun: true`, every node named in
+`fixtures` (`{ "<nodeId>": <cannedOutput> }`) skips its real execution
+entirely — no sub-agent, no network — and its canned value is handed to its
+dependents as if the agent had produced it, so the DAG, the branch routing and
+leaf reachability can be validated in seconds instead of a full run. A whole
+research fan-out can be fixture-designated by its node id (or one sub-agent by
+`"<nodeId>#<index>"`), and a routing node's fixture may itself be the selection
+signal: `{ "select_branch": { "selected": ["<candidate-id>"] } }`. Nodes with
+no fixture still execute for real. Without `dryRun`, `fixtures` is ignored and
+behavior is unchanged.
 
 ## `workflow_status`
 
 Current run state for a workflow: live, if a run is in progress; otherwise
 the most recent historical run's final state. **Read-only, `parallelSafe`.**
 
-- Input: `{ workflowId }`
-- Output: `{ running: boolean, runId?, workflowId, state, steps?, events?, error? }`
-  (`state` is `"never_run"` if the workflow has never been run).
+- Input: `{ workflowId, since? }` (`since` = a monotonic event `seq` from a
+  previous poll; only newer events are returned, the step map is always full)
+- Output: `{ running, runId?, workflowId, state, finalState?, steps, selected?,
+  warnings?, events?, seq?, error? }` (`state` is `"never_run"` if the workflow
+  has never been run; `completed_with_warnings` means a selected branch
+  executed zero leaves).
+
+`steps` is a POPULATED per-step map from the moment the run starts — never an
+empty `{}`. Per step:
+
+```
+{ status:        "pending"|"running"|"completed"|"failed"|"cancelled"|"skipped"|"neutral",
+  attempt, maxAttempts,
+  currentAction?: "calling map_rows…",           // while in progress
+  subAgents?:     { "<id>": { label, status, action } },   // research fan-out
+  outputs?:       <structured output>,
+  agentTrace?:    { prompt?, thinking?, response?,
+                    toolCalls: [{ name, args, result, ok, inflight }] },
+  error?, reason?, timedOut?, selected? }
+```
+
+This is the same live state the app's node trajectory panel renders — one
+source of truth, no divergence between UI and tools.
 
 ## `workflow_cancel`
 
@@ -87,7 +118,16 @@ re-importing via `workflow_create`'s `workflow` parameter). **Read-only, `parall
 ## `workflow_validate`
 
 Validate DAG acyclicity, node shape, dependency and dynamic-routing candidate
-resolvability. **Read-only, `parallelSafe`.**
+resolvability, plus candidate **topology**. **Read-only, `parallelSafe`.**
+
+Topology errors (both are silent-no-op generators at run time, so both are
+errors rather than warnings):
+
+- an **unreachable candidate leaf** — no dependency path from the routing node
+  to the candidate, so the selection could never unlock it;
+- an **ambiguously shared + gated leaf** — an ungated node depends on a
+  candidate leaf, so it is silently blocked whenever that leaf is not
+  selected.
 
 - Input: `{ workflowId? , workflow? }` — pass `workflowId` to validate a saved
   workflow, or `workflow` to validate one before saving.
@@ -102,11 +142,22 @@ List a workflow's historical runs, newest first. **Read-only, `parallelSafe`.**
 
 ## `workflow_run_get`
 
-Read one run's full detail — per-step final outcomes and the complete event
-log. **Read-only, `parallelSafe`.**
+Read one run's full detail — the per-step map (identical shape to
+`workflow_status`, including each node's `agentTrace` and any research
+fan-out's per-sub-agent status) and the complete event log, replayed from the
+persisted record. A finished run replays exactly as it looked live.
+**Read-only, `parallelSafe`.**
 
-- Input: `{ workflowId, runId }`
-- Output: `{ runId, workflowId, startedAt, endedAt, state, steps, events, error? }`
+- Input: `{ workflowId, runId, since? }`
+- Output: `{ runId, workflowId, startedAt, endedAt, state, finalState?, steps,
+  selected?, warnings?, events, seq?, error? }`
+
+The event log records agent execution as well as step lifecycle: `agent.prompt`,
+`agent.reasoning`, `agent.tool_call` (an inflight call is updated in place by
+its completion), `agent.response`, `agent.sub_agent`, alongside `step.start` /
+`step.retry` / `step.running` / `step.complete` / `step.fail` / `step.skip` and
+the run-level `workflow.start` / `workflow.complete` / `workflow.fail` /
+`workflow.cancel` / `workflow.branch.skipped`.
 
 ## A full build → run → poll → cancel → inspect loop
 
@@ -118,9 +169,19 @@ workflow_run({ workflowId: "demo-ab12" })
   -> { runId: "run-abc123-xyz", workflowId: "demo-ab12" }
 
 workflow_status({ workflowId: "demo-ab12" })        # poll every few seconds
-  -> { running: true, runId: "run-abc123-xyz", state: "running", steps: {...} }
+  -> { running: true, runId: "run-abc123-xyz", state: "running",
+       steps: { ingest: { status: "completed", attempt: 1 },
+                transform: { status: "running", attempt: 2, maxAttempts: 3,
+                             currentAction: "calling map_rows…",
+                             agentTrace: { prompt: "…", toolCalls: [ … ] } } } }
   ... eventually ...
   -> { running: false, state: "completed", steps: {...} }
+
+# validate routing in seconds instead of running the real thing
+workflow_run({ workflowId: "demo-ab12", dryRun: true,
+               fixtures: { research: [{ output: "canned" }],
+                           classify: { select_branch: { selected: ["alarm"] } } } })
+  -> { runId: "run-dry-1", workflowId: "demo-ab12", dryRun: true, fixtures: ["research", "classify"] }
 
 workflow_cancel({ workflowId: "demo-ab12" })         # only if you need to stop early
   -> { workflowId: "demo-ab12", cancelled: true }

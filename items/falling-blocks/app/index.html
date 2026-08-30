@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Falling Blocks</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: #0f1117;
+    color: #e5e7eb;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  #window {
+    width: 672px;
+    display: flex; gap: 12px;
+    background: #12141b;
+    border: 1px solid #23262f;
+    border-radius: 14px;
+    padding: 14px;
+    user-select: none;
+  }
+  .col { display: flex; flex-direction: column; gap: 12px; }
+  .col.side { flex: 1 1 0; min-width: 0; }
+  .col.center { flex: 0 0 220px; display: flex; align-items: center; justify-content: center; }
+  .panel {
+    background: #1b1e26;
+    border: 1px solid #262b37;
+    border-radius: 10px;
+    padding: 12px;
+  }
+  .panel h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: #8b93a7; margin-bottom: 10px;
+  }
+  #next { display: block; margin: 0 auto; }
+  .ctl { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #9ca3af; padding: 3px 0; }
+  kbd {
+    background: #23262f; border: 1px solid #2f3442; border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 7px; font-family: inherit; font-size: 11px; color: #cbd2e0;
+    min-width: 26px; text-align: center; display: inline-block;
+  }
+  #boardWrap {
+    position: relative; width: 222px; height: 442px;
+    background: #0c0e13; border: 1px solid #262b37; border-radius: 10px; overflow: hidden;
+  }
+  #board { display: block; }
+  .stat { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0; font-size: 13px; color: #9ca3af; }
+  .stat b { color: #f3f4f6; font-size: 15px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  #hsList { list-style: none; }
+  #hsList li { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; color: #9ca3af; font-variant-numeric: tabular-nums; }
+  #hsList li .rank { color: #5f6779; margin-right: 8px; }
+  #hsList li.empty { justify-content: center; color: #5f6779; font-style: italic; }
+  #overlay {
+    position: absolute; inset: 0; z-index: 2;
+    background: rgba(10,12,16,0.9);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; text-align: center; padding: 16px;
+    opacity: 0; pointer-events: none; transition: opacity 0.15s ease;
+  }
+  #overlay.show { opacity: 1; pointer-events: auto; }
+  .ov-title { font-size: 24px; font-weight: 700; letter-spacing: 0.02em; color: #f3f4f6; }
+  .ov-score { font-size: 14px; color: #9ca3af; }
+  .ov-score b { color: #fde047; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .ov-badge {
+    background: rgba(253,224,71,0.12); border: 1px solid rgba(253,224,71,0.45);
+    color: #fde047; font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; padding: 4px 12px; border-radius: 999px;
+  }
+  .ov-list { margin-top: 6px; width: 150px; }
+  .ov-list h3 { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #5f6779; margin-bottom: 6px; }
+  .ov-list ol { list-style: none; }
+  .ov-list li { display: flex; justify-content: space-between; font-size: 12px; color: #9ca3af; padding: 2px 0; font-variant-numeric: tabular-nums; }
+  .ov-list li .rank { color: #5f6779; margin-right: 8px; }
+  .ov-list li.empty { justify-content: center; color: #5f6779; font-style: italic; }
+  .ov-list li.new { color: #34d399; font-weight: 600; }
+  .ov-hint { margin-top: 8px; font-size: 12px; color: #8b93a7; animation: pulse 1.8s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+</style>
+</head>
+<body>
+<div id="window">
+  <div class="col side">
+    <section class="panel">
+      <h2>Next</h2>
+      <canvas id="next"></canvas>
+    </section>
+    <section class="panel">
+      <h2>Controls</h2>
+      <div class="ctl"><kbd>&#8592;</kbd><kbd>&#8594;</kbd> Move</div>
+      <div class="ctl"><kbd>&#8593;</kbd> Rotate</div>
+      <div class="ctl"><kbd>&#8595;</kbd> Soft drop</div>
+      <div class="ctl"><kbd>Space</kbd> Hard drop</div>
+      <div class="ctl"><kbd>Enter</kbd> Restart</div>
+    </section>
+  </div>
+  <div class="col center">
+    <div id="boardWrap">
+      <canvas id="board"></canvas>
+      <div id="overlay"></div>
+    </div>
+  </div>
+  <div class="col side">
+    <section class="panel">
+      <h2>Status</h2>
+      <div class="stat"><span>Score</span><b id="stScore">0</b></div>
+      <div class="stat"><span>Lines</span><b id="stLines">0</b></div>
+      <div class="stat"><span>Level</span><b id="stLevel">1</b></div>
+    </section>
+    <section class="panel">
+      <h2>High Scores</h2>
+      <ol id="hsList"></ol>
+    </section>
+  </div>
+</div>
+<script>
+(function () {
+  'use strict';
+
+  var COLS = 10, ROWS = 20, CELL = 22, PCELL = 16;
+  var COLORS = { I: '#22d3ee', O: '#fde047', T: '#c084fc', S: '#4ade80', Z: '#f87171', J: '#60a5fa', L: '#fb923c' };
+  var SHAPES = {
+    I: { box: 4, cells: [[0, 1], [1, 1], [2, 1], [3, 1]] },
+    O: { box: 2, cells: [[0, 0], [1, 0], [0, 1], [1, 1]] },
+    T: { box: 3, cells: [[1, 0], [0, 1], [1, 1], [2, 1]] },
+    S: { box: 3, cells: [[1, 0], [2, 0], [0, 1], [1, 1]] },
+    Z: { box: 3, cells: [[0, 0], [1, 0], [1, 1], [2, 1]] },
+    J: { box: 3, cells: [[0, 0], [0, 1], [1, 1], [2, 1]] },
+    L: { box: 3, cells: [[2, 0], [0, 1], [1, 1], [2, 1]] }
+  };
+  var KICKS = [[0, 0], [0, -1], [0, 1], [0, -2], [0, 2], [-1, 0], [1, 0]];
+  var LINE_SCORES = [0, 100, 300, 500, 800];
+  var DAS_DELAY = 170, DAS_REPEAT = 40, SOFT_MS = 50;
+  var HS_KEY = 'falling-blocks:highscores';
+
+  /* ---------- high-score storage (probe + in-memory fallback) ---------- */
+  var storageOk = true;
+  try {
+    localStorage.setItem('__falling_blocks_probe__', '1');
+    localStorage.removeItem('__falling_blocks_probe__');
+  } catch (e) { storageOk = false; }
+  var memScores = [];
+
+  function loadScores() {
+    if (storageOk) {
+      try {
+        var raw = localStorage.getItem(HS_KEY);
+        if (raw) {
+          var arr = JSON.parse(raw);
+          if (Array.isArray(arr)) {
+            var out = [];
+            for (var i = 0; i < arr.length; i++) {
+              if (typeof arr[i] === 'number' && isFinite(arr[i])) out.push(arr[i]);
+            }
+            return out;
+          }
+        }
+      } catch (e) { storageOk = false; }
+    }
+    return memScores.slice();
+  }
+
+  function persistScores(list) {
+    memScores = list.slice();
+    if (storageOk) {
+      try { localStorage.setItem(HS_KEY, JSON.stringify(list)); } catch (e) { storageOk = false; }
+    }
+    renderHsList();
+  }
+
+  function saveScore(s) {
+    if (s === 0) return -1;
+    var list = loadScores();
+    list.push(s);
+    list.sort(function (a, b) { return b - a; });
+    var idx = list.lastIndexOf(s);
+    if (list.length > 10) list = list.slice(0, 10);
+    if (idx >= 10) idx = -1;
+    persistScores(list);
+    return idx;
+  }
+
+  /* ---------- DOM ---------- */
+  var boardCanvas = document.getElementById('board');
+  var nextCanvas = document.getElementById('next');
+  var overlay = document.getElementById('overlay');
+  var stScore = document.getElementById('stScore');
+  var stLines = document.getElementById('stLines');
+  var stLevel = document.getElementById('stLevel');
+  var hsList = document.getElementById('hsList');
+  var bctx = boardCanvas.getContext('2d');
+  var nctx = nextCanvas.getContext('2d');
+
+  function fitCanvas(canvas, ctx, w, h) {
+    var d = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = Math.round(w * d);
+    canvas.height = Math.round(h * d);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+  }
+  function setupCanvases() {
+    fitCanvas(boardCanvas, bctx, COLS * CELL, ROWS * CELL);
+    fitCanvas(nextCanvas, nctx, 4 * PCELL, 4 * PCELL);
+  }
+  setupCanvases();
+  window.addEventListener('resize', function () { setupCanvases(); renderNext(); });
+
+  /* ---------- game state ---------- */
+  var board, cur, nextType_, bag;
+  var score = 0, totalLines = 0, level = 1, fallMs = 800;
+  var acc = 0;
+  var phase = 'play';
+  var paused = false;
+  var keys = { left: false, right: false, down: false };
+  var heldDir = 0, dasT = 0, dasA = 0;
+  var shown = { score: -1, lines: -1, level: -1 };
+  var lastRank = -1;
+
+  function newBag() {
+    var b = ['I', 'O', 'T', 'S', 'Z', 'J', 'L'];
+    for (var i = b.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = b[i]; b[i] = b[j]; b[j] = t;
+    }
+    return b;
+  }
+  function drawFromBag() {
+    if (!bag || bag.length === 0) bag = newBag();
+    return bag.pop();
+  }
+  function canPlace(cells, x, y) {
+    for (var i = 0; i < cells.length; i++) {
+      var bx = x + cells[i][0], by = y + cells[i][1];
+      if (bx < 0 || bx >= COLS || by >= ROWS) return false;
+      if (by >= 0 && board[by][bx]) return false;
+    }
+    return true;
+  }
+  function renderNext() {
+    nctx.clearRect(0, 0, 4 * PCELL, 4 * PCELL);
+    if (!nextType_) return;
+    var def = SHAPES[nextType_], c = COLORS[nextType_];
+    var off = (4 - def.box) / 2 * PCELL;
+    for (var i = 0; i < def.cells.length; i++) {
+      drawBlock(nctx, off + def.cells[i][0] * PCELL, off + def.cells[i][1] * PCELL, PCELL, c, false);
+    }
+  }
+  function spawn() {
+    var type = nextType_;
+    nextType_ = drawFromBag();
+    var def = SHAPES[type];
+    cur = {
+      type: type,
+      box: def.box,
+      cells: def.cells.map(function (c) { return c.slice(); }),
+      x: Math.floor((COLS - def.box) / 2),
+      y: 0
+    };
+    renderNext();
+    if (!canPlace(cur.cells, cur.x, cur.y)) gameOver();
+  }
+  function lockPiece() {
+    for (var i = 0; i < cur.cells.length; i++) {
+      var by = cur.y + cur.cells[i][1];
+      if (by >= 0) board[by][cur.x + cur.cells[i][0]] = COLORS[cur.type];
+    }
+    var cleared = 0;
+    for (var y = ROWS - 1; y >= 0; y--) {
+      var full = true;
+      for (var x = 0; x < COLS; x++) { if (!board[y][x]) { full = false; break; } }
+      if (full) {
+        board.splice(y, 1);
+        board.unshift(new Array(COLS).fill(null));
+        cleared++;
+        y++;
+      }
+    }
+    if (cleared > 0) {
+      score += LINE_SCORES[cleared];
+      totalLines += cleared;
+      level = Math.floor(totalLines / 10) + 1;
+      fallMs = Math.max(80, 800 - (level - 1) * 60);
+    }
+    acc = 0;
+    cur = null;
+    spawn();
+  }
+  function gameOver() {
+    phase = 'over';
+    cur = null;
+    lastRank = saveScore(score);
+    showOverOverlay(lastRank);
+  }
+  function restart() {
+    board = [];
+    for (var y = 0; y < ROWS; y++) board.push(new Array(COLS).fill(null));
+    score = 0; totalLines = 0; level = 1; fallMs = 800; acc = 0;
+    paused = false; phase = 'play';
+    keys.left = keys.right = keys.down = false;
+    heldDir = 0; dasT = 0; dasA = 0;
+    bag = null;
+    nextType_ = drawFromBag();
+    cur = null;
+    lastRank = -1;
+    spawn();
+    overlay.className = '';
+    shown = { score: -1, lines: -1, level: -1 };
+  }
+  function moveX(d) {
+    if (phase === 'play' && !paused && cur && canPlace(cur.cells, cur.x + d, cur.y)) cur.x += d;
+  }
+  function rotate() {
+    if (phase !== 'play' || paused || !cur || cur.type === 'O') return;
+    var S = cur.box;
+    var nc = cur.cells.map(function (c) { return [S - 1 - c[1], c[0]]; });
+    for (var i = 0; i < KICKS.length; i++) {
+      if (canPlace(nc, cur.x + KICKS[i][0], cur.y + KICKS[i][1])) {
+        cur.cells = nc;
+        cur.x += KICKS[i][0];
+        cur.y += KICKS[i][1];
+        return;
+      }
+    }
+  }
+  function hardDrop() {
+    if (phase !== 'play' || paused || !cur) return;
+    var d = 0;
+    while (canPlace(cur.cells, cur.x, cur.y + d + 1)) d++;
+    score += 2 * d;
+    cur.y += d;
+    lockPiece();
+  }
+  function ghostY() {
+    if (!cur) return -1;
+    var d = 0;
+    while (canPlace(cur.cells, cur.x, cur.y + d + 1)) d++;
+    return cur.y + d;
+  }
+  function update(dt) {
+    if (phase !== 'play' || paused) return;
+    if (heldDir !== 0) {
+      dasT += dt;
+      if (dasT >= DAS_DELAY) {
+        dasA += dt;
+        while (dasA >= DAS_REPEAT) {
+          dasA -= DAS_REPEAT;
+          moveX(heldDir);
+          if (!cur) return;
+        }
+      }
+    }
+    if (cur) {
+      var stepMs = keys.down ? Math.min(fallMs, SOFT_MS) : fallMs;
+      acc += dt;
+      while (cur && acc >= stepMs) {
+        acc -= stepMs;
+        if (canPlace(cur.cells, cur.x, cur.y + 1)) {
+          cur.y++;
+          if (keys.down) score++;
+        } else {
+          lockPiece();
+          break;
+        }
+      }
+    }
+  }
+
+  /* ---------- drawing helpers ---------- */
+  function shade(hex, t) {
+    var n = parseInt(hex.slice(1), 16);
+    var r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    var f = t > 0 ? 255 : 0, p = Math.abs(t);
+    r = Math.round(r + (f - r) * p);
+    g = Math.round(g + (f - g) * p);
+    b = Math.round(b + (f - b) * p);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+  function hexA(hex, a) {
+    var n = parseInt(hex.slice(1), 16);
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+  }
+  function rr(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y + h - r, r);
+    c.arcTo(x, y + h - r, x, y, r);
+    c.closePath();
+  }
+  function drawBlock(c, px, py, size, color, glow) {
+    c.save();
+    if (glow) { c.shadowColor = color; c.shadowBlur = 10; }
+    var g = c.createLinearGradient(px, py, px + size, py + size);
+    g.addColorStop(0, shade(color, 0.3));
+    g.addColorStop(0.55, color);
+    g.addColorStop(1, shade(color, -0.3));
+    c.fillStyle = g;
+    rr(c, px + 1, py + 1, size - 2, size - 2, 4);
+    c.fill();
+    c.restore();
+    c.strokeStyle = 'rgba(255,255,255,0.10)';
+    c.lineWidth = 1;
+    rr(c, px + 1.5, py + 1.5, size - 3, size - 3, 3.5);
+    c.stroke();
+  }
+  function render() {
+    bctx.clearRect(0, 0, COLS * CELL, ROWS * CELL);
+    bctx.fillStyle = '#0c0e13';
+    bctx.fillRect(0, 0, COLS * CELL, ROWS * CELL);
+    bctx.strokeStyle = 'rgba(255,255,255,0.035)';
+    bctx.lineWidth = 1;
+    bctx.beginPath();
+    for (var x = 1; x < COLS; x++) { bctx.moveTo(x * CELL + 0.5, 0); bctx.lineTo(x * CELL + 0.5, ROWS * CELL); }
+    for (var y = 1; y < ROWS; y++) { bctx.moveTo(0, y * CELL + 0.5); bctx.lineTo(COLS * CELL, y * CELL + 0.5); }
+    bctx.stroke();
+    for (var yy = 0; yy < ROWS; yy++) {
+      for (var xx = 0; xx < COLS; xx++) {
+        var v = board[yy][xx];
+        if (v) drawBlock(bctx, xx * CELL, yy * CELL, CELL, v, false);
+      }
+    }
+    if (cur && phase === 'play' && !paused) {
+      var gy = ghostY();
+      if (gy !== cur.y) {
+        bctx.save();
+        bctx.setLineDash([4, 3]);
+        bctx.lineWidth = 1.5;
+        bctx.strokeStyle = hexA(COLORS[cur.type], 0.55);
+        for (var i = 0; i < cur.cells.length; i++) {
+          var by = gy + cur.cells[i][1];
+          if (by < 0) continue;
+          rr(bctx, (cur.x + cur.cells[i][0]) * CELL + 2, by * CELL + 2, CELL - 4, CELL - 4, 4);
+          bctx.stroke();
+        }
+        bctx.restore();
+      }
+      for (var j = 0; j < cur.cells.length; j++) {
+        var ay = cur.y + cur.cells[j][1];
+        if (ay < 0) continue;
+        drawBlock(bctx, (cur.x + cur.cells[j][0]) * CELL, ay * CELL, CELL, COLORS[cur.type], true);
+      }
+    }
+    if (score !== shown.score) { stScore.textContent = score.toLocaleString(); shown.score = score; }
+    if (totalLines !== shown.lines) { stLines.textContent = String(totalLines); shown.lines = totalLines; }
+    if (level !== shown.level) { stLevel.textContent = String(level); shown.level = level; }
+  }
+
+  /* ---------- high-score lists ---------- */
+  function hsRow(i, s, isNew) {
+    var li = document.createElement('li');
+    if (isNew) li.className = 'new';
+    var rank = document.createElement('span');
+    rank.className = 'rank';
+    rank.textContent = String(i + 1);
+    var val = document.createElement('span');
+    val.textContent = s.toLocaleString();
+    li.appendChild(rank);
+    li.appendChild(val);
+    return li;
+  }
+  function hsEmpty() {
+    var li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = 'No scores yet';
+    return li;
+  }
+  function renderHsList() {
+    var list = loadScores();
+    while (hsList.firstChild) hsList.removeChild(hsList.firstChild);
+    if (list.length === 0) { hsList.appendChild(hsEmpty()); return; }
+    for (var i = 0; i < list.length; i++) hsList.appendChild(hsRow(i, list[i], false));
+  }
+
+  /* ---------- overlay ---------- */
+  function showOverOverlay(rank) {
+    while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
+    var t = document.createElement('div');
+    t.className = 'ov-title';
+    t.textContent = 'Game Over';
+    overlay.appendChild(t);
+    var s = document.createElement('div');
+    s.className = 'ov-score';
+    s.appendChild(document.createTextNode('Score: '));
+    var b = document.createElement('b');
+    b.textContent = score.toLocaleString();
+    s.appendChild(b);
+    overlay.appendChild(s);
+    if (rank >= 0 && rank < 10) {
+      var badge = document.createElement('div');
+      badge.className = 'ov-badge';
+      badge.textContent = '\u2605 New high score';
+      overlay.appendChild(badge);
+    }
+    var wrap = document.createElement('div');
+    wrap.className = 'ov-list';
+    var h = document.createElement('h3');
+    h.textContent = 'High Scores';
+    wrap.appendChild(h);
+    var ol = document.createElement('ol');
+    var list = loadScores();
+    if (list.length === 0) ol.appendChild(hsEmpty());
+    else for (var i = 0; i < list.length; i++) ol.appendChild(hsRow(i, list[i], (i === rank)));
+    wrap.appendChild(ol);
+    overlay.appendChild(wrap);
+    var hint = document.createElement('div');
+    hint.className = 'ov-hint';
+    hint.textContent = 'Press Enter to restart';
+    overlay.appendChild(hint);
+    overlay.className = 'show';
+  }
+  function showPauseOverlay() {
+    while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
+    var t = document.createElement('div');
+    t.className = 'ov-title';
+    t.textContent = 'Paused';
+    overlay.appendChild(t);
+    var hint = document.createElement('div');
+    hint.className = 'ov-hint';
+    hint.textContent = 'Focus this window to resume';
+    overlay.appendChild(hint);
+    overlay.className = 'show';
+  }
+
+  /* ---------- input ---------- */
+  window.addEventListener('keydown', function (e) {
+    var k = e.key;
+    if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown' || e.code === 'Space' || k === 'Enter') {
+      e.preventDefault();
+    }
+    if (e.repeat) return;
+    if (k === 'ArrowLeft') { keys.left = true; heldDir = -1; dasT = 0; dasA = 0; moveX(-1); }
+    else if (k === 'ArrowRight') { keys.right = true; heldDir = 1; dasT = 0; dasA = 0; moveX(1); }
+    else if (k === 'ArrowUp') rotate();
+    else if (k === 'ArrowDown') keys.down = true;
+    else if (e.code === 'Space') hardDrop();
+    else if (k === 'Enter') restart();
+  });
+  window.addEventListener('keyup', function (e) {
+    if (e.key === 'ArrowLeft') {
+      keys.left = false;
+      if (heldDir === -1) { heldDir = keys.right ? 1 : 0; dasT = 0; dasA = 0; }
+    } else if (e.key === 'ArrowRight') {
+      keys.right = false;
+      if (heldDir === 1) { heldDir = keys.left ? -1 : 0; dasT = 0; dasA = 0; }
+    } else if (e.key === 'ArrowDown') {
+      keys.down = false;
+    }
+  });
+  window.addEventListener('blur', function () {
+    if (phase === 'play' && !paused) { paused = true; showPauseOverlay(); }
+  });
+  window.addEventListener('focus', function () {
+    if (paused) { paused = false; overlay.className = ''; }
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden && phase === 'play' && !paused) { paused = true; showPauseOverlay(); }
+    if (!document.hidden && paused) { paused = false; overlay.className = ''; }
+  });
+  overlay.addEventListener('click', function () { if (phase === 'over') restart(); });
+
+  /* ---------- main loop ---------- */
+  var last = performance.now();
+  function frame(now) {
+    var dt = now - last;
+    last = now;
+    if (dt < 0) dt = 0;
+    if (dt > 100) dt = 100;
+    update(dt);
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- init ---------- */
+  board = [];
+  for (var y0 = 0; y0 < ROWS; y0++) board.push(new Array(COLS).fill(null));
+  bag = null;
+  nextType_ = drawFromBag();
+  renderHsList();
+  spawn();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
