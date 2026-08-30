@@ -6,6 +6,17 @@ Technical reference for the `okf_*` tools declared natively via bos-spec 039 (Se
 
 `deploymentMode: "tools"` on `service.json` opts the service into runtime tool declaration over worker IPC (one `tool_declare` per tool at startup); `ServiceManager` registers each into the `AssistantTool` registry. See the original 039 spec for the full contract (discovery, validation, gating, lifecycle, loopback auth) — none of it changes here.
 
+## 1b. Tool group (041)
+
+Every `okf_*` tool appears under the **Knowledge Base** group, declared in
+`services/service.json`'s `toolGroups`. bos-spec 041 replaced 039's shared
+"Service Tools" bucket: an item now names the group(s) its tools appear under,
+the group's description is what the assistant reads when deciding whether this
+family is relevant, and `find_tools(group: "okf-knowledge-base")` returns the
+whole set in one call. A tool that resolves to no declared group is rejected at
+startup, with the reason surfaced in Settings → Services — there is no fallback
+group.
+
 ## 2. Current baseline: 30 `okf_*` tools (verified against the installed `services/lib/tools.js`)
 
 This is the actual declared count today, not the original 040 spec's "29" — it already includes `okf_delete_bundle`, added by the former 041 feature. Confirmed by direct inspection of the installed item, not assumed from prior docs.

@@ -7,6 +7,16 @@ registry the instant the service stops or is uninstalled.
 
 All handlers live in `services/handlers.js`; schemas in `services/tools.js`.
 
+## Tool group
+
+All 12 tools appear under the **Workflows** group, declared in
+`services/service.json`'s `toolGroups` (bos-spec 041). The group's name and
+description are what the assistant sees in its system prompt, and an agent that
+has these tools deferred reaches them with `find_tools(group: "workflows")`.
+Before 041 every service tool landed in a shared "Service Tools" bucket; that
+bucket no longer exists, and a tool that resolves to no declared group is
+rejected at startup with an error shown in Settings → Services.
+
 ## `workflow_list`
 
 List every workflow under `/Workflows/`. **Read-only, `parallelSafe`.**

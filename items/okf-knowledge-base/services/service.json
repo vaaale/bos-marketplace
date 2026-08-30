@@ -5,6 +5,23 @@
   "description": "Durable, human-readable knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Exposes okf_* tools natively to the BOS assistant and a REST bridge for its config UI.",
   "entry": "index.js",
   "deploymentMode": "tools",
+  "toolGroups": [
+    {
+      "id": "okf-knowledge-base",
+      "name": "Knowledge Base",
+      "description": "A durable, human-readable knowledge base of OKF bundles: ingesting sources, creating and editing concepts, linking and traversing them, checking provenance and trust, and importing or exporting bundles.",
+      "aliases": [
+        "okf",
+        "knowledge",
+        "concepts",
+        "notes",
+        "research",
+        "sources",
+        "provenance",
+        "graph"
+      ]
+    }
+  ],
   "configSchema": {
     "type": "object",
     "properties": {
