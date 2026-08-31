@@ -3,5 +3,6 @@
   "name": "Workflow Manager",
   "icon": "Workflow",
   "createdAt": 1787299702608,
-  "entry": "src/main.tsx"
+  "entry": "src/main.tsx",
+  "capabilities": ["services:read"]
 }
