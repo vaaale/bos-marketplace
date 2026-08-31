@@ -7,12 +7,22 @@ const { startFakeBos } = require("./_fake-bos");
 
 test("vfs.js", async (t) => {
   const bos = await startFakeBos({ vfs: { "/Workflows/a-workflow.json": '{"id":"a"}' } });
+  delete process.env.PORT; // isolate from whatever spawned this test process
   process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
   delete require.cache[require.resolve("../vfs")];
   const vfs = require("../vfs");
 
   await t.test("resolvePort reads NEXT_PUBLIC_APP_ORIGIN", () => {
     assert.equal(vfs.resolvePort(), String(bos.port));
+  });
+
+  await t.test("resolvePort prefers PORT — the internal bind port — over NEXT_PUBLIC_APP_ORIGIN, which is the public-facing address and can differ from it behind the Supervisor or any reverse proxy", () => {
+    process.env.PORT = "4321";
+    try {
+      assert.equal(vfs.resolvePort(), "4321");
+    } finally {
+      delete process.env.PORT;
+    }
   });
 
   await t.test("readText reads an existing file", async () => {

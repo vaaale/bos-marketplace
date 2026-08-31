@@ -6,16 +6,22 @@
 // to recover from).
 //
 // Origin resolution (ADR-6): there is no BOS_PORT in workerData, so this
-// mirrors BOS's own origin-resolution pattern (src/lib/integrations/oauth/
-// origin.ts) — NEXT_PUBLIC_APP_ORIGIN, then APP_ORIGIN, then
-// http://localhost:3000. The loopback HOST is always 127.0.0.1 regardless of
-// what hostname the resolved origin names; only its port is used, since this
-// is a server-to-server call within the same container, never a browser
-// request.
-
+// prefers process.env.PORT — the Next.js process's own internal bind port,
+// set by the Supervisor when it spawns base (tools/supervisor/lib/base.mjs)
+// and inherited by this worker thread — before falling back to BOS's own
+// origin-resolution pattern (src/lib/integrations/oauth/origin.ts):
+// NEXT_PUBLIC_APP_ORIGIN, then APP_ORIGIN, then http://localhost:3000.
+// NEXT_PUBLIC_APP_ORIGIN/APP_ORIGIN are documented as the PUBLIC-facing
+// address (used to build OAuth redirect URIs) — deliberately allowed to
+// differ from the internal port behind any reverse proxy or the Supervisor
+// itself, which is exactly why using them here is wrong whenever one is in
+// front: this is a same-container loopback call, so it needs the internal
+// port, not the public one. The loopback HOST is always 127.0.0.1 regardless
+// of what hostname the resolved origin names; only its port is used.
 const http = require("http");
 
 function resolvePort() {
+  if (process.env.PORT && process.env.PORT.trim()) return process.env.PORT.trim();
   const raw = (process.env.NEXT_PUBLIC_APP_ORIGIN || process.env.APP_ORIGIN || "http://localhost:3000").trim();
   try {
     const url = new URL(raw);
