@@ -2,6 +2,6 @@
   "id": "editor",
   "name": "Editor",
   "icon": "Code2",
-  "createdAt": 1788272283210,
+  "createdAt": 1788278651014,
   "entry": "src/main.tsx"
 }

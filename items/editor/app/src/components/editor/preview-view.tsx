@@ -25,11 +25,22 @@ import { useMemo } from "react";
 import type { FormatHandler } from "../../types";
 
 export function PreviewView({ content, format }: { content: string; format: FormatHandler }) {
-  const isDocument = format.previewMode === "document" && typeof format.renderDocument === "function";
-  const html = useMemo(
-    () => (isDocument ? format.renderDocument!(content) : format.render(content)),
-    [content, format, isDocument],
-  );
+  // One decision, made once: what the handler asked for, degraded to the inline
+  // path whenever the document path cannot actually be honoured (no
+  // `renderDocument`, or one that throws or hands back something that is not a
+  // string). The inline branch always escapes, so falling back is safe by
+  // construction — the worst it can do is show the source it could not render.
+  const { html, isDocument } = useMemo(() => {
+    if (format.previewMode === "document" && typeof format.renderDocument === "function") {
+      try {
+        const doc = format.renderDocument(content);
+        if (typeof doc === "string") return { html: doc, isDocument: true };
+      } catch {
+        /* fall through to the escaped inline rendering */
+      }
+    }
+    return { html: format.render(content), isDocument: false };
+  }, [content, format]);
 
   if (!content.trim()) {
     return (

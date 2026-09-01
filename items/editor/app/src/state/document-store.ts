@@ -21,7 +21,7 @@ import {
   saveAll as saveAllFiles,
   saveFile,
 } from "../services/file-service";
-import { getForFilename } from "../services/format-service";
+import { formatIdFor, getForFilename } from "../services/format-service";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "../config/editor-config";
 import { storageGet, storageSet } from "../services/bos";
 import type {
@@ -350,8 +350,30 @@ function readLocalSnapshot(): Partial<PersistedState> | null {
   }
 }
 
+/**
+ * Re-derive a restored document's `formatId` from its filename.
+ *
+ * `formatId` is derived state that happens to be persisted alongside the
+ * buffer, so a snapshot can only ever be as clever as the build that wrote it:
+ * a `.html` tab saved before the HTML handler existed comes back pointing at
+ * `"plaintext"`, and — because nothing else recomputes it — would stay there
+ * forever, previewing as escaped source instead of a rendered page. Deriving it
+ * again on the way in means adding a format is retroactive for documents that
+ * are already open, which is the whole promise of the registry (FR-017).
+ *
+ * Safe to do unconditionally: the filename is the ONLY input to the format
+ * anywhere in the app (open, create, save-as and rename all resolve the same
+ * way), so this can never override a user's choice — there is no such choice.
+ */
+function withResolvedFormat(doc: EditorDocument): EditorDocument {
+  const formatId = formatIdFor(doc.filename);
+  return doc.formatId === formatId ? doc : { ...doc, formatId };
+}
+
 function documentsOf(snapshot: Partial<PersistedState> | null): EditorDocument[] {
-  return snapshot && Array.isArray(snapshot.documents) ? snapshot.documents.filter(isDocument) : [];
+  return snapshot && Array.isArray(snapshot.documents)
+    ? snapshot.documents.filter(isDocument).map(withResolvedFormat)
+    : [];
 }
 
 /** The most recent save recorded in a snapshot, or 0 if nothing was ever saved. */

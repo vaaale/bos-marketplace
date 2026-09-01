@@ -19,6 +19,7 @@ app/
     │       ├── plaintext.ts            # previewMode "inline" (default)
     │       └── html.ts                 # previewMode "document"
     ├── components/editor/preview-view.tsx  # the two preview paths
+    ├── state/document-store.ts         # re-derives formatId on hydration
     └── types.ts                        # FormatHandler
 ```
 
@@ -205,9 +206,56 @@ So `FormatHandler` gained one discriminator and one method
 />
 ```
 
+The pane picks the branch once, in a memo, and **degrades to inline** whenever
+the document path cannot actually be honoured — `previewMode: "document"` with
+no `renderDocument`, or one that throws or returns a non-string. Degrading is
+safe by construction because the inline path escapes everything: the worst a
+broken document handler can produce is the source it failed to render, never
+unescaped markup injected into the app's own DOM.
+
 `htmlHandler.render` still returns escaped source in a `<pre>` even though the
 document path never calls it, so any future caller that ignores `previewMode`
 degrades to safe output instead of injecting live markup.
+
+### `formatId` is derived state, and hydration must re-derive it
+
+A document's `formatId` is a **cache of a pure function of its filename**.
+Every writer agrees on that: `openFile`, `createDocument` and `saveFile`
+(`services/file-service.ts`) and the store's `renameDocument` all set it via
+`getForFilename` / `formatIdFor`. There is no UI and no tool for choosing a
+format by hand, so the filename is the only input there has ever been.
+
+The one place that used to break the rule was **restore**. `formatId` is part
+of the persisted snapshot (`PersistedState.documents`), and `hydrate()` took
+those documents verbatim — so a snapshot could only ever be as clever as the
+build that wrote it. A `.html` tab left open by a pre-v3 build came back
+carrying `"plaintext"`, nothing recomputed it, and the preview pane duly took
+the inline branch and showed **escaped source instead of the rendered page**
+for a format that had shipped a `"document"` handler in the meantime.
+
+`state/document-store.ts` therefore re-derives the id as snapshots come in:
+
+```ts
+function withResolvedFormat(doc: EditorDocument): EditorDocument {
+  const formatId = formatIdFor(doc.filename);
+  return doc.formatId === formatId ? doc : { ...doc, formatId };
+}
+
+function documentsOf(snapshot: Partial<PersistedState> | null): EditorDocument[] {
+  return snapshot && Array.isArray(snapshot.documents)
+    ? snapshot.documents.filter(isDocument).map(withResolvedFormat)
+    : [];
+}
+```
+
+`documentsOf` is the single funnel for **both** persisted copies — the KV
+snapshot and the localStorage mirror — so the normalisation cannot be bypassed
+by whichever one hydration decides is fresher. Doing it unconditionally is safe
+for the reason above (there is no user choice to override) and it is what makes
+**registering a format retroactive**: add a handler, and documents already open
+in restored tabs pick it up on the next start rather than being frozen at
+whatever the registry looked like when they were last persisted. Any future
+format added per the recipe below inherits that for free.
 
 ### Why `srcdoc`, and why that sandbox
 
@@ -235,7 +283,8 @@ and turns spellcheck off.
    `previewMode: "document"` plus `renderDocument` if the preview is the content
    itself; otherwise return escaped markup from `render` and leave
    `previewMode` unset.
-2. `register(<id>Handler)` in `services/format-service.ts`.
+2. `register(<id>Handler)` in `services/format-service.ts`. Restored tabs pick
+   the new format up on the next start — see the derived-`formatId` rule above.
 3. If the format should appear in Files' *Open with* menu, add an entry to
    `fileHandlers` in `app/app.json` — the launch contract already routes it here
    and needs no code change.
