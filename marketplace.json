@@ -319,21 +319,6 @@
         "path": "skills/recipe-save-email-to-doc",
         "version": "0.22.5"
       }
-    },
-    {
-      "id": "editor",
-      "name": "Editor",
-      "description": "",
-      "app": {
-        "entrypoint": "items/editor/app",
-        "runtime": "iframe",
-        "version": "0.0.0",
-        "icon": "Code2"
-      },
-      "spec": {
-        "path": "items/editor/spec",
-        "version": "0.0.0"
-      }
     }
   ]
 }

@@ -152,6 +152,24 @@ export interface FormatHandler {
   supportsPreview: boolean;
   /** Render the buffer to an HTML string for preview mode. Must escape input. */
   render(content: string): string;
+  /**
+   * How the preview pane shows this format (v3, added for HTML).
+   *
+   * - "inline" (the default when absent) — `render()`'s output is injected into
+   *   the preview pane, so it MUST be escaped markup the handler built itself.
+   * - "document" — the format IS a document in its own right, so the pane hands
+   *   `renderDocument()`'s output to a SANDBOXED iframe instead of injecting it.
+   *   This keeps the "render() output is always safe to inject" invariant true:
+   *   a handler whose preview is unescaped user markup never goes inline.
+   */
+  previewMode?: "inline" | "document";
+  /**
+   * The document to load into the sandboxed preview iframe. Required when
+   * `previewMode === "document"`, ignored otherwise. Unlike `render` this may
+   * return the buffer verbatim — the iframe's sandbox, not escaping, is what
+   * contains it.
+   */
+  renderDocument?(content: string): string;
   /** Optional per-format tweaks for edit mode (e.g. tab size). */
   editorHints?: { tabSize?: number; spellcheck?: boolean };
 }

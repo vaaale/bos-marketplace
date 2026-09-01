@@ -16,8 +16,8 @@
 //
 // This file owns only what genuinely belongs to the shell: which dialog is up,
 // the save/save-as/confirm flows, and the app-lifecycle wiring (hydrate,
-// persist, window title). Everything else lives in the stores, the services or
-// the components.
+// persist, window title, and — v3 — honouring an open-file launch). Everything
+// else lives in the stores, the services or the components.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -40,8 +40,9 @@ import { SettingsPanel } from "./components/settings-panel";
 import { chatMessagesFor, conversationsByRecency, useChatStore } from "./assistant/chat-store";
 import { settingsToCssVars } from "./config/editor-config";
 import { notify, setWindowTitle } from "./services/bos";
-import { basename, dirname, isDirty } from "./services/file-service";
+import { basename, dirname, isDirty, normalizePath } from "./services/file-service";
 import { get as getFormat } from "./services/format-service";
+import { takeFileLaunch } from "./services/launch";
 import { flushPersistence, startPersistence, tabsFrom, useEditorStore } from "./state/document-store";
 import { registerAppCapabilities } from "./tools/registry";
 import type { EditorDocument } from "./types";
@@ -126,6 +127,35 @@ function App() {
   const reportError = useCallback((message: string) => {
     useChatStore.getState().notice(message, true);
   }, []);
+
+  // A file handed to us by the OS (v3). BOS puts it in the iframe's query
+  // string when the app is launched from Files' "Open with" menu; the params
+  // were parsed at import time, so all that is left is to act on them.
+  //
+  // Gated on `hydrate()` having finished: hydration REPLACES the document list
+  // with the persisted snapshot, so a tab opened before it lands would be
+  // silently thrown away. Waiting also means the de-duplication below sees the
+  // restored tabs and can focus an already-open one (the store's `openPath`
+  // matches on path) instead of opening the same file twice.
+  useEffect(() => {
+    if (!hydrated) return;
+    const launch = takeFileLaunch();
+    if (!launch) return;
+    const path = normalizePath(launch.path);
+    void useEditorStore
+      .getState()
+      // Reads the file through the SDK bridge (`window.__bos.fs.read`) — the
+      // same path the Open dialog uses, so nothing here is launch-specific.
+      .openPath(path)
+      .then((doc) => {
+        // "edit" opens the source; "open" previews it. A format with no rich
+        // preview (a .txt, say) falls back to Edit rather than showing the user
+        // a preview pane that is just their own text again.
+        const previewable = getFormat(doc.formatId).supportsPreview;
+        useEditorStore.getState().setViewMode(launch.action === "edit" || !previewable ? "edit" : "preview");
+      })
+      .catch((err: Error) => reportError(`Could not open ${path}: ${err.message}`));
+  }, [hydrated, reportError]);
 
   const saveDocument = useCallback(
     async (documentId: string, after: AfterSave): Promise<void> => {

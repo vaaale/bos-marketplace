@@ -1,7 +1,0 @@
-{
-  "id": "editor",
-  "name": "Editor",
-  "icon": "Code2",
-  "createdAt": 1788279233477,
-  "entry": "src/main.tsx"
-}
