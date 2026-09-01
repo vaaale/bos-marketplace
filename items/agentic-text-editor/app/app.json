@@ -4,5 +4,13 @@
   "icon": "PenTool",
   "createdAt": 1787852296462,
   "entry": "src/main.tsx",
-  "capabilities": ["assistant", "storage", "fs:read", "fs:write", "window:title", "notify"]
+  "capabilities": ["assistant", "storage", "fs:read", "fs:write", "window:title", "notify"],
+  "fileHandlers": [
+    {
+      "type": "text/html",
+      "capabilities": ["render", "edit"],
+      "label": "Editor",
+      "paramShape": { "title": "basename" }
+    }
+  ]
 }

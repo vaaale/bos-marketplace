@@ -15,7 +15,10 @@ It knows three kinds of file:
 | Plain text | `.txt`, `.log`, `.env`, anything else | the text as-is |
 
 The kind is picked from the filename, so it follows a Save As: rename
-`notes.txt` to `notes.md` and the preview starts formatting it.
+`notes.txt` to `notes.md` and the preview starts formatting it. It is worked out
+fresh every time Editor starts, too — a tab restored from a previous session is
+opened with the kinds this version of Editor knows about, not the ones it knew
+when you last closed it.
 
 ## The basics
 

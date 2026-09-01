@@ -6,6 +6,7 @@
 // the store, or the assistant tools (SC-007).
 
 import type { FormatHandler } from "../types";
+import { htmlHandler } from "./formats/html";
 import { markdownHandler } from "./formats/markdown";
 import { plaintextHandler } from "./formats/plaintext";
 
@@ -47,12 +48,29 @@ export function getForFilename(filename: string): FormatHandler {
   return getByExtension(extensionOf(filename));
 }
 
+/**
+ * The id of the handler a filename resolves to — the DERIVED form of a
+ * document's `formatId`.
+ *
+ * `EditorDocument.formatId` is a *cache* of this, never an independent choice:
+ * every place that sets it (open, create, save-as, rename) calls straight
+ * through here. That matters when the registry gains a format, which is exactly
+ * what v3 did with HTML: a `.html` document persisted by an older build carries
+ * a stale `"plaintext"` id, and re-deriving it from the filename is what makes
+ * the new handler take effect. See the store's hydration path.
+ */
+export function formatIdFor(filename: string): string {
+  return getForFilename(filename).id;
+}
+
 /** Render a document's buffer to preview HTML using its own handler. */
 export function render(formatId: string, content: string): string {
   return get(formatId).render(content);
 }
 
-// The two defaults ship with the app. Markdown is registered last so it wins
-// any extension both claim.
+// The defaults that ship with the app. Later registrations win a contested
+// extension, so the order is: plaintext (the catch-all fallback), then the
+// formats that claim specific extensions. None of these three overlap.
 register(plaintextHandler);
 register(markdownHandler);
+register(htmlHandler);
