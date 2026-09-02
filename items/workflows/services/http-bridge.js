@@ -1,6 +1,6 @@
 // http-bridge.js — a small loopback REST server the Workflow Manager APP
 // talks to directly (list/read/create/modify/run/status/cancel/delete/
-// export/validate/run_list/run_get), bound on the service's own configurable
+// export/validate/run_list/run_get/event_types), bound on the service's own configurable
 // port (config/workflows.json's `port`, default 0). This is separate from
 // the 039 tool_call/worker-IPC path the assistant uses — the app is not the
 // assistant, so it needs an ordinary HTTP surface, mirroring the
@@ -71,6 +71,13 @@ function createRequestHandler({ handlers, getRuntime }) {
         return send(res, 404, { error: `no live run state for ${runId} (pass ?workflowId= to read it from the persisted log)` });
       }
 
+      // GET /event-types — US17/FR-044's `workflow_event_types`, exposed to
+      // the APP so the Triggers panel's "Browse" picker reads exactly the
+      // registry the assistant sees (app/src/components/TriggersPanel.tsx).
+      if (parts.length === 1 && parts[0] === "event-types" && req.method === "GET") {
+        return send(res, 200, await handlers.workflow_event_types());
+      }
+
       if (parts.length === 1 && parts[0] === "workflows") {
         if (req.method === "GET") return send(res, 200, await handlers.workflow_list());
         if (req.method === "POST") {
@@ -96,7 +103,10 @@ function createRequestHandler({ handlers, getRuntime }) {
         const action = parts[2];
         if (action === "run" && req.method === "POST") {
           const body = await readBody(req);
-          return send(res, 200, await handlers.workflow_run({ workflowId, ...body }));
+          // This bridge IS the app's transport, so a run started here is a
+          // USER run unless the caller says otherwise (US16/FR-041) — the
+          // assistant's runs arrive over the 039 tool_call path instead.
+          return send(res, 200, await handlers.workflow_run({ workflowId, startSource: "user", ...body }));
         }
         if (action === "cancel" && req.method === "POST") return send(res, 200, await handlers.workflow_cancel({ workflowId }));
         if (action === "status" && req.method === "GET") return send(res, 200, await handlers.workflow_status({ workflowId }));

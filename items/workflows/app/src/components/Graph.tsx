@@ -13,6 +13,10 @@ interface GraphProps {
   onSelectNode?: (id: string) => void;
 }
 
+/** Event nodes get their own accent (amber) and glyph so they read as I/O,
+ *  not as work — every other output type ends in an agent, this one doesn't. */
+const EVENT_ACCENT = "#fbbf24";
+
 const NODE_W = 140;
 const NODE_H = 52;
 const GAP_X = 60;
@@ -117,10 +121,13 @@ export function Graph({ steps, statuses = {}, activeStepId = null, selectedId = 
           const p = positions.get(s.id) || { x: 0, y: 0 };
           const isActive = s.id === activeStepId;
           const isSelected = s.id === selectedId;
+          const isEvent = s.outputType === "event";
           const style = statusStyle(statuses[s.id], isActive);
           return (
             <div
               key={s.id}
+              className={isEvent ? "wf-node wf-node-event" : "wf-node"}
+              data-output-type={s.outputType}
               title={`${s.id}: ${s.outputType} · ${describeStep(s)}`}
               onClick={onSelectNode ? () => onSelectNode(s.id) : undefined}
               style={{
@@ -131,6 +138,9 @@ export function Graph({ steps, statuses = {}, activeStepId = null, selectedId = 
                 width: NODE_W,
                 borderRadius: 8,
                 border: `1px solid ${isSelected ? "#c4b5fd" : style.border}`,
+                // The accent bar survives every status color, so an event node
+                // stays identifiable whether it is pending, running or failed.
+                borderLeft: isEvent ? `3px solid ${EVENT_ACCENT}` : undefined,
                 background: style.bg,
                 padding: "6px 10px",
                 boxShadow: isSelected
@@ -144,6 +154,11 @@ export function Graph({ steps, statuses = {}, activeStepId = null, selectedId = 
             >
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 {isActive ? <span className="wf-pulse-dot" style={{ background: style.edge }} /> : null}
+                {isEvent ? (
+                  <span className="wf-node-glyph" style={{ color: EVENT_ACCENT }} title="emits a BOS event">
+                    ⚡
+                  </span>
+                ) : null}
                 <span style={{ color: style.text, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.id}</span>
               </div>
               <div style={{ marginTop: 2, fontFamily: "ui-monospace, monospace", fontSize: 9, color: style.text, opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -175,6 +190,10 @@ export function GraphLegend({ historical = false }: { historical?: boolean }) {
       ];
   return (
     <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 12, fontFamily: "ui-monospace, monospace", fontSize: 10, color: "rgba(255,255,255,0.5)" }}>
+      <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="a node whose outputType is `event`">
+        <span style={{ color: EVENT_ACCENT }}>⚡</span>
+        event node · emits, no agent
+      </span>
       {items.map(([label, status]) => {
         const style = statusStyle(status, false);
         return (

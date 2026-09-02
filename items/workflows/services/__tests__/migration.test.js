@@ -6,7 +6,7 @@ const fs = require("fs");
 const fsp = fs.promises;
 const os = require("os");
 const path = require("path");
-const { startFakeBos } = require("./_fake-bos");
+const { startFakeBos, pointVfsAt } = require("./_fake-bos");
 
 async function withTempConfigDir(fn) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), "wf-migration-"));
@@ -23,7 +23,7 @@ async function withTempConfigDir(fn) {
 
 test("migration.js", async (t) => {
   const bos = await startFakeBos();
-  process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+  pointVfsAt(bos);
   delete require.cache[require.resolve("../vfs")];
   delete require.cache[require.resolve("../engine/store")];
   delete require.cache[require.resolve("../migration")];

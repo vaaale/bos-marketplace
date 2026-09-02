@@ -16,7 +16,12 @@ A workflow is a DAG (directed acyclic graph) of steps. Each step either:
 - calls a single **tool**,
 - fans out several agents in parallel as a **research** step and collects
   their outputs, or
-- is a plain **ag-ui** value with no delegation at all.
+- is a plain **ag-ui** value with no delegation at all, or
+- **emits an event** into BrowserOS — an `event` step has no agent at all: it
+  publishes an event (with a payload you write literally, or assembled from
+  earlier steps' outputs with `{{stepId.field}}` placeholders) that other
+  workflows, apps, or notification handlers can react to. A dry run with a
+  fixture for that step never actually fires the event.
 
 Steps can depend on other steps (so they run in the right order), and steps
 with no dependency between them run **concurrently** — a workflow with three
@@ -36,6 +41,38 @@ If a run chooses a branch but that branch ends up doing nothing at all, the
 run deliberately does **not** report a plain success — it finishes as
 "Completed · warnings", so a workflow that silently skipped its real work is
 visible instead of looking green.
+
+## Starting a workflow when something happens (event triggers)
+
+A workflow doesn't have to be started by hand. Give it a list of **triggers** —
+BrowserOS notification event types — and it runs itself whenever one of those
+events is emitted:
+
+```json
+{
+  "name": "Triage a new download",
+  "triggers": ["com.bos.files.created"],
+  "steps": [ … ]
+}
+```
+
+- Add or change `triggers` with `workflow_modify` (or ask the assistant); the
+  subscription updates the moment the workflow is saved, and disappears when
+  you remove the trigger or delete the workflow.
+- Several workflows can watch the same event — all of them run.
+- A trigger may name one exact type, or a whole family with a wildcard:
+  `"com.bos.files.*"`.
+- **The event's payload is handed to the workflow's first step**, as a
+  "Triggering event" section in its prompt — so a triage workflow can read the
+  path of the file that just appeared without you wiring anything up.
+- Each run records how it started ("user", "tool" or "event") and, for an
+  event run, which event triggered it — visible in the run history.
+- Two events arriving close together start **two independent runs** of the
+  same workflow; they don't queue and they don't cancel each other. (Starting
+  a run by hand while one is already in progress is still refused.)
+
+The event is marked handled as soon as the run *starts*, not when it finishes
+— a workflow that takes an hour never blocks the notification system.
 
 ## How long things take
 

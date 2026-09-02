@@ -12,6 +12,8 @@
 interface BosApi {
   services: {
     getConfig: (id: string) => Promise<unknown>;
+    /** Mirrors GET /api/services/<id> for an opaque-origin install. */
+    status?: (id: string) => Promise<unknown>;
     /** 043: the parent frame performs the request against the service's own
      *  REST bridge and relays the JSON back — the ONLY channel an
      *  opaque-origin install has to actually invoke the service. */
@@ -62,8 +64,10 @@ export async function getServiceRunning(): Promise<boolean> {
     return data.service?.state === "running";
   } catch {
     if (!window.__bos) return false;
+    const statusFn = window.__bos.services.status;
+    if (!statusFn) return false;
     try {
-      const data = (await window.__bos.services.status(SERVICE_ID)) as { service?: ServiceStatusView };
+      const data = (await statusFn(SERVICE_ID)) as { service?: ServiceStatusView };
       return data.service?.state === "running";
     } catch {
       return false;
@@ -133,6 +137,13 @@ export const api = {
   export: (id: string) => call(`workflows/${encodeURIComponent(id)}/export`),
   validate: (id: string) => call(`workflows/${encodeURIComponent(id)}/validate`, { method: "POST" }),
   runList: (id: string) => call(`workflows/${encodeURIComponent(id)}/runs`),
+  /**
+   * US17/FR-044 — the event types BOS's kernel currently has handlers for,
+   * used by the Triggers panel's "Browse" picker. This is the SAME
+   * `workflow_event_types` handler the assistant calls, exposed on the
+   * service's REST bridge (services/http-bridge.js `GET /event-types`).
+   */
+  eventTypes: () => call("event-types"),
   runGet: (id: string, runId: string, since?: number) =>
     call(`workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}${since ? `?since=${since}` : ""}`),
   /**

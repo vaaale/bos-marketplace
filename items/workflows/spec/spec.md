@@ -26,6 +26,8 @@ This spec rewrites the Workflow Manager item so the workflow tools are exposed a
 
 **Node model — two orthogonal axes**: A node's **agent source** is either an existing statically-defined BOS agent or an Ephemeral agent (task + tools + skills). A node's **output type** is independent of its agent source — delegate (a sub-agent's output), tool (a single tool call), research (parallel fan-out), or ag-ui (an A2UI/UI artifact). Agent source and output type combine freely.
 
+**Event-system integration (scope-add, 2026-09-02)**: The Workflow Manager integrates with the 034 event-notification system in two directions. **Inbound**: a workflow MAY declare a `triggers` array of event types; the service subscribes to the union via the 034 headless-handler channel (`handler_declare` over worker IPC, 034 ADR-3) and starts a fire-and-poll run on each matching event. **Outbound**: a new `event` node output type emits a configurable event into the 034 system, making workflows first-class event producers. A `workflow_event_types` tool exposes registered event types so the assistant can author trigger subscriptions without guessing. **Platform dependency**: This feature requires a 034 platform change — removing the namespace-ownership check on handler registration (034 FR-023) so that any component can subscribe to any event type. See `user-specs/core-platform/037-event-namespace-relaxation` (specify). The headless-handler channel itself (`handler_declare` over worker IPC) and the emit API are already implemented and unchanged.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Workflow Tools Appear as Service-Declared Native Tools (Priority: P1)
@@ -271,6 +273,59 @@ The engine enforces a **per-step** and a **per-run** timeout (configurable on th
 3. **Given** the Workflow entity has a default retry/timeout config, **When** the user does not override it, **Then** sensible defaults apply so an unconfigured run still fails fast.
 4. **Given** the skill/docs are read, **When** the user chooses between a delegate fan-out and a research node for parallel work, **Then** the guidance states the realistic relative latency and recommends research for parallel investigations feeding a synthesis step.
 
+---
+
+### User Story 16 - Event-Triggered Workflow Runs (Priority: P1)
+
+A workflow MAY declare a `triggers` array of 034 event types in its JSON. The service subscribes to the union of all trigger event types across all workflows via the 034 headless-handler channel (`handler_declare` over worker IPC). When a matching event is emitted to the 034 system, the service starts a new fire-and-poll run for that workflow, with the event payload injected as input context and trigger provenance recorded in the run.
+
+**Why this priority**: This is the core of making workflows reactive — a workflow can now start automatically in response to system events (a new email, a completed task, a health warning) without any agent or user intervention. It closes the loop between the 034 event system and the workflow engine, making workflows first-class participants in the event-driven architecture.
+
+**Independent Test**: Create a workflow with `triggers: ["com.bos.test.workflow-trigger"]`; emit that event type via `emit_event`; confirm a new run starts for the workflow with trigger provenance (event id + type, `startSource: "event"`) and the event payload available as input context. Testable in isolation.
+
+**Acceptance Scenarios**:
+
+1. **Given** a workflow declares `triggers: ["com.bos.gsuite.email.received"]`, **When** an event of that exact type is emitted to the 034 system, **Then** the service starts a new fire-and-poll run for that workflow with `startSource: "event"` and the triggering event's id and type recorded in the run's provenance.
+2. **Given** a workflow declares `triggers: ["com.bos.gsuite.email.received"]`, **When** an event of a different type is emitted, **Then** no run is started for that workflow.
+3. **Given** a matching event is emitted and a run is started, **When** the first node of the workflow executes, **Then** the event payload is available as an `eventContext` input field — the workflow can use the triggering event's data in its execution.
+4. **Given** a workflow is already running and a matching event arrives, **When** the event is dispatched, **Then** a new, independent run is started — concurrent runs of the same workflow are valid (no coalesce, no queue).
+5. **Given** the service restarts, **When** it initializes, **Then** it re-derives the union of trigger event types from the current set of workflows and re-declares its headless handlers — no separate subscription store is needed.
+
+---
+
+### User Story 17 - Event-Type Discovery Tool (Priority: P1)
+
+The service declares a `workflow_event_types` tool that returns the list of event types currently registered in the 034 event system, so the assistant can discover which event types are available and choose one when authoring a workflow's `triggers` array — without guessing or hard-coding type strings.
+
+**Why this priority**: Without a way to list available event types, the assistant cannot reliably author event-triggered workflows. The user would have to know the exact dot-separated type string to type into the `triggers` array — a friction that defeats the purpose of agent-assisted workflow building.
+
+**Independent Test**: Call `workflow_event_types`; confirm it returns a non-empty list of event type strings matching those registered in the 034 event system (verifiable via `GET /api/events/handlers`). Testable in isolation.
+
+**Acceptance Scenarios**:
+
+1. **Given** the 034 event system has registered handlers for at least one event type, **When** the assistant calls `workflow_event_types`, **Then** the tool returns the list of registered event types with their display names (where available).
+2. **Given** the assistant is authoring a workflow with event triggers, **When** it calls `workflow_event_types`, **Then** it can select a returned type string and place it in the workflow's `triggers` array, and the resulting workflow will be triggered correctly.
+3. **Given** no event handlers are registered in the 034 system, **When** the assistant calls `workflow_event_types`, **Then** the tool returns an empty list (not an error).
+
+---
+
+### User Story 18 - Emit-Event Node Type (Priority: P2)
+
+A new node output type `event` emits a configurable event to the 034 event system when executed. The node's config specifies the event type (under the workflow service's owned namespace) and an optional payload — either a static JSON object or a template with `{{nodeId.field}}` placeholders resolved from upstream node outputs. The node completes after the emit call returns.
+
+**Why this priority**: This makes workflows first-class event *producers*, not just consumers. A workflow that completes an analysis can emit a `com.bos.workflows.analysis.complete` event that triggers *another* workflow — enabling event-driven workflow chains without a central orchestrator. It also lets workflows signal completion to other BOS components (e.g., notify the assistant, trigger a GSuite action).
+
+**Independent Test**: Author a workflow with a single `event` node configured to emit `com.bos.workflows.test.hello` with a static payload; run the workflow; confirm the event appears in the 034 event system (visible in Event Viewer or via `query_events`) with the correct type, source, and payload. Testable in isolation.
+
+**Acceptance Scenarios**:
+
+1. **Given** a workflow has an `event` node configured with type `com.bos.workflows.analysis.complete` and a static payload, **When** the node executes, **Then** an event is emitted to the 034 system with that type, the workflow service as source, and the configured payload — and the node completes.
+2. **Given** an `event` node's payload template references an upstream node's output (e.g. `{{research_1.summary}}`), **When** the node executes after the upstream node completes, **Then** the emitted event's payload has the placeholder resolved to the actual upstream output value.
+3. **Given** an `event` node's payload template references a node that was never run (neutral/skipped), **When** the node executes, **Then** the placeholder resolves to `null` (or the template's fallback value if one is specified) — the emit does not fail.
+4. **Given** an `event` node is configured with a type outside the workflow service's owned namespace (e.g. `com.bos.gsuite.email.sent`), **When** `workflow_validate` is called, **Then** the validation reports an error — the service cannot emit into a namespace it doesn't own.
+
+---
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
@@ -313,6 +368,19 @@ The engine enforces a **per-step** and a **per-run** timeout (configurable on th
 - **FR-036**: `workflow_status` and `workflow_run_get` MUST return a populated live per-step map during a run — for each step, its status, attempt count, and a short current-action string while in progress (not an empty `steps: {}`); for a Research node, per-sub-agent status (pending/running/completed/failed). This live state MUST be the single source of truth also consumed by the app trajectory panel (FR-026).
 - **FR-037**: `workflow_run` MUST support an opt-in dry-run/fixture mode that substitutes a canned output for designated nodes, skipping their real execution, so the DAG, branch routing, and leaf reachability can be validated without performing the real (slow) work. Default (non-dry-run) behavior is unchanged.
 - **FR-038**: The engine MUST enforce a configurable **per-step** and **per-run** timeout (on the Workflow config, with sensible defaults) so a stuck agent fails fast: a step exceeding its timeout is marked failed with a timeout reason, and a run exceeding its timeout is halted — neither may hang indefinitely.
+- **FR-039**: The workflow JSON schema MUST support an optional `triggers` field — an array of event type strings (dot-separated, matching the 034 pattern `^[a-z0-9]+(\.[a-z0-9_-]+)+$`). A workflow with an absent or empty `triggers` array is not event-triggered.
+- **FR-040**: On service start and on any workflow create/modify/delete, the service MUST compute the union of all `triggers` event types across all workflows and (re-)declare headless handlers via `handler_declare` (034 ADR-3, over worker IPC) for each distinct event type. The service MUST NOT maintain a separate subscription store — the union is always re-derived from the current set of workflows.
+- **FR-041**: When the 034 kernel dispatches an event whose type exactly matches a workflow's trigger (exact event-type match only — no payload filtering), the service MUST start a new fire-and-poll run (FR-008) for that workflow with trigger provenance: the triggering event's id and type, and a `startSource: "event"` marker in the run record.
+- **FR-042**: The triggering event's payload MUST be injected into the run as an `eventContext` input field, made available to the workflow's first node(s) so the workflow can use the event data in its execution.
+- **FR-043**: If a workflow triggered by an event is already running, the service MUST start a new, independent run — concurrent runs of the same workflow are valid (no coalesce, no queue).
+- **FR-044**: The service MUST declare a `workflow_event_types` tool (via `tool_declare`) that returns the list of event types currently registered in the 034 event system, so the assistant can discover available event types when authoring a workflow's `triggers` array.
+- **FR-045**: The `workflow_event_types` tool MUST return, per event type: the type string, the count of registered headless handlers for it, and a human-readable display name (where available from the handler registration). The tool MUST return an empty list (not an error) when no handlers are registered.
+- **FR-046**: A new node output type `event` MUST be supported: when a node of this type executes, it emits an event to the 034 event system and completes. The node's config MUST specify: (a) the event type (dot-separated string), and (b) an optional payload — either a static JSON object, or a template string with `{{nodeId.field}}` placeholders resolved from upstream node outputs.
+- **FR-047**: The event emitted by an `event` node MUST be sourced from the workflow service (`source.appId: "workflows"`), and MUST include the workflow id, run id, and node id in its payload for provenance.
+- **FR-048**: `workflow_validate` MUST check: (a) that all `triggers` array entries are well-formed event type strings; (b) that all `event` node configs specify a valid event type under the workflow service's owned namespace (`com.bos.workflows.*`); and (c) that all `{{nodeId.field}}` template references in `event` node payloads refer to nodes that exist in the workflow graph.
+- **FR-049**: The Workflow Manager app's workflow editor MUST allow the user to: (a) configure a workflow's `triggers` array (add/remove event type strings, with a "browse available types" action that calls `workflow_event_types`); and (b) author `event` nodes (event type field + payload template editor).
+- **FR-050**: The Workflow Manager skill MUST document event-triggered workflows and emit-event nodes: how to use `workflow_event_types` to discover event types, how to set a workflow's `triggers` array, and how to configure an `event` node (type + payload template with `{{nodeId.field}}` placeholders).
+- **FR-051**: The service MUST be able to subscribe to any event type via `handler_declare` without declaring `eventNamespaces` in its `service.json`. This depends on the 034 platform change (037-event-namespace-relaxation) which removes the namespace-ownership check on handler registration.
 
 ### Non-Functional Requirements
 
@@ -322,15 +390,21 @@ The engine enforces a **per-step** and a **per-run** timeout (configurable on th
 - **NFR-004**: All storage reads/writes MUST go through the real-VFS loopback bridge; the service MUST NOT write to a host path under `dataDir()/system/` derived from its own config dir.
 - **NFR-005**: No error path MAY be swallowed without logging; key events (tool_declare received, tool registered, tool_call dispatched/resolved, schema-rejected, timeout, worker-exit cleanup) MUST emit structured logs via the service's log channel.
 - **NFR-006**: The dry-run/fixture mode (FR-037) MUST NOT invoke real sub-agents or the network for a fixture-designated node and MUST complete the evaluated path in a small fraction of the real run time, so it is usable for rapid iteration.
+- **NFR-007**: Event-triggered runs MUST have the same fire-and-poll semantics as agent-initiated runs (FR-008) — the 034 handler ack is returned immediately upon starting the run, not upon its completion. A long-running workflow does not block the event from being marked `processed`.
+- **NFR-008**: The `event` node's emit call MUST return within the 30s tool-invocation timeout (NFR-001) — the 034 kernel's emit is an O(1) shard append, not a handler-completion wait.
+- **NFR-009**: The `workflow_event_types` tool MUST return its result within 30 seconds (NFR-001); it reads from the 034 handler registry (in-memory, no disk I/O on the hot path).
 
 ## Key Entities *(include if feature involves data)*
 
-- **Workflow**: A user-authored multi-step graph — id, name, version, nodes, dependencies, config (max concurrency, default retry/timeout). Persisted as JSON at the real VFS `/Workflows/<id>-workflow.json`.
+- **Workflow**: A user-authored multi-step graph — id, name, version, nodes, dependencies, config (max concurrency, default retry/timeout), and an optional `triggers` array (event type strings that start a run when emitted to the 034 event system; absent or empty = not event-triggered). Persisted as JSON at the real VFS `/Workflows/<id>-workflow.json`.
 - **WorkflowTool**: A native tool the service declares via `tool_declare` — name, description, input JSON-schema, mapped into the `AssistantTool` registry.
 - **ExecutionEvent / StepRuntimeState**: Streamed events and per-step runtime status during a workflow run, used for progress reporting and cancellation. `StepRuntimeState` includes the step's status, attempt count, a short **current-action** string while in progress, and — for a Research node — **per-sub-agent status** (pending/running/completed/failed). It is the single source of truth consumed by both the app trajectory panel and `workflow_status`/`workflow_run_get`.
 - **Run**: A single execution of a workflow — id (`runId`), workflow id, start/end timestamp, final state (completed/failed/cancelled), per-step outcomes, and the persisted event log. Stored at the real VFS under `/Workflows/.runs/<workflowId>/<runId>.json` (or equivalent real-VFS run-log location), never a host path.
-- **Node**: A workflow node with two orthogonal axes — (1) **agent source**: an existing statically-defined BOS agent, or an **Ephemeral agent** (task description + configurable tool list + configurable skill list, used when no existing agent matches the task); (2) **output type**: delegate (sub-agent output), tool (single tool call), research (parallel fan-out), or ag-ui (A2UI/UI artifact). A node MAY declare candidate sub-agents (its branch leaves) for dynamic routing, and MAY itself be a **candidate leaf** gated by another node's selection. Parallel execution is a scheduling property (independent ready branches run concurrently up to `maxConcurrentSteps`), orthogonal to both axes.
+- **Node**: A workflow node with two orthogonal axes — (1) **agent source**: an existing statically-defined BOS agent, or an **Ephemeral agent** (task description + configurable tool list + configurable skill list, used when no existing agent matches the task); (2) **output type**: delegate (sub-agent output), tool (single tool call), research (parallel fan-out), ag-ui (A2UI/UI artifact), or **event** (emit a configurable 034 event and complete). A node MAY declare candidate sub-agents (its branch leaves) for dynamic routing, and MAY itself be a **candidate leaf** gated by another node's selection. Parallel execution is a scheduling property (independent ready branches run concurrently up to `maxConcurrentSteps`), orthogonal to both axes.
 - **Selection**: The routing node's structured candidate selection — a first-class run-state token `selected[nodeId] = [candidateId, …]` captured from the node's `select_branch` signal / structured output (FR-029). It gates the routing node's candidate leaves (FR-031) and is recorded in the run log for replay.
+- **EventTrigger**: A workflow's subscription to a 034 event type — the `triggers` array in the workflow JSON. The service derives the union of all trigger types across all workflows and declares headless handlers for each (FR-040). No separate subscription store; the triggers array in the workflow JSON is the single source of truth.
+- **EmitEventNodeConfig**: The configuration for an `event` output-type node — the event type string (must be under `com.bos.workflows.*`), and a payload spec: either a static JSON object, or a template string with `{{nodeId.field}}` placeholders resolved from upstream node outputs at execution time (FR-046/FR-047).
+- **Run provenance (extended)**: In addition to the existing run fields, an event-triggered run records `startSource: "event"`, `triggerEventId` (the 034 event's id), and `triggerEventType` (the event type string) — so a run's origin is auditable (FR-041).
 
 ## Success Criteria *(mandatory)*
 
@@ -359,6 +433,11 @@ The engine enforces a **per-step** and a **per-run** timeout (configurable on th
 - **SC-021**: 100% of the tools declared on an ephemeral-agent node are available to the spawned agent (including deferred tools via `find_tools`); no declared tool is silently dropped or substituted.
 - **SC-022**: During a long run, `workflow_status` returns a populated per-step map (status + attempt + current-action string) and per-sub-agent status for Research nodes, so progress and the straggler are observable without polling the filesystem.
 - **SC-023**: Dry-run/fixture mode validates the DAG, branch routing, and leaf reachability in seconds (no real research performed), and a stuck step or run fails fast via the per-step/per-run timeout rather than hanging indefinitely.
+- **SC-024**: A workflow with a `triggers` array containing a matching event type starts a new run within 5 seconds of the event being emitted to the 034 system — no manual intervention or agent call required.
+- **SC-025**: `workflow_event_types` returns a list matching the registered handlers in the 034 event system with 100% accuracy (no missing types, no phantom types).
+- **SC-026**: An `event` node emits exactly one 034 event per execution, with the correct type, source (`appId: "workflows"`), and payload (static or template-resolved), verifiable via `query_events`.
+- **SC-027**: A workflow with event triggers is not triggered by events of a non-matching type — zero false-positive runs in 100% of non-matching event emissions.
+- **SC-028**: Concurrent event-triggered runs of the same workflow execute independently — no coalesce, no queue, no run suppression.
 
 ## Assumptions
 
@@ -380,3 +459,8 @@ The engine enforces a **per-step** and a **per-run** timeout (configurable on th
 - **Research/delegate outputs are first-class structured data** consumable downstream (FR-035), so a "parallel research → merge" handoff does not require file I/O; file tools remain available to agents that declare them (FR-034).
 - **Ephemeral tool-granting is implemented in the service's agent-spawn path** (FR-034/FR-035). If, at implement time, the root cause of a declared tool not resolving is in BOS ephemeral-agent tool resolution (platform) rather than the service's spawn config, that portion is escalated as a scoped `bos-core` fix — the service cannot grant a tool the platform will not resolve to the spawned agent. To be diagnosed by the Developer against code.
 - **Dry-run/fixture mode and per-step/per-run timeouts are service-side engine features** (FR-037/FR-038): because the service owns the whole engine, it can short-circuit a designated node's execution to inject a canned output, and it enforces timeouts on its own scheduler. Neither requires a BOS-source change. The Workflow entity already carries a default retry/timeout config; the engine now enforces it.
+- **034 event system is implemented and available**: spec 034 (event-notification-system) is converged and promoted. The workflow service uses its headless-handler channel (`handler_declare` over worker IPC, 034 ADR-3) to subscribe to trigger event types, and the loopback `POST /api/events` endpoint to emit events from `event` nodes. No BOS-source change is required.
+- **No namespace restriction on subscription (platform change 037)**: the 034 namespace-ownership check on handler registration (034 FR-023, `ownsNamespace` in `src/lib/events/api.ts`) is removed as part of this feature's platform dependency (037-event-namespace-relaxation). Any component can subscribe to any event type — the single-container trust model makes per-namespace access control unnecessary. The service's `handler_declare` for any trigger type is accepted without a prior grant.
+- **Emission namespace (workflow-item policy, not platform restriction)**: `event` nodes emit into the service's own namespace (`com.bos.workflows.*`) by default — this is a workflow-item provenance policy (the `source.appId: "workflows"` makes the origin clear in the Event Viewer), not a platform restriction. The 034 platform imposes no emission namespace check; the workflow item's `workflow_validate` enforces it for clarity (FR-048b).
+- **`workflow_event_types` reads the 034 handler registry**: the tool calls `GET /api/events/handlers` via the loopback bridge. This endpoint returns the grouped handler registry (in-memory, O(1) read) — no disk I/O on the hot path. The tool extracts the distinct event types from the grouped result.
+- **Event-triggered runs are fire-and-poll**: the 034 handler ack (returned to the kernel when the run is *started*, not when it completes) keeps the event's processing model intact — a long-running workflow does not hold the event in "processing" indefinitely (NFR-007). This is consistent with 034's design: handlers ack on completion of *their* work, and starting a run is the handler's work.

@@ -1,6 +1,8 @@
 import React, { useState } from "react";
-import type { AgentSource, OutputType, Workflow, WorkflowStep } from "../lib/types";
+import type { AgentSource, EventNodeConfig, OutputType, Workflow, WorkflowStep } from "../lib/types";
+import { EVENT_TYPE_PATTERN, WORKFLOWS_EVENT_NAMESPACE } from "../lib/types";
 import { Graph, GraphLegend } from "./Graph";
+import { EventNodeConfigForm } from "./EventNodeConfigForm";
 import { api } from "../lib/bridge";
 
 // GraphEditor — node/graph authoring surface (mockup's Detail-view "Edit"
@@ -15,7 +17,13 @@ interface GraphEditorProps {
   onSaved: () => void;
 }
 
-const OUTPUT_TYPES: OutputType[] = ["delegate", "tool", "research", "ag-ui"];
+const OUTPUT_TYPES: OutputType[] = ["delegate", "tool", "research", "ag-ui", "event"];
+
+/** A brand-new `event` node's config — the shape validate.js expects, with an
+ *  empty static payload the author fills in (US18/FR-046). */
+function defaultEventConfig(): EventNodeConfig {
+  return { eventType: WORKFLOWS_EVENT_NAMESPACE, payload: { mode: "static", value: {} } };
+}
 
 function uniqueId(existing: Set<string>, base = "step"): string {
   let n = existing.size + 1;
@@ -45,6 +53,26 @@ function defaultStep(id: string): WorkflowStep {
     agentSource: { kind: "ephemeral", task: "", tools: [], skills: [] },
     dependencies: [],
   };
+}
+
+/**
+ * The node ids a `{{nodeId.field}}` placeholder may legitimately reference:
+ * this node's transitive dependencies (its real upstreams). Falls back to
+ * every OTHER node when the step has no dependencies yet, so the author still
+ * gets a useful list while wiring the graph.
+ */
+function upstreamIdsFor(step: WorkflowStep, steps: WorkflowStep[]): string[] {
+  const byId = new Map(steps.map((s) => [s.id, s]));
+  const seen = new Set<string>();
+  const queue = [...(step.dependencies || [])];
+  while (queue.length) {
+    const id = queue.shift() as string;
+    if (seen.has(id) || id === step.id) continue;
+    seen.add(id);
+    for (const dep of byId.get(id)?.dependencies || []) queue.push(dep);
+  }
+  if (seen.size === 0) return steps.filter((s) => s.id !== step.id).map((s) => s.id);
+  return Array.from(seen);
 }
 
 function jsonPreview(value: unknown): string {
@@ -198,6 +226,17 @@ export function GraphEditor({ workflow, onCancel, onSaved }: GraphEditorProps) {
           return;
         }
       }
+      // Fail fast on the one event-node rule an author hits constantly, so
+      // the message names the node instead of arriving as a validation blob
+      // after the write (the service still enforces it — validate.js FR-048b).
+      const badEvent = (nextSteps as WorkflowStep[]).find(
+        (s) => s.outputType === "event" && (!s.config?.eventType || !String(s.config.eventType).startsWith(WORKFLOWS_EVENT_NAMESPACE) || !EVENT_TYPE_PATTERN.test(String(s.config.eventType))),
+      );
+      if (badEvent) {
+        setError(`Step "${badEvent.id}" (event) needs a valid eventType under "${WORKFLOWS_EVENT_NAMESPACE}" — e.g. "${WORKFLOWS_EVENT_NAMESPACE}analysis.complete".`);
+        setSaving(false);
+        return;
+      }
       await api.modify(workflow.id, { steps: nextSteps });
       onSaved();
     } catch (err) {
@@ -301,7 +340,16 @@ export function GraphEditor({ workflow, onCancel, onSaved }: GraphEditorProps) {
                   className="wf-textarea"
                   style={{ width: 160, padding: "4px 8px" }}
                   value={selected.outputType}
-                  onChange={(e) => patchStep(selectedIndex, { outputType: e.target.value as OutputType })}
+                  onChange={(e) => {
+                    const outputType = e.target.value as OutputType;
+                    // Seed an `event` node with a well-formed (if empty) config
+                    // so the form below has something to edit and the node is
+                    // never saved as a bare `outputType: "event"`.
+                    patchStep(selectedIndex, {
+                      outputType,
+                      ...(outputType === "event" && !selected.config ? { config: defaultEventConfig() } : {}),
+                    });
+                  }}
                 >
                   {OUTPUT_TYPES.map((t) => (
                     <option key={t} value={t}>
@@ -443,6 +491,15 @@ export function GraphEditor({ workflow, onCancel, onSaved }: GraphEditorProps) {
                 </div>
               ) : null}
 
+              {selected.outputType === "event" ? (
+                <EventNodeConfigForm
+                  key={selected.id}
+                  config={selected.config}
+                  upstreamIds={upstreamIdsFor(selected, steps)}
+                  onChange={(config) => patchStep(selectedIndex, { config })}
+                />
+              ) : null}
+
               <div style={{ marginTop: 8 }}>
                 <div className="wf-row">
                   <span className="wf-dim" style={{ fontSize: 11 }}>
@@ -510,7 +567,7 @@ export function GraphEditor({ workflow, onCancel, onSaved }: GraphEditorProps) {
                 ))}
               </div>
 
-              {selected.outputType !== "research" ? (
+              {selected.outputType !== "research" && selected.outputType !== "event" ? (
                 <div style={{ marginTop: 8 }}>
                   <label className="wf-dim" style={{ fontSize: 11 }}>
                     input (JSON, optional{selected.outputType === "ag-ui" ? " — this IS the ag-ui output" : ""})

@@ -1,4 +1,6 @@
-// tools.test.js — the 12 workflow_* tool declarations (FR-002/014/016/024)
+// tools.test.js — the 13 workflow_* tool declarations (FR-002/014/016/024,
+// plus workflow_event_types — US17/FR-044; its handler behavior lives in
+// event-types-tool.test.js)
 // and their gating opt-in (parallelSafe on read-only tools, US2/039 FR-005 —
 // the actual allowlist/deferred enforcement lives in BOS's service-tool-bridge
 // and is out of scope for a marketplace item's own unit tests; what this item
@@ -21,14 +23,24 @@ const EXPECTED_NAMES = [
   "workflow_validate",
   "workflow_run_list",
   "workflow_run_get",
+  "workflow_event_types",
 ];
 
-const READ_ONLY_NAMES = new Set(["workflow_list", "workflow_read", "workflow_status", "workflow_export", "workflow_validate", "workflow_run_list", "workflow_run_get"]);
+const READ_ONLY_NAMES = new Set([
+  "workflow_list",
+  "workflow_read",
+  "workflow_status",
+  "workflow_export",
+  "workflow_validate",
+  "workflow_run_list",
+  "workflow_run_get",
+  "workflow_event_types",
+]);
 const WRITER_NAMES = new Set(["workflow_create", "workflow_modify", "workflow_run", "workflow_cancel", "workflow_delete"]);
 
 test("tools.js", async (t) => {
-  await t.test("declares exactly the 12 required tools (FR-002)", () => {
-    assert.equal(DECLARATIONS.length, 12);
+  await t.test("declares exactly the 13 required tools (FR-002/FR-044)", () => {
+    assert.equal(DECLARATIONS.length, 13);
     assert.deepEqual(DECLARATIONS.map((d) => d.name).sort(), [...EXPECTED_NAMES].sort());
   });
 

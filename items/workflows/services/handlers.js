@@ -1,4 +1,6 @@
-// handlers.js — tool handlers for the 12 workflow_* tools (FR-002/014/016/024),
+// handlers.js — tool handlers for the 13 workflow_* tools (FR-002/014/016/024,
+// plus workflow_event_types — US17/FR-044/045; event-triggered starts go
+// through makeRunStarter — US16/FR-041),
 // wired to the engine (store/validate/generate) and to runs.js for execution
 // + historical inspection. Each handler is `(args, ctx) => Promise<any>`; ctx
 // carries `log(level, message)` for structured logging (NFR-005) and
@@ -13,6 +15,8 @@ const store = require("./engine/store");
 const { validateWorkflow } = require("./engine/validate");
 const { generateWorkflowFromTask } = require("./engine/generate");
 const runs = require("./runs");
+const events = require("./events");
+const vfs = require("./vfs");
 
 function deepMerge(target, patch) {
   if (patch == null || typeof patch !== "object") return target;
@@ -35,8 +39,80 @@ function requireString(args, field) {
   return v.trim();
 }
 
+/**
+ * The ONE way a run is started, shared by the `workflow_run` tool, the app's
+ * `POST /workflows/<id>/run` bridge route, and US16's event dispatch
+ * (events.js) — so all three produce an identically-shaped run record and
+ * differ only in `startSource` (FR-041).
+ *
+ * Fire-and-poll (ADR-8): resolves as soon as the run is registered, with the
+ * runId; the run itself continues in the background.
+ */
+function makeRunStarter(ctx) {
+  const log = ctx.log || (() => {});
+  return async function startWorkflowRun(opts = {}) {
+    const id = requireString(opts, "workflowId");
+    const startSource = opts.startSource === "event" || opts.startSource === "user" ? opts.startSource : "tool";
+    const wf = await store.getWorkflow(id);
+    if (!wf) throw new Error(`no such workflow: ${id}`);
+    const validation = validateWorkflow(wf);
+    if (!validation.ok) throw new Error(`workflow ${id} failed validation: ${validation.errors.join("; ")}`);
+    // FR-043: concurrent runs of one workflow are legitimate for EVENT
+    // triggers (two events arrive, two independent runs start). A user/tool
+    // run keeps the historical single-active-run guard.
+    if (startSource !== "event" && runs.isRunning(id)) {
+      throw new Error(`workflow ${id} already has a run in progress: ${runs.activeRunId(id)}`);
+    }
+    // US14/FR-037 — dry-run is opt-in: `fixtures` alone does nothing unless
+    // dryRun is set, and a run with neither behaves exactly as before.
+    const fixtures = opts && typeof opts.fixtures === "object" && opts.fixtures ? opts.fixtures : undefined;
+    const dryRun = opts.dryRun === true;
+    if (dryRun && !fixtures) log("warn", `workflow_run: dryRun requested for ${id} with no fixtures — every node will still execute for real`);
+    const { runId } = runs.startRun(wf, {
+      featureBranch: opts.featureBranch,
+      conversationId: opts.conversationId,
+      maxConcurrentSteps: ctx.defaultMaxConcurrentSteps,
+      dryRun,
+      fixtures,
+      startSource,
+      triggerEventId: opts.triggerEventId,
+      triggerEventType: opts.triggerEventType,
+      eventContext: opts.eventContext,
+    });
+    log(
+      "info",
+      `run started: ${runId} for workflow ${id} (startSource=${startSource}${startSource === "event" ? `, event=${opts.triggerEventType} ${opts.triggerEventId}` : ""}, fire-and-poll${dryRun ? `, dry-run with ${Object.keys(fixtures || {}).length} fixture(s)` : ""})`,
+    );
+    return {
+      runId,
+      workflowId: id,
+      startSource,
+      ...(startSource === "event" ? { triggerEventId: opts.triggerEventId ?? null, triggerEventType: opts.triggerEventType ?? null } : {}),
+      ...(dryRun ? { dryRun: true, fixtures: Object.keys(fixtures || {}) } : {}),
+    };
+  };
+}
+
 function makeHandlers(ctx) {
   const log = ctx.log || (() => {});
+  const startWorkflowRun = makeRunStarter(ctx);
+
+  /**
+   * US16/FR-039 — keep the declared event subscriptions equal to the union of
+   * every workflow's `triggers` after any write that could change it. Fully
+   * non-fatal: a workflow write must never fail because the event kernel is
+   * unreachable. Skipped entirely when the caller gave us no IPC channel
+   * (unit tests, and the load-time `import()` BOS does on the main thread).
+   */
+  async function reconcileEventSubscriptions(op) {
+    if (typeof ctx.ipcPost !== "function") return;
+    try {
+      const workflows = await store.listWorkflows();
+      await events.reconcileSubscriptions(workflows, { ipcPost: ctx.ipcPost, httpJson: vfs.jsonRequest, log });
+    } catch (err) {
+      log("warn", `event subscription reconcile after ${op} failed (non-fatal): ${err.message}`);
+    }
+  }
 
   return {
     workflow_list: async () => {
@@ -66,7 +142,8 @@ function makeHandlers(ctx) {
       const saved = await store.saveWorkflow(wf);
       const validation = validateWorkflow(saved);
       log("info", `workflow_create: saved workflow ${saved.id} (${saved.steps.length} step(s)), valid=${validation.ok}`);
-      return { workflow_id: saved.id, name: saved.name, steps: saved.steps.length, validation };
+      await reconcileEventSubscriptions("workflow_create");
+      return { workflow_id: saved.id, name: saved.name, steps: saved.steps.length, validation, triggers: events.normalizeTriggers(saved) };
     },
 
     workflow_read: async (args) => {
@@ -85,31 +162,16 @@ function makeHandlers(ctx) {
       const saved = await store.saveWorkflow({ ...merged, id });
       const validation = validateWorkflow(saved);
       log("info", `workflow_modify: updated workflow ${id}, valid=${validation.ok}`);
-      return { workflow_id: saved.id, steps: saved.steps.length, validation };
+      await reconcileEventSubscriptions("workflow_modify");
+      return { workflow_id: saved.id, steps: saved.steps.length, validation, triggers: events.normalizeTriggers(saved) };
     },
 
-    workflow_run: async (args) => {
-      const id = requireString(args, "workflowId");
-      const wf = await store.getWorkflow(id);
-      if (!wf) throw new Error(`no such workflow: ${id}`);
-      const validation = validateWorkflow(wf);
-      if (!validation.ok) throw new Error(`workflow ${id} failed validation: ${validation.errors.join("; ")}`);
-      if (runs.isRunning(id)) throw new Error(`workflow ${id} already has a run in progress: ${runs.activeRunId(id)}`);
-      // US14/FR-037 — dry-run is opt-in: `fixtures` alone does nothing unless
-      // dryRun is set, and a run with neither behaves exactly as before.
-      const fixtures = args && typeof args.fixtures === "object" && args.fixtures ? args.fixtures : undefined;
-      const dryRun = args?.dryRun === true;
-      if (dryRun && !fixtures) log("warn", `workflow_run: dryRun requested for ${id} with no fixtures — every node will still execute for real`);
-      const { runId } = runs.startRun(wf, {
-        featureBranch: args.featureBranch,
-        conversationId: args.conversationId,
-        maxConcurrentSteps: ctx.defaultMaxConcurrentSteps,
-        dryRun,
-        fixtures,
-      });
-      log("info", `workflow_run: started run ${runId} for workflow ${id} (fire-and-poll${dryRun ? `, dry-run with ${Object.keys(fixtures || {}).length} fixture(s)` : ""})`);
-      return { runId, workflowId: id, ...(dryRun ? { dryRun: true, fixtures: Object.keys(fixtures || {}) } : {}) };
-    },
+    // `startSource` is accepted (and only ever "user" or "tool" here) so the
+    // app's Run button can identify itself through the same bridge route —
+    // anything else, including a caller trying to fake "event", normalizes to
+    // "tool" (FR-041). Event-triggered runs never come through this handler.
+    workflow_run: async (args) =>
+      startWorkflowRun({ ...(args || {}), startSource: args?.startSource === "user" ? "user" : "tool" }),
 
     // US13/FR-036: this NEVER returns an empty `steps: {}` for a run that has
     // started — the per-step map (status, attempt/maxAttempts, current action,
@@ -135,6 +197,7 @@ function makeHandlers(ctx) {
       await store.deleteWorkflow(id);
       await runs.deleteRuns(id);
       log("info", `workflow_delete: deleted workflow ${id} and its run logs`);
+      await reconcileEventSubscriptions("workflow_delete");
       return { workflowId: id, deleted: true };
     },
 
@@ -162,6 +225,31 @@ function makeHandlers(ctx) {
       return runs.listRuns(id);
     },
 
+    // US17/FR-044/045: event-type discovery for trigger authoring. Reads BOS's
+    // OWN handler registry over the same loopback origin vfs.js resolves
+    // (GET /api/events/handlers → { "<type>": { ui: [...], headless: [...] } }).
+    // An empty registry is an empty list, NOT an error (FR-045); an HTTP
+    // failure IS an error, so the assistant never mistakes "the registry is
+    // unreachable" for "nothing is registered" (NFR-002).
+    workflow_event_types: async () => {
+      const res = await vfs.jsonRequest("GET", "/api/events/handlers");
+      if (res.status !== 200) {
+        const detail = (res.body && ((res.body.error && (res.body.error.message || res.body.error)) || res.body.message)) || "no error body";
+        throw new Error(`could not read the BOS event registry (GET /api/events/handlers -> ${res.status}): ${detail}`);
+      }
+      const grouped = res.body && typeof res.body === "object" && !Array.isArray(res.body) ? res.body : {};
+      const types = Object.entries(grouped)
+        .map(([type, group]) => {
+          const ui = Array.isArray(group && group.ui) ? group.ui : [];
+          const headless = Array.isArray(group && group.headless) ? group.headless : [];
+          const first = [...ui, ...headless][0];
+          return { type, handlerCount: ui.length + headless.length, displayName: (first && first.displayName) ?? null };
+        })
+        .sort((a, b) => a.type.localeCompare(b.type));
+      log("info", `workflow_event_types: ${types.length} event type(s) registered`);
+      return types;
+    },
+
     workflow_run_get: async (args) => {
       const workflowId = requireString(args, "workflowId");
       const runId = requireString(args, "runId");
@@ -173,4 +261,4 @@ function makeHandlers(ctx) {
   };
 }
 
-module.exports = { makeHandlers, deepMerge };
+module.exports = { makeHandlers, makeRunStarter, deepMerge };

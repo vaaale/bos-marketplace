@@ -1,6 +1,6 @@
 # Workflow Manager — Tool Reference
 
-The service declares 12 tools at startup via `tool_declare` (039-compliant —
+The service declares 13 tools at startup via `tool_declare` (039-compliant —
 `deploymentMode: "tools"` in `services/service.json`). They are gated exactly
 like built-in tools (allowlist/deferred approval) and disappear from the
 registry the instant the service stops or is uninstalled.
@@ -9,7 +9,7 @@ All handlers live in `services/handlers.js`; schemas in `services/tools.js`.
 
 ## Tool group
 
-All 12 tools appear under the **Workflows** group, declared in
+All 13 tools appear under the **Workflows** group, declared in
 `services/service.json`'s `toolGroups` (bos-spec 041). The group's name and
 description are what the assistant sees in its system prompt, and an agent that
 has these tools deferred reaches them with `find_tools(group: "workflows")`.
@@ -35,7 +35,11 @@ Create and persist a new workflow.
   `workflow` (preferred) is a fully-formed workflow object (see the bundled
   skill for the node shape); `taskDescription` plans one for you via one
   extra delegation to an ephemeral "planner" agent.
-- Output: `{ workflow_id, name, steps, validation: { ok, errors[], warnings[] } }`
+- Output: `{ workflow_id, name, steps, validation: { ok, errors[], warnings[] }, triggers[] }`
+- A workflow may carry `triggers: ["<event.type>", …]` (US16). Saving it
+  subscribes the service to those BrowserOS notification event types; an
+  emitted event then starts a run automatically, with the event payload handed
+  to the workflow's first step. `triggers` echoes back what was stored.
 
 ## `workflow_read`
 
@@ -50,7 +54,9 @@ Apply a JSON-merge patch to an existing workflow (arrays are replaced
 wholesale, not merged element-wise), then re-validate.
 
 - Input: `{ workflowId, changes: object }`
-- Output: `{ workflow_id, steps, validation }`
+- Output: `{ workflow_id, steps, validation, triggers[] }`
+- Patching `triggers` re-subscribes immediately: new types are subscribed,
+  types no longer named by ANY workflow are unsubscribed (US16).
 
 ## `workflow_run`
 
@@ -58,9 +64,13 @@ Start a run. **Fire-and-poll** — returns immediately (well under the 30s tool
 timeout) and does NOT wait for the workflow to finish.
 
 - Input: `{ workflowId, featureBranch?, conversationId?, dryRun?, fixtures? }`
-- Output: `{ runId, workflowId, dryRun?, fixtures? }`
+- Output: `{ runId, workflowId, startSource, dryRun?, fixtures? }`
 - Refused (throws) if the workflow fails validation, or if it already has a
   run in progress (one concurrent run per workflow).
+- `startSource` records who started the run: `"tool"` here, `"user"` for the
+  app's Run button, `"event"` for an event-triggered run (US16). Only the
+  event path may overlap an in-flight run; a caller cannot claim `"event"`
+  through this tool.
 
 **Dry-run / fixture mode (opt-in).** With `dryRun: true`, every node named in
 `fixtures` (`{ "<nodeId>": <cannedOutput> }`) skips its real execution
@@ -148,7 +158,9 @@ errors rather than warnings):
 List a workflow's historical runs, newest first. **Read-only, `parallelSafe`.**
 
 - Input: `{ workflowId }`
-- Output: array of `{ runId, startedAt, endedAt, state }`
+- Output: array of `{ runId, startedAt, endedAt, state, startSource,
+  triggerEventType, triggerEventId }` — `startSource` is `"tool"` for any run
+  recorded before US16 existed.
 
 ## `workflow_run_get`
 
@@ -160,7 +172,10 @@ persisted record. A finished run replays exactly as it looked live.
 
 - Input: `{ workflowId, runId, since? }`
 - Output: `{ runId, workflowId, startedAt, endedAt, state, finalState?, steps,
-  selected?, warnings?, events, seq?, error? }`
+  selected?, warnings?, events, seq?, error?, startSource, triggerEventId,
+  triggerEventType, eventContext }` — the last four are the run's provenance
+  (US16); `eventContext` is the triggering event's payload, and is `null` for
+  anything but an event-triggered run.
 
 The event log records agent execution as well as step lifecycle: `agent.prompt`,
 `agent.reasoning`, `agent.tool_call` (an inflight call is updated in place by
@@ -168,6 +183,22 @@ its completion), `agent.response`, `agent.sub_agent`, alongside `step.start` /
 `step.retry` / `step.running` / `step.complete` / `step.fail` / `step.skip` and
 the run-level `workflow.start` / `workflow.complete` / `workflow.fail` /
 `workflow.cancel` / `workflow.branch.skipped`.
+
+## `workflow_event_types`
+
+List the event types currently registered in the BOS event system, so a
+workflow's triggers (and an `event` node's downstream expectations) can be
+authored against types that actually exist. **Read-only, `parallelSafe`.**
+
+- Input: `{}`
+- Output: array of `{ type, handlerCount, displayName }`, sorted by `type` —
+  `handlerCount` is the total of the type's UI + headless handlers, and
+  `displayName` is the first registered handler's label (`null` when a type is
+  registered with no handler that names itself).
+
+An empty registry is an empty array, not an error. If the event registry cannot
+be read at all, the tool fails with an error naming the route and status — so
+"the registry is unreachable" is never reported as "nothing is registered".
 
 ## A full build → run → poll → cancel → inspect loop
 

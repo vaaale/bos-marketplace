@@ -1,4 +1,4 @@
-// tools.js — the 12 workflow_* tool declarations (FR-002/014/016/024), the
+// tools.js — the 13 workflow_* tool declarations (FR-002/014/016/024/044), the
 // 039-compliant native-tool surface replacing the retired BOS-source
 // `workflowTools()`. Declarations only — see handlers.js for the
 // implementations `index.js` wires each `name` to via tool_call dispatch.
@@ -94,6 +94,12 @@ const DECLARATIONS = [
     description:
       "Read one run's full detail: per-step outcomes (completed/failed/cancelled/skipped/neutral) with attempt counts, current action, per-sub-agent fan-out status and the per-node agent trace (prompt, reasoning, tool calls with arguments/results, response), the routing selections, and the complete event log — replayable identically whether the run is still live or long finished.",
     inputSchema: required({ workflowId: STRING, runId: STRING }, ["workflowId", "runId"]),
+  }),
+  readOnly({
+    name: "workflow_event_types",
+    description:
+      "Returns the list of event types currently registered in the BOS event system, for use when authoring workflow triggers. Each entry includes the type string, the count of registered handlers, and a display name.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
   }),
 ];
 

@@ -1,18 +1,17 @@
 ---
 name: workflow-manager
-description: Build, run, and inspect multi-step agent workflows (DAGs of delegate/tool/research/ag-ui nodes) via the Workflow Manager's service-declared tools.
+description: Build, run, and inspect multi-step agent workflows (DAGs of delegate/tool/research/ag-ui/event nodes) via the Workflow Manager's service-declared tools, including event-triggered runs and emitting BOS events from a step.
 ---
 
 # Workflow Manager
 
 The Workflow Manager service owns a complete workflow engine — a node model, a
 parallel scheduler, dynamic routing, and persistence — and exposes it to you
-as 12 native tools: `workflow_list`, `workflow_create`, `workflow_read`,
-`workflow_modify`, `workflow_run`, `workflow_status`, `workflow_cancel`,
-`workflow_delete`, `workflow_export`, `workflow_validate`, `workflow_run_list`,
-`workflow_run_get`. Use this skill whenever a task calls for a multi-step,
-possibly-branching, possibly-parallel piece of work that's worth saving and
-re-running rather than doing once inline.
+as 13 native tools (see the tool table at the end of this skill). Use this
+skill whenever a task calls for a multi-step, possibly-branching,
+possibly-parallel piece of work that's worth saving and re-running rather than
+doing once inline — and whenever that work should start **when something
+happens** rather than when someone asks.
 
 ## The node model — two independent choices per step
 
@@ -43,6 +42,9 @@ never conflate them:
      materially faster than wiring N separate delegate steps by hand.
    - `"ag-ui"` — no delegation at all; the node's `input` is returned directly
      as a UI artifact. Use this for a fixed value or a UI-only step.
+   - `"event"` — no delegation and no agent at all: the node emits one BOS
+     event and finishes. The cheapest node type there is. Configured with
+     `config`, not `agentSource`/`input` — see "Emitting events" below.
 
 Any combination is valid: an ephemeral agent with research output, a static
 agent with tool output, etc.
@@ -184,6 +186,114 @@ Always follow up a create/modify with `workflow_validate` if you're not
 already confident the DAG is acyclic and every dependency/candidate resolves
 — it's cheap and catches authoring mistakes before a run wastes time.
 
+## Event-triggered workflows — running when something happens
+
+A workflow does not have to be started by hand. Give it a `triggers` array of
+BOS **event types** and the service subscribes a headless handler for each one;
+every matching event that arrives starts a run.
+
+```json
+{
+  "workflowId": "invoice-triage-1a2b",
+  "changes": { "triggers": ["com.bos.gsuite.email.received", "com.bos.files.created"] }
+}
+```
+
+- **Discover types first.** Call `workflow_event_types` — it returns
+  `[{ type, handlerCount, displayName }]` for every type BOS's event kernel
+  currently has handlers registered for. Use it instead of guessing a type
+  string; a typo'd trigger is a workflow that silently never runs. An empty
+  list is a legitimate answer (nothing is registered yet), not an error.
+- **Setting triggers is just `workflow_modify`.** `triggers` is a normal
+  top-level workflow field, so patch it like any other; arrays are replaced
+  wholesale, so send the full desired list, not a delta. The service
+  re-subscribes immediately on every create/modify/delete — new types are
+  subscribed, types nothing triggers on any more are unsubscribed. `triggers`
+  is echoed back in the result so you can confirm what was stored.
+- **A `prefix.*` pattern is allowed.** `"com.bos.files.*"` is woken by
+  `com.bos.files.created`, `com.bos.files.deleted`, and so on. An exact type
+  matches only itself.
+- **The event payload becomes the first step's input.** For every ROOT node (a
+  node with no `dependencies`), the executor appends a "Triggering event:"
+  block to the node's prompt carrying the event type, the event id, and the
+  event's payload as JSON. Nodes further down the DAG see it the ordinary way,
+  through their upstream's output. So author root nodes of a triggered
+  workflow to expect that block — e.g. "Triage the email described in the
+  triggering event payload."
+- **Re-entrancy: always a NEW run, never a queue.** Two matching events produce
+  two independent, concurrently-executing runs of the same workflow. This is
+  deliberate, not a bug: the "a workflow is already running, refuse to start
+  another" guard applies only to user- and tool-started runs. If concurrent
+  runs would be wrong for a given workflow (they share a file, a lock, an
+  external quota), the workflow itself has to be idempotent — the engine will
+  not serialize them for you.
+- **The event is acked as soon as the run STARTS**, never when it finishes. A
+  run can take an hour; the kernel's per-handler dispatch queue is serial, so
+  acking late would stall every later event of that type behind it. A
+  consequence: a failed run does not un-ack its event.
+- **Provenance is recorded.** A triggered run carries `startSource: "event"`
+  plus `triggerEventType`, `triggerEventId` and `eventContext`; a run you
+  started with `workflow_run` carries `startSource: "tool"`, and one started
+  from the app carries `"user"`. All three show up in `workflow_status`,
+  `workflow_run_get` and `workflow_run_list`, so "why did this run?" is always
+  answerable after the fact.
+
+## Emitting events — the `event` node
+
+A step with `"outputType": "event"` emits one BOS event and finishes. It has no
+agent, makes no model call, and its whole definition is `config`:
+
+```json
+{
+  "id": "announce",
+  "outputType": "event",
+  "dependencies": ["analyze"],
+  "config": {
+    "eventType": "com.bos.workflows.analysis.complete",
+    "payload": { "mode": "static", "value": { "status": "done" } }
+  }
+}
+```
+
+- **Namespace policy: `com.bos.workflows.*` only.** A workflow may emit only
+  under this item's own namespace — `workflow_validate` rejects anything else
+  as an error. (Reacting to another component's events is fine and expected;
+  *impersonating* one is not.) Event types are dot-separated and lowercase.
+- **Two payload modes**, and the payload is always a JSON **object**:
+  - `{"mode": "static", "value": { … }}` — emitted verbatim.
+  - `{"mode": "template", "text": "…"}` — a JSON template string in which
+    `{{nodeId.field}}` is substituted with that upstream node's output before
+    the text is parsed as JSON. `{{n.output}}`, `{{n.output.summary}}` and
+    `{{n.summary}}` all address node `n`'s output; substituted values are
+    JSON-encoded, so `{"summary": {{analyze.summary}}}` is correct and
+    `{"summary": "{{analyze.summary}}"}` double-quotes a string that already
+    carries its own quotes. Referenced nodes must be real upstreams of the
+    event node — `workflow_validate` checks resolvability, and the run fails if
+    the rendered text isn't a JSON object.
+- **Every emitted event carries a `_wf` provenance envelope** (`workflowId`,
+  `runId`, `nodeId`) merged into its payload, so a downstream handler or the
+  Event Viewer can trace it back to the node that produced it.
+
+### ⚠ Cycle warning — never emit an event your own workflow triggers on
+
+There is **no loop detection** across the event boundary. If a workflow's
+`triggers` include (or prefix-match) the type one of its own `event` nodes
+emits, each run emits an event that starts another run, forever:
+
+```
+triggers: ["com.bos.workflows.*"]        ← matches everything this item emits
+steps:    [{ outputType: "event", config: { eventType: "com.bos.workflows.done" } }]
+                                          ← starts another run of itself. Unbounded.
+```
+
+The same trap exists indirectly: workflow A emits a type that triggers workflow
+B, which emits a type that triggers A. Before you set `triggers` or add an
+`event` node, check the emitted types against the trigger lists of **every**
+workflow (`workflow_list` + `workflow_read`), and be especially careful with
+`com.bos.workflows.*`-shaped trigger patterns — they match this item's entire
+emission namespace. If you must chain workflows by event, use distinct,
+narrowly-named types in one direction only, and say so in the workflow's name.
+
 ## Executing a workflow — fire-and-poll
 
 `workflow_run` is **asynchronous**: it returns `{ runId, workflowId }`
@@ -290,3 +400,31 @@ to dependent steps as structured data automatically.
   progress — most steps take at least a few seconds.
 - Don't forget `toolName` on a `"tool"`-outputType step, or `researchAgents`
   on a `"research"`-outputType step — `workflow_validate` will catch both.
+- Don't guess an event type for `triggers` — call `workflow_event_types` and
+  use the real string. A typo'd trigger fails silently: the workflow simply
+  never runs.
+- Don't give an `event` node an `agentSource`, an `input`, or a `toolName` —
+  its `config` is its entire definition, and it makes no model call.
+- **Don't let a workflow trigger on a type it (or a workflow it triggers) can
+  emit.** There is no cycle guard across the event boundary — see the warning
+  above.
+- Don't assume event-triggered runs serialize. Two events = two concurrent
+  runs; make the workflow idempotent if that matters.
+
+## Tool reference
+
+| Tool | What it does |
+| --- | --- |
+| `workflow_list` | Every saved workflow with its live `status` (`running`/`idle`) and current `run_id`. |
+| `workflow_create` | Save a workflow — pass `workflow` (the object) or `taskDescription` (planned for you). Returns `validation` and the stored `triggers`. |
+| `workflow_read` | The full workflow JSON, including `steps` and `triggers`. |
+| `workflow_modify` | Patch a saved workflow (`changes`). Arrays are replaced wholesale; patching `triggers` re-subscribes immediately. |
+| `workflow_run` | Start a run. Asynchronous — returns `{ runId }` at once. Accepts `dryRun` + `fixtures`. |
+| `workflow_status` | The live run projection: per-step status, attempts, current action, sub-agent fan-out, agent trace, and run provenance. |
+| `workflow_cancel` | Stop the in-progress run. |
+| `workflow_delete` | Delete a workflow (and unsubscribe its triggers). |
+| `workflow_export` | The workflow as portable JSON. |
+| `workflow_validate` | DAG acyclicity, node shape, candidate topology, trigger types, event-node namespace and template references. |
+| `workflow_run_list` | A workflow's past runs, newest first, each with `startSource`/`triggerEventType`/`triggerEventId`. |
+| `workflow_run_get` | One run's full detail: per-step outcomes, agent traces, routing selections, and the complete event log. |
+| `workflow_event_types` | **(event authoring)** The event types BOS's kernel currently has handlers for — `[{ type, handlerCount, displayName }]`. Call this before setting `triggers`. |

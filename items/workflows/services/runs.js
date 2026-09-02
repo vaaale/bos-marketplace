@@ -18,10 +18,28 @@ const { createRunState, replayRunState, registerRunState, getRunState, unregiste
 
 // runId -> { workflowId, runState, abortController }
 const LIVE = new Map();
-// workflowId -> runId, only while that workflow has an active run (single
-// concurrent run per workflow — a second workflow_run while one is active is
-// rejected by handlers.js).
+// workflowId -> [runId, …] in start order, only while that workflow has at
+// least one active run. Usually exactly one: `workflow_run` still rejects a
+// second run while one is in progress. EVENT-triggered runs are the exception
+// (US16/FR-043 — two events for the same workflow start two independent runs),
+// which is why this is a list rather than a single id: each run removes only
+// its OWN entry when it settles, so one finishing early can never make a
+// still-running sibling look idle. `activeRunId` reports the newest.
 const ACTIVE_BY_WORKFLOW = new Map();
+
+function markActive(workflowId, runId) {
+  const list = ACTIVE_BY_WORKFLOW.get(workflowId);
+  if (list) list.push(runId);
+  else ACTIVE_BY_WORKFLOW.set(workflowId, [runId]);
+}
+
+function clearActive(workflowId, runId) {
+  const list = ACTIVE_BY_WORKFLOW.get(workflowId);
+  if (!list) return;
+  const idx = list.indexOf(runId);
+  if (idx >= 0) list.splice(idx, 1);
+  if (!list.length) ACTIVE_BY_WORKFLOW.delete(workflowId);
+}
 
 function generateRunId() {
   return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -37,22 +55,43 @@ async function persistRun(runState) {
 }
 
 function isRunning(workflowId) {
-  return ACTIVE_BY_WORKFLOW.has(workflowId);
+  return (ACTIVE_BY_WORKFLOW.get(workflowId) || []).length > 0;
 }
 
+/** The NEWEST active run for a workflow (undefined when it is idle). */
 function activeRunId(workflowId) {
-  return ACTIVE_BY_WORKFLOW.get(workflowId);
+  const list = ACTIVE_BY_WORKFLOW.get(workflowId) || [];
+  return list.length ? list[list.length - 1] : undefined;
 }
 
-/** Fire-and-poll: returns { runId } immediately; the run continues in the background. */
-function startRun(workflow, { featureBranch, conversationId, maxConcurrentSteps, dryRun, fixtures, onEvent } = {}) {
+/** Every active run for a workflow, oldest first (FR-043). */
+function activeRunIds(workflowId) {
+  return Array.from(ACTIVE_BY_WORKFLOW.get(workflowId) || []);
+}
+
+/** Fire-and-poll: returns { runId } immediately; the run continues in the
+ *  background. `startSource`/`triggerEvent*`/`eventContext` are US16/FR-041's
+ *  run provenance — they are recorded on the run and, for an event-triggered
+ *  run, made available to the workflow's root node(s) (FR-042, executor.js). */
+function startRun(
+  workflow,
+  { featureBranch, conversationId, maxConcurrentSteps, dryRun, fixtures, onEvent, startSource, triggerEventId, triggerEventType, eventContext } = {},
+) {
   const runId = generateRunId();
   const abortController = new AbortController();
-  const runState = createRunState({ runId, workflowId: workflow.id, workflowName: workflow.name }).seedSteps(workflow.steps);
+  const runState = createRunState({
+    runId,
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    startSource,
+    triggerEventId,
+    triggerEventType,
+    eventContext,
+  }).seedSteps(workflow.steps);
   registerRunState(runState);
 
   LIVE.set(runId, { workflowId: workflow.id, runId, runState, abortController });
-  ACTIVE_BY_WORKFLOW.set(workflow.id, runId);
+  markActive(workflow.id, runId);
 
   const emit = (ev) => {
     runState.record(ev);
@@ -69,6 +108,10 @@ function startRun(workflow, { featureBranch, conversationId, maxConcurrentSteps,
         maxConcurrentSteps,
         dryRun,
         fixtures,
+        startSource: runState.startSource,
+        triggerEventId: runState.triggerEventId,
+        triggerEventType: runState.triggerEventType,
+        eventContext: runState.eventContext,
         abortSignal: abortController.signal,
         emit,
       });
@@ -83,7 +126,7 @@ function startRun(workflow, { featureBranch, conversationId, maxConcurrentSteps,
       runState.error = err.message;
     } finally {
       runState.endedAt = Date.now();
-      ACTIVE_BY_WORKFLOW.delete(workflow.id);
+      clearActive(workflow.id, runId);
       await persistRun(runState).catch(() => {});
       // Keep the finished run in LIVE for a short grace period so an
       // immediate workflow_status poll still sees it without a VFS round
@@ -95,7 +138,7 @@ function startRun(workflow, { featureBranch, conversationId, maxConcurrentSteps,
 }
 
 function cancelRun(workflowId) {
-  const runId = ACTIVE_BY_WORKFLOW.get(workflowId);
+  const runId = activeRunId(workflowId);
   if (!runId) return false;
   const live = LIVE.get(runId);
   if (!live) return false;
@@ -136,7 +179,16 @@ async function listRuns(workflowId) {
   for (const [runId, live] of LIVE) {
     if (live.workflowId !== workflowId) continue;
     const rs = live.runState;
-    byRunId.set(runId, { runId, startedAt: rs.startedAt, endedAt: rs.endedAt, state: rs.status, finalState: rs.finalState });
+    byRunId.set(runId, {
+      runId,
+      startedAt: rs.startedAt,
+      endedAt: rs.endedAt,
+      state: rs.status,
+      finalState: rs.finalState,
+      startSource: rs.startSource,
+      triggerEventType: rs.triggerEventType,
+      triggerEventId: rs.triggerEventId,
+    });
   }
   let entries = [];
   try {
@@ -150,7 +202,17 @@ async function listRuns(workflowId) {
     if (byRunId.has(runId)) continue; // the in-memory snapshot is authoritative
     try {
       const run = JSON.parse(await vfs.readText(e.path));
-      byRunId.set(runId, { runId, startedAt: run.startedAt, endedAt: run.endedAt, state: run.state, finalState: run.finalState });
+      byRunId.set(runId, {
+        runId,
+        startedAt: run.startedAt,
+        endedAt: run.endedAt,
+        state: run.state,
+        finalState: run.finalState,
+        // A pre-US16 run record has no startSource — it was a tool run.
+        startSource: run.startSource || "tool",
+        triggerEventType: run.triggerEventType ?? null,
+        triggerEventId: run.triggerEventId ?? null,
+      });
     } catch {
       // skip unreadable run file
     }
@@ -188,6 +250,7 @@ module.exports = {
   cancelRun,
   isRunning,
   activeRunId,
+  activeRunIds,
   getRun,
   getLiveRunState,
   listRuns,

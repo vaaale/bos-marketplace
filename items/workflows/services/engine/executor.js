@@ -6,7 +6,7 @@
 // service; executor.js is only the "run one node" primitive scheduler.js and
 // router.js call into.
 //
-// This file now also owns three scope-add responsibilities:
+// This file now also owns four scope-add responsibilities:
 //
 //   * AGENT TRACE (US10/FR-028) — it emits `agent.*` events (prompt,
 //     reasoning, per tool call with args/result/ok, response) through
@@ -21,12 +21,19 @@
 //     `find_tools` is still discoverable) and the node's `skills`.
 //   * DRY-RUN FIXTURES (US14/FR-037) — a fixture-designated node never
 //     touches the network at all; its canned output is returned directly.
+//   * EVENT EMISSION (US18/FR-046/FR-047) — an `outputType:"event"` node has
+//     no agent at all: it resolves its payload (static or `{{nodeId.field}}`
+//     template) and does ONE loopback `POST /api/events`. No delegate call, no
+//     model, no sub-process — the cheapest node type in the engine.
 
 const http = require("http");
-const { resolvePort } = require("../vfs");
+const { resolvePort, jsonRequest } = require("../vfs");
 const { routingInstruction } = require("./router");
 const { selectBranchTool, SELECT_BRANCH_TOOL_NAME } = require("../tools");
-const { hasCandidates, isAutoDelegate } = require("./node-model");
+const { hasCandidates, isAutoDelegate, isEventNode, parseTemplateRef, TEMPLATE_REF_PATTERN } = require("./node-model");
+
+/** This item's own event source identity on every event it emits (FR-047). */
+const EVENT_SOURCE = { appId: "workflows", name: "Workflow Manager" };
 
 function delegateBaseUrl() {
   return `http://127.0.0.1:${resolvePort()}`;
@@ -234,6 +241,34 @@ function renderUpstream(id, out) {
   return `- ${id}: ${JSON.stringify(out).slice(0, 4000)}`;
 }
 
+/**
+ * FR-042 — the triggering event's payload, rendered for a ROOT node of an
+ * event-triggered run.
+ *
+ * "Root" = a node with no declared dependencies, i.e. one of the nodes the
+ * event actually woke up; a downstream node receives the event data the
+ * normal way, through its upstream step's output. Research fan-out sub-nodes
+ * inherit their parent's `dependencies`, so a root research node's sub-agents
+ * each see the block too.
+ *
+ * Returns "" for every other case (a tool/user-started run, a run with no
+ * event payload, a non-root node), so a non-event run's prompt is
+ * byte-for-byte what it was before US16.
+ */
+function eventContextBlock(node, ctx) {
+  if (!ctx || ctx.startSource !== "event" || ctx.eventContext == null) return "";
+  if ((node.dependencies || []).length > 0) return "";
+  const payload = typeof ctx.eventContext === "string" ? ctx.eventContext : JSON.stringify(ctx.eventContext, null, 2);
+  return [
+    "",
+    "",
+    "Triggering event:",
+    `This workflow run was started by the event "${ctx.triggerEventType}"${ctx.triggerEventId ? ` (id ${ctx.triggerEventId})` : ""}.`,
+    "Its payload is the input for this step:",
+    payload,
+  ].join("\n");
+}
+
 function buildTaskText(node, ctx) {
   const deps = (node.dependencies ?? []).map((d) => renderUpstream(d, ctx.outputs.get(d))).join("\n");
   const inputJson = node.input == null ? "" : `\n\nInput:\n${JSON.stringify(node.input, null, 2)}`;
@@ -241,22 +276,166 @@ function buildTaskText(node, ctx) {
   const upstream = deps ? `\n\nUpstream step outputs:\n${deps}` : "";
   const base = node.agentSource?.kind === "ephemeral" ? node.agentSource.task : `Workflow step "${node.id}" in workflow "${ctx.workflowName}".`;
   const routing = needsSelectBranch(node) ? `\n${routingInstruction(node.candidates, node.candidates.length > 1)}` : "";
-  return `${base}${inputJson}${upstream}${convention}${routing}`;
+  return `${base}${inputJson}${eventContextBlock(node, ctx)}${upstream}${convention}${routing}`;
 }
 
 /** outputType:"tool" constrains the delegate to calling exactly one tool. */
 function buildToolTaskText(node, ctx) {
   const inputJson = node.input == null ? "(none)" : JSON.stringify(node.input);
+  const triggered = eventContextBlock(node, ctx);
   return [
     `You are executing a single workflow step.`,
     `Call ONLY the tool named "${node.toolName}". Do not call any other tool.`,
     `Tool input: ${inputJson}`,
+    triggered ? triggered.replace(/^\n+/, "") : "",
     node.outputConvention ? `Output convention: ${node.outputConvention}` : "",
     `When the tool returns, briefly summarize its result in plain text.`,
     needsSelectBranch(node) ? routingInstruction(node.candidates, node.candidates.length > 1) : "",
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function isPlainObject(v) {
+  return v != null && typeof v === "object" && !Array.isArray(v);
+}
+
+/** A config/authoring mistake, not a transient failure — never retried
+ *  (scheduler.js's isTransientError only retries network-shaped errors). */
+function eventConfigError(message) {
+  const err = new Error(message);
+  err.code = "event_config";
+  return err;
+}
+
+/** Whichever error text BOS's event API returned ({ error: { code, message } }). */
+function apiErrorMessage(body, fallback) {
+  if (typeof body === "string" && body) return body;
+  if (isPlainObject(body)) {
+    const e = body.error;
+    if (typeof e === "string" && e) return e;
+    if (isPlainObject(e) && typeof e.message === "string" && e.message) return e.message;
+    if (typeof body.message === "string" && body.message) return body.message;
+  }
+  return fallback;
+}
+
+/** One upstream node's recorded output. `ctx.outputs` is a Map in a real run;
+ *  a plain object is accepted too so a caller can hand in a run projection. */
+function outputFor(ctx, nodeId) {
+  const outputs = ctx && ctx.outputs;
+  if (!outputs) return { present: false };
+  if (typeof outputs.get === "function") {
+    return outputs.has(nodeId) ? { present: true, value: outputs.get(nodeId) } : { present: false };
+  }
+  if (Object.prototype.hasOwnProperty.call(outputs, nodeId)) return { present: true, value: outputs[nodeId] };
+  return { present: false };
+}
+
+/** Walk a dot-path into a node output; a numeric segment indexes an array. */
+function readPath(value, path) {
+  let cur = value;
+  for (const segment of path) {
+    if (cur == null) return { found: false };
+    if (Array.isArray(cur)) {
+      const index = Number(segment);
+      if (!Number.isInteger(index) || index < 0 || index >= cur.length) return { found: false };
+      cur = cur[index];
+      continue;
+    }
+    if (typeof cur !== "object" || !Object.prototype.hasOwnProperty.call(cur, segment)) return { found: false };
+    cur = cur[segment];
+  }
+  return { found: true, value: cur };
+}
+
+/**
+ * Template-mode payload resolution (design.md §13). Every
+ * `{{nodeId.field.path}}` placeholder in `payload.text` is replaced by the
+ * JSON-serialized upstream value — so a string lands quoted, a number/boolean
+ * bare, and a missing node/field becomes `null` (or `payload.fallback` when
+ * one is declared). The result is then parsed as JSON: a template that renders
+ * to something that is not a JSON OBJECT is a config error, and the node
+ * fails rather than emitting a malformed event.
+ */
+function resolveEventTemplate(node, ctx) {
+  const payload = (node.config && node.config.payload) || {};
+  const fallback = Object.prototype.hasOwnProperty.call(payload, "fallback") ? payload.fallback : null;
+  const text = typeof payload.text === "string" ? payload.text : "";
+  const unresolved = [];
+
+  const rendered = text.replace(TEMPLATE_REF_PATTERN, (_match, refText) => {
+    const { nodeId, path } = parseTemplateRef(refText);
+    const upstream = outputFor(ctx, nodeId);
+    let value;
+    if (!upstream.present) {
+      unresolved.push(refText);
+      value = fallback;
+    } else {
+      const hit = readPath(upstream.value, path);
+      if (!hit.found) {
+        unresolved.push(refText);
+        value = fallback;
+      } else {
+        value = hit.value;
+      }
+    }
+    return JSON.stringify(value === undefined ? null : value);
+  });
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rendered);
+  } catch (err) {
+    throw eventConfigError(
+      `event step "${node.id}": the payload template did not render to valid JSON (${err.message}) — rendered: ${rendered.slice(0, 500)}`,
+    );
+  }
+  if (!isPlainObject(parsed)) {
+    throw eventConfigError(`event step "${node.id}": the payload template rendered to ${Array.isArray(parsed) ? "an array" : typeof parsed}, but an event payload must be a JSON object — rendered: ${rendered.slice(0, 500)}`);
+  }
+  return { payload: parsed, unresolved, rendered };
+}
+
+/** The event payload this node emits: `payload.value` verbatim (static mode)
+ *  or the resolved template (template mode). */
+function resolveEventPayload(node, ctx) {
+  const payload = (node.config && node.config.payload) || {};
+  if (payload.mode === "template") return resolveEventTemplate(node, ctx);
+  if (!isPlainObject(payload.value)) {
+    throw eventConfigError(`event step "${node.id}": a static payload must be a JSON object (got ${payload.value === undefined ? "nothing" : JSON.stringify(payload.value)}).`);
+  }
+  return { payload: payload.value, unresolved: [], rendered: undefined };
+}
+
+/**
+ * The `POST /api/events` body, including the `_wf` provenance envelope
+ * (FR-047) — every event this engine emits says which workflow, run, and node
+ * produced it, so a downstream handler (or the Event Viewer) can trace it back.
+ */
+function eventEmitBody(node, ctx, payload) {
+  const workflowId = (ctx && ((ctx.workflow && ctx.workflow.id) || ctx.workflowId)) || null;
+  return {
+    type: node.config && node.config.eventType,
+    source: { ...EVENT_SOURCE },
+    payload: {
+      ...payload,
+      _wf: { workflowId, runId: (ctx && ctx.runId) || null, nodeId: node.parentId || node.id },
+    },
+  };
+}
+
+/** Resolve + emit. Returns the node's output — `{ emitted, eventId }` — or
+ *  throws (config error, or the event API's own error body). */
+async function emitWorkflowEvent(node, ctx, { signal } = {}) {
+  const { payload, unresolved, rendered } = resolveEventPayload(node, ctx);
+  const body = eventEmitBody(node, ctx, payload);
+  if (signal && signal.aborted) throw new Error("aborted");
+  const res = await jsonRequest("POST", "/api/events", body);
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`emitting event "${body.type}" failed (POST /api/events -> ${res.status}): ${apiErrorMessage(res.body, "no error body")}`);
+  }
+  return { output: { emitted: true, eventId: (res.body && res.body.id) || null }, body, unresolved, rendered };
 }
 
 /** US14/FR-037: the canned output designated for this node, if any. `null`
@@ -286,6 +465,33 @@ async function executeNode(node, ctx, { signal, extraInstruction, subAgentId, la
   const scope = subAgentId ? { stepId, subAgentId, label } : { stepId };
 
   if (node.outputType === "ag-ui") return { output: node.input ?? null, toolEvents: [] };
+
+  // outputType:"event" — pure I/O (US18/FR-046). One loopback POST, no agent,
+  // no model, no delegate stream. A dry run still honors a fixture for this
+  // node, so a rehearsal never fires a real event.
+  if (isEventNode(node)) {
+    const eventType = (node.config && node.config.eventType) || "(no eventType)";
+    const mode = (node.config && node.config.payload && node.config.payload.mode) || "static";
+    const eventFixture = fixtureFor(node, ctx);
+    if (eventFixture) {
+      emit("agent.prompt", { ...scope, prompt: `Emit BOS event "${eventType}" (payload mode: ${mode}).` });
+      emit("agent.action", { ...scope, action: `dry-run fixture for "${eventFixture.key}" — no event emitted` });
+      emit("agent.response", { ...scope, text: `(dry-run fixture)\n${JSON.stringify(eventFixture.value, null, 2)}` });
+      return { output: eventFixture.value, toolEvents: [], dryRun: true, reasoning: "", response: "" };
+    }
+    emit("agent.prompt", { ...scope, prompt: `Emit BOS event "${eventType}" (payload mode: ${mode}).` });
+    emit("agent.action", { ...scope, action: `emitting ${eventType}` });
+    const emitted = await emitWorkflowEvent(node, ctx, { signal });
+    if (emitted.unresolved.length) {
+      emit("agent.action", { ...scope, action: `unresolved placeholder(s) emitted as ${JSON.stringify(((node.config.payload || {}).fallback) ?? null)}: ${emitted.unresolved.join(", ")}` });
+    }
+    emit("agent.response", {
+      ...scope,
+      text: `Emitted "${emitted.body.type}" (event id ${emitted.output.eventId})\n${JSON.stringify(emitted.body.payload, null, 2)}`,
+    });
+    emit("agent.action", { ...scope, action: "" });
+    return { output: emitted.output, toolEvents: [], reasoning: "", response: "" };
+  }
 
   let task = node.outputType === "tool" ? buildToolTaskText(node, ctx) : buildTaskText(node, ctx);
   if (extraInstruction) task = `${task}\n\n${extraInstruction}`;
@@ -339,10 +545,16 @@ async function executeNode(node, ctx, { signal, extraInstruction, subAgentId, la
 }
 
 module.exports = {
+  EVENT_SOURCE,
   delegateOnce,
   delegateRequestFor,
+  emitWorkflowEvent,
+  eventEmitBody,
+  resolveEventPayload,
+  resolveEventTemplate,
   buildTaskText,
   buildToolTaskText,
+  eventContextBlock,
   executeNode,
   fixtureFor,
   needsSelectBranch,

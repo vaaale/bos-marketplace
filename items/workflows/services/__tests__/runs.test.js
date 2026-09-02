@@ -3,7 +3,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { startFakeBos } = require("./_fake-bos");
+const { startFakeBos, pointVfsAt } = require("./_fake-bos");
 
 function waitUntil(fn, { timeoutMs = 2000, intervalMs = 5 } = {}) {
   const start = Date.now();
@@ -24,7 +24,7 @@ function waitUntil(fn, { timeoutMs = 2000, intervalMs = 5 } = {}) {
 
 test("runs.js", async (t) => {
   const bos = await startFakeBos({ delegate: (body) => [{ type: "done", result: { output: `handled: ${body.task}` } }] });
-  process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+  pointVfsAt(bos);
   for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs"]) {
     delete require.cache[require.resolve(mod)];
   }

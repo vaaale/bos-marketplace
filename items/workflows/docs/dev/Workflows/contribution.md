@@ -37,6 +37,38 @@ its own code follows. Read `architecture.md` first for the module map.
 5. Add unit tests to `node-model.test.js`, `validate.test.js`, and
    `scheduler.test.js`.
 
+## Touching event triggers / subscriptions
+
+Everything about US16 lives in `services/events.js` plus four wiring points:
+`index.js` (startup reconcile + the `event_dispatch` IPC case), `handlers.js`
+(reconcile after every workflow write, and `makeRunStarter`, the one run-start
+primitive all three start paths share), `engine/run-state.js` (the provenance
+fields) and `engine/executor.js` (`eventContextBlock`). Three rules are
+load-bearing:
+
+1. **Subscriptions are DERIVED from the workflows, never stored separately.**
+   The only source of truth is `deriveTriggerUnion(workflows)`; reconcile
+   diffs it against the module-level `subscribedSet`. If you add another way
+   to change a workflow, call the reconciler from it — don't add a second
+   bookkeeping path.
+2. **Ack on run-START.** `handleEventDispatch` must ack before the run
+   finishes (NFR-007) and must ack even when nothing matched. Never make the
+   ack conditional on a run succeeding, and never let an ack failure throw.
+3. **`handler_declare` goes over IPC, `unregister`/`ack` over loopback HTTP.**
+   There is no IPC message for un-declaring and no reply message for a
+   dispatch; use `vfs.jsonRequest` for both HTTP calls so origin resolution
+   stays in one place.
+
+Unit tests: `services/__tests__/events.test.js` (transports are injected —
+mock `ipcPost`/`httpJson`, no worker thread or live BOS needed), plus the
+US16 blocks in `handlers.test.js`, `run-state.test.js` and `executor.test.js`.
+
+**Tests must be hermetic.** `vfs.js` resolves its port from `process.env.PORT`
+before `NEXT_PUBLIC_APP_ORIGIN`, so use `pointVfsAt(fakeBos)` from
+`__tests__/_fake-bos.js` (which sets BOTH) rather than assigning the origin by
+hand — otherwise, in any environment where BOS is running, the suite writes
+its fixtures into the user's real VFS.
+
 ## Adding a candidate-agent / routing feature
 
 Dynamic routing lives entirely in `services/engine/router.js` and the

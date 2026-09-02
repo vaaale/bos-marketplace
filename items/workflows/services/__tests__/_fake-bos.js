@@ -1,9 +1,9 @@
-// _fake-bos.js — a tiny in-process stand-in for BOS's own /api/fs and
-// /api/subagents/delegate routes, used by the unit tests below so vfs.js /
-// executor.js / generate.js can be exercised against a real HTTP loopback
-// server (matching how they actually run) without needing a live BOS
-// instance. Mirrors the naming convention of BOS's own tests/services/
-// _worker-fixtures.ts.
+// _fake-bos.js — a tiny in-process stand-in for BOS's own /api/fs,
+// /api/subagents/delegate and /api/events* routes, used by the unit tests
+// below so vfs.js / executor.js / generate.js / handlers.js can be exercised
+// against a real HTTP loopback server (matching how they actually run)
+// without needing a live BOS instance. Mirrors the naming convention of BOS's
+// own tests/services/_worker-fixtures.ts.
 
 const http = require("http");
 const { URL } = require("url");
@@ -37,10 +37,19 @@ function createMemoryFs(initial = {}) {
  * @param {(body: object) => Array<object>} [opts.delegate] returns the NDJSON
  *   event array for a given /api/subagents/delegate request body; defaults
  *   to a stub that echoes the task as its output.
+ * @param {object} [opts.events] BOS event-system stand-in (US17/US18):
+ *   `handlers` — the grouped registry GET /api/events/handlers returns
+ *   (default `{}`, i.e. nothing registered); `handlersStatus`/`handlersBody`
+ *   — force an error response for that route; `emit` — `(body) => ({ status,
+ *   body })` overriding the POST /api/events response (default 201 with a
+ *   generated event id). Everything POSTed to /api/events is recorded on the
+ *   returned `emitted` array.
  */
-function startFakeBos({ vfs: initialVfs = {}, delegate } = {}) {
+function startFakeBos({ vfs: initialVfs = {}, delegate, events = {} } = {}) {
   const mem = createMemoryFs(initialVfs);
   const delegateFn = delegate || ((body) => [{ type: "done", result: { output: `echo: ${body.task}` } }]);
+  const emitted = [];
+  let emitCount = 0;
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://internal");
@@ -87,6 +96,23 @@ function startFakeBos({ vfs: initialVfs = {}, delegate } = {}) {
         return json(res, 400, { error: `unknown op ${body.op}` });
       });
     }
+    if (url.pathname === "/api/events/handlers" && req.method === "GET") {
+      const status = events.handlersStatus ?? 200;
+      if (status !== 200) return json(res, status, events.handlersBody ?? { error: { code: "kernel-unavailable", message: "event kernel unavailable" } });
+      const registry = typeof events.handlers === "function" ? events.handlers() : events.handlers || {};
+      return json(res, 200, registry);
+    }
+    if (url.pathname === "/api/events" && req.method === "POST") {
+      return readJsonBody(req).then((body) => {
+        emitted.push(body);
+        emitCount++;
+        if (typeof events.emit === "function") {
+          const override = events.emit(body) || {};
+          return json(res, override.status ?? 201, override.body ?? { id: `evt_${emitCount}` });
+        }
+        return json(res, 201, { id: `evt_${emitCount}`, sequence: emitCount, processing: "processed", read: "unread", activeHandlers: 0 });
+      });
+    }
     if (url.pathname === "/api/subagents/delegate" && req.method === "POST") {
       return readJsonBody(req).then(async (body) => {
         const events = await delegateFn(body); // may never resolve, to simulate an in-flight run
@@ -105,6 +131,7 @@ function startFakeBos({ vfs: initialVfs = {}, delegate } = {}) {
         port,
         origin: `http://127.0.0.1:${port}`,
         files: mem.files,
+        emitted,
         // closeAllConnections is required, not just close(): a still-pending
         // request (e.g. a delegate call whose handler intentionally never
         // resolves, simulating an in-flight run) keeps a socket open forever,
@@ -118,6 +145,39 @@ function startFakeBos({ vfs: initialVfs = {}, delegate } = {}) {
       });
     });
   });
+}
+
+/**
+ * Point the service's loopback bridge at a fake BOS.
+ *
+ * MUST be used instead of setting NEXT_PUBLIC_APP_ORIGIN by hand: vfs.js
+ * resolves its port from `process.env.PORT` FIRST (that is the real Next.js
+ * bind port when BOS spawns the worker) and only falls back to
+ * NEXT_PUBLIC_APP_ORIGIN. So in any environment where PORT is set — e.g. a
+ * shell where BOS itself is running on :3000 — a test that only sets the
+ * origin silently talks to the REAL /api/fs and writes its fixtures into the
+ * user's actual VFS. Setting both keeps every test hermetic.
+ */
+function pointVfsAt(bos) {
+  // Accepts a startFakeBos() handle, a bare origin string, or undefined
+  // (restoring "nothing was set", as scheduler.test.js's withBos does).
+  if (!bos) {
+    delete process.env.NEXT_PUBLIC_APP_ORIGIN;
+    delete process.env.PORT;
+    return;
+  }
+  const origin = typeof bos === "string" ? bos : bos.origin;
+  process.env.NEXT_PUBLIC_APP_ORIGIN = origin;
+  let port = typeof bos === "string" ? "" : String(bos.port);
+  if (typeof bos === "string") {
+    try {
+      port = new URL(bos).port;
+    } catch {
+      port = "";
+    }
+  }
+  if (port) process.env.PORT = port;
+  else delete process.env.PORT;
 }
 
 function json(res, status, body) {
@@ -140,4 +200,4 @@ function readJsonBody(req) {
   });
 }
 
-module.exports = { startFakeBos, createMemoryFs };
+module.exports = { startFakeBos, createMemoryFs, pointVfsAt };

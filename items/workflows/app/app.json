@@ -1,8 +1,7 @@
 {
   "id": "workflows",
   "name": "Workflow Manager",
-  "icon": "Workflow",
-  "createdAt": 1787299702608,
-  "entry": "src/main.tsx",
-  "capabilities": ["services:read"]
+  "icon": "Puzzle",
+  "createdAt": 1788369103156,
+  "entry": "src/main.tsx"
 }

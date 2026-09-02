@@ -12,10 +12,12 @@ const path = require("path");
 const http = require("http");
 
 const { DECLARATIONS } = require("./tools");
-const { makeHandlers } = require("./handlers");
+const { makeHandlers, makeRunStarter } = require("./handlers");
 const { createRequestHandler } = require("./http-bridge");
 const { runMigration } = require("./migration");
 const vfs = require("./vfs");
+const events = require("./events");
+const store = require("./engine/store");
 
 const DEFAULT_PORT = 0;
 const DEFAULT_HOST = "127.0.0.1";
@@ -46,12 +48,37 @@ if (parentPort) {
     };
   }
 
-  const handlers = makeHandlers({
+  // Worker→Main IPC. `tool_declare` (039) and `handler_declare` (034/US16)
+  // both travel this way — same channel, different message type.
+  const ipcPost = (msg) => parentPort.postMessage(msg);
+
+  const handlerCtx = {
     log,
+    ipcPost,
     get defaultMaxConcurrentSteps() {
       return maxConcurrentSteps;
     },
-  });
+  };
+
+  const handlers = makeHandlers(handlerCtx);
+  // The same run-start primitive `workflow_run` uses — US16 hands it to
+  // events.js so an event-triggered run is started exactly like any other,
+  // just with `startSource: "event"` and the event's provenance (FR-041).
+  const startRun = makeRunStarter(handlerCtx);
+
+  /** US16/FR-039 — declare a headless handler for every distinct event type
+   *  any workflow lists in its `triggers`, and drop the ones nothing triggers
+   *  on any more. Called once the service is up (below) and after every
+   *  workflow CRUD write (handlers.js). */
+  async function reconcileEventSubscriptions(reason) {
+    try {
+      const workflows = await store.listWorkflows();
+      const subscribed = await events.reconcileSubscriptions(workflows, { ipcPost, httpJson: vfs.jsonRequest, log });
+      log("info", `event subscriptions (${reason}): watching ${subscribed.size} event type(s)${subscribed.size ? ` — ${Array.from(subscribed).join(", ")}` : ""}`);
+    } catch (err) {
+      log("warn", `event subscription reconcile (${reason}) failed (non-fatal): ${err.message}`);
+    }
+  }
 
   async function closeServer() {
     if (!server) return;
@@ -115,11 +142,31 @@ if (parentPort) {
             } catch (err) {
               log("warn", `legacy migration check failed (non-fatal): ${err.message}`);
             }
+            // US16/FR-039 — the service is now fully initialized (handshake
+            // sent, tools declared, /Workflows present and migrated), so the
+            // workflow list is readable: derive the trigger union and declare
+            // one headless handler per event type. Deliberately AFTER the
+            // handshake, for the same reason the migration is: a declare that
+            // needs BOS's API routes must never gate `initialized`.
+            await reconcileEventSubscriptions("startup");
           })();
         });
       } else if (msg.type === "dispose" || msg.type === "restart") {
         await closeServer();
         parentPort.postMessage({ type: "disposed" });
+      } else if (msg.type === "event_dispatch") {
+        // 034's kernel invoking one of our declared headless handlers
+        // (US16/FR-040). handleEventDispatch starts one run per matching
+        // workflow and acks over loopback HTTP immediately — there is no
+        // reply message on this channel (types.ts: no event_dispatch_result).
+        const payload = msg.payload || {};
+        log("info", `event_dispatch received: handler=${payload.handlerId} event=${payload.eventId} type=${payload.record?.type}`);
+        await events.handleEventDispatch(payload, {
+          startRun,
+          httpJson: vfs.jsonRequest,
+          log,
+          listWorkflows: () => store.listWorkflows(),
+        });
       } else if (msg.type === "tool_call") {
         const { callId, name, args } = msg.payload;
         const handler = handlers[name];

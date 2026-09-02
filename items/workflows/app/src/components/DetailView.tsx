@@ -4,6 +4,8 @@ import { Graph, GraphLegend } from "./Graph";
 import { GraphEditor } from "./GraphEditor";
 import { WorkflowStatusPill } from "./StatusPill";
 import { PanelDivider, TrajectoryPanel, usePanelWidth } from "./TrajectoryPanel";
+import { TriggersPanel } from "./TriggersPanel";
+import { RunProvenance, RunSourceGlyph } from "./RunProvenance";
 import { nodeTrajectory } from "../lib/trajectory";
 import { api } from "../lib/bridge";
 
@@ -160,6 +162,14 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
         </>
       ) : null}
 
+      {/* US16/FR-049 — the workflow's event triggers. Lives beside the graph
+          rather than inside the editor: a trigger is a property of the
+          WORKFLOW, not of any node, and changing it re-subscribes the service
+          immediately (no "Save graph" round-trip). */}
+      <div style={{ marginTop: 16 }}>
+        <TriggersPanel workflow={workflow} onModified={onModified} />
+      </div>
+
       <div style={{ marginTop: 16 }}>
         <h3 className="wf-section-title">
           Historical runs <span className="wf-tool-label">workflow_run_list</span>
@@ -176,6 +186,7 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
                 className={`wf-run-chip ${selectedRun?.runId === r.runId ? "wf-run-chip-active" : ""}`}
                 onClick={() => (r.state === "running" ? onWatchRun(r.runId) : openRun(r.runId))}
               >
+                <RunSourceGlyph startSource={r.startSource} />
                 <span className="wf-mono">#{r.runId.slice(4, 12)}</span>
                 <WorkflowStatusPill status={r.state} />
               </button>
@@ -195,6 +206,7 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
               Exit replay
             </button>
           </div>
+          <RunProvenance run={selectedRun} />
           {selectedRun.warnings?.length ? (
             <div className="wf-warning-banner" style={{ marginBottom: 8 }}>
               ⚠ Selected branch executed no leaf step: {selectedRun.warnings.map((w) => w.stepId).join(", ")}

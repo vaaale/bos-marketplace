@@ -1,7 +1,9 @@
-// http-bridge.test.js — the app-facing REST surface, focused on the
-// scope-add's new route: GET /run/<runId>[?since=] (US13/FR-036), the live
-// projection the trajectory panel tails. Every other route is a thin wrapper
-// over handlers.js and is covered by handlers.test.js.
+// http-bridge.test.js — the app-facing REST surface, focused on the routes
+// the scope-adds added: GET /run/<runId>[?since=] (US13/FR-036), the live
+// projection the trajectory panel tails, and GET /event-types (US17/FR-044),
+// the app-facing face of `workflow_event_types` that the Triggers panel's
+// "Browse" picker reads. Every other route is a thin wrapper over handlers.js
+// and is covered by handlers.test.js.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -46,11 +48,16 @@ test("http-bridge.js", async (t) => {
   state.record({ type: "agent.prompt", stepId: "a", prompt: "assembled task + upstream context" });
 
   const persistedRuns = { "run-persisted": { runId: "run-persisted", workflowId: "wf-bridge", state: "completed", steps: { a: { status: "completed" } }, events: [] } };
+  let eventTypesCalls = 0;
   const bridge = await startBridge({
     workflow_run_get: async ({ workflowId, runId }) => {
       const run = persistedRuns[runId];
       if (!run || run.workflowId !== workflowId) throw new Error(`no such run: ${runId}`);
       return run;
+    },
+    workflow_event_types: async () => {
+      eventTypesCalls++;
+      return [{ type: "com.bos.files.created", handlerCount: 2, displayName: "File created" }];
     },
   });
 
@@ -83,6 +90,25 @@ test("http-bridge.js", async (t) => {
     const { status, body } = await getJson(`${bridge.base}/run/run-persisted?workflowId=wf-bridge`);
     assert.equal(status, 200);
     assert.equal(body.state, "completed");
+  });
+
+  await t.test("GET /event-types is a thin wrapper over workflow_event_types (US17/FR-044)", async () => {
+    const { status, body } = await getJson(`${bridge.base}/event-types`);
+    assert.equal(status, 200);
+    assert.equal(eventTypesCalls, 1);
+    assert.deepEqual(body, [{ type: "com.bos.files.created", handlerCount: 2, displayName: "File created" }]);
+  });
+
+  await t.test("an event-types handler failure surfaces as a 400 with its message", async () => {
+    const failing = await startBridge({
+      workflow_event_types: async () => {
+        throw new Error("could not read the BOS event registry");
+      },
+    });
+    const { status, body } = await getJson(`${failing.base}/event-types`);
+    assert.equal(status, 400);
+    assert.match(body.error, /event registry/);
+    await failing.close();
   });
 
   await bridge.close();

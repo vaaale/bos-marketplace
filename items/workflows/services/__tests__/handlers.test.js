@@ -9,7 +9,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { startFakeBos } = require("./_fake-bos");
+const { startFakeBos, pointVfsAt } = require("./_fake-bos");
 
 function waitUntil(fn, { timeoutMs = 2000, intervalMs = 5 } = {}) {
   const start = Date.now();
@@ -30,7 +30,7 @@ function waitUntil(fn, { timeoutMs = 2000, intervalMs = 5 } = {}) {
 
 test("handlers.js", async (t) => {
   const bos = await startFakeBos({ delegate: (body) => [{ type: "done", result: { output: `handled: ${body.task}` } }] });
-  process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+  pointVfsAt(bos);
   for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
     delete require.cache[require.resolve(mod)];
   }
@@ -156,7 +156,7 @@ test("handlers.js", async (t) => {
       delegate: () => new Promise(() => {}), // never resolves — keeps the run "in progress"
     });
     // Use a delegate-based node so the run stays in-flight long enough to race a second call.
-    process.env.NEXT_PUBLIC_APP_ORIGIN = slowBos.origin;
+    pointVfsAt(slowBos);
     for (const mod of ["../vfs", "../engine/executor", "../engine/scheduler", "../runs", "../handlers", "../engine/store"]) {
       delete require.cache[require.resolve(mod)];
     }
@@ -168,7 +168,7 @@ test("handlers.js", async (t) => {
     await freshHandlers.workflow_run({ workflowId: created.workflow_id });
     await assert.rejects(() => freshHandlers.workflow_run({ workflowId: created.workflow_id }), /already has a run in progress/);
     await slowBos.close();
-    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    pointVfsAt(bos);
     for (const mod of ["../vfs", "../engine/executor", "../engine/scheduler", "../runs", "../handlers", "../engine/store"]) {
       delete require.cache[require.resolve(mod)];
     }
@@ -181,7 +181,7 @@ test("handlers.js", async (t) => {
 
   await t.test("US13/FR-036: workflow_status returns a POPULATED per-step map while the run is in progress", async () => {
     const slowBos = await startFakeBos({ delegate: () => new Promise(() => {}) }); // an agent that never answers
-    process.env.NEXT_PUBLIC_APP_ORIGIN = slowBos.origin;
+    pointVfsAt(slowBos);
     for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
       delete require.cache[require.resolve(mod)];
     }
@@ -222,7 +222,7 @@ test("handlers.js", async (t) => {
     }, { timeoutMs: 5000 });
 
     await slowBos.close();
-    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    pointVfsAt(bos);
     for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
       delete require.cache[require.resolve(mod)];
     }
@@ -237,7 +237,7 @@ test("handlers.js", async (t) => {
         return [{ type: "done", result: { output: "sub-agent output" } }];
       },
     });
-    process.env.NEXT_PUBLIC_APP_ORIGIN = fanBos.origin;
+    pointVfsAt(fanBos);
     for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
       delete require.cache[require.resolve(mod)];
     }
@@ -261,7 +261,7 @@ test("handlers.js", async (t) => {
     await waitUntil(async () => ((await live.workflow_status({ workflowId: created.workflow_id })).running === false ? true : null), { timeoutMs: 5000 });
 
     await fanBos.close();
-    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    pointVfsAt(bos);
     for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
       delete require.cache[require.resolve(mod)];
     }
@@ -275,7 +275,7 @@ test("handlers.js", async (t) => {
         return [{ type: "done", result: { output: "REAL" } }];
       },
     });
-    process.env.NEXT_PUBLIC_APP_ORIGIN = guardBos.origin;
+    pointVfsAt(guardBos);
     for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
       delete require.cache[require.resolve(mod)];
     }
@@ -310,7 +310,7 @@ test("handlers.js", async (t) => {
     assert.ok(Date.now() - t0 < 5000);
 
     await guardBos.close();
-    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    pointVfsAt(bos);
     for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
       delete require.cache[require.resolve(mod)];
     }
@@ -347,4 +347,161 @@ test("handlers.js", async (t) => {
   });
 
   await bos.close();
+});
+
+// ===========================================================================
+// Scope-add 002 / US16 — the handlers' half of event-triggered runs: every
+// workflow write reconciles the declared event subscriptions (FR-039), and
+// the shared run starter records provenance + lets event runs overlap
+// (FR-041/FR-043).
+// ===========================================================================
+test("handlers.js — US16 event integration", async (t) => {
+  // A real poller: the module-level waitUntil() above resolves on the first
+  // tick when handed an async predicate (a pending Promise is truthy), which
+  // is fine for the assertions that use it but not for "wait until this run
+  // has actually settled".
+  async function untilReady(fn, { timeoutMs = 4000, intervalMs = 10 } = {}) {
+    const start = Date.now();
+    for (;;) {
+      const result = await fn();
+      if (result) return result;
+      if (Date.now() - start > timeoutMs) throw new Error("untilReady: timed out");
+      await new Promise((res) => setTimeout(res, intervalMs));
+    }
+  }
+
+  const bos = await startFakeBos({ delegate: (body) => [{ type: "done", result: { output: `handled: ${body.task}` } }] });
+  pointVfsAt(bos);
+  const MODS = ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../events", "../handlers"];
+  for (const mod of MODS) delete require.cache[require.resolve(mod)];
+  const events = require("../events");
+  const { makeHandlers } = require("../handlers");
+
+  const sent = [];
+  const declares = () => sent.filter((m) => m.type === "handler_declare");
+  const handlers = makeHandlers({ log: () => {}, ipcPost: (msg) => sent.push(msg), defaultMaxConcurrentSteps: 5 });
+
+  const STEP = { id: "a", outputType: "ag-ui", input: 1 };
+  let w1;
+  let w2;
+
+  await t.test("workflow_create declares a headless handler per declared trigger (FR-039)", async () => {
+    const created = await handlers.workflow_create({
+      workflow: { name: "Triage", steps: [STEP], triggers: ["com.bos.files.created", "com.bos.mail.received"] },
+    });
+    w1 = created.workflow_id;
+    assert.deepEqual(created.triggers, ["com.bos.files.created", "com.bos.mail.received"]);
+    assert.deepEqual(
+      declares()
+        .map((m) => m.payload.eventType)
+        .sort(),
+      ["com.bos.files.created", "com.bos.mail.received"],
+    );
+    assert.ok(declares().every((m) => m.payload.handlerId === `workflows:${m.payload.eventType}`));
+  });
+
+  await t.test("a second workflow on the SAME trigger declares nothing new (idempotent)", async () => {
+    const before = declares().length;
+    const created = await handlers.workflow_create({ workflow: { name: "Second", steps: [STEP], triggers: ["com.bos.files.created"] } });
+    w2 = created.workflow_id;
+    assert.equal(declares().length, before);
+    assert.deepEqual(Array.from(events.getSubscribedSet()).sort(), ["com.bos.files.created", "com.bos.mail.received"]);
+  });
+
+  await t.test("a workflow with no triggers subscribes to nothing", async () => {
+    const before = declares().length;
+    await handlers.workflow_create({ workflow: { name: "Manual", steps: [STEP] } });
+    assert.equal(declares().length, before);
+  });
+
+  await t.test("workflow_modify that drops a trigger unsubscribes that type", async () => {
+    await handlers.workflow_modify({ workflowId: w1, changes: { triggers: ["com.bos.files.created"] } });
+    // com.bos.mail.received had only w1 as a subscriber → gone. (The fake BOS
+    // has no /api/events/unregister route, so the loopback call 404s — which
+    // is exactly the non-fatal path: the write still succeeded and the local
+    // subscription set is still updated.)
+    assert.deepEqual(Array.from(events.getSubscribedSet()), ["com.bos.files.created"]);
+  });
+
+  await t.test("workflow_delete reconciles down to the surviving union", async () => {
+    await handlers.workflow_delete({ workflowId: w1 });
+    assert.deepEqual(Array.from(events.getSubscribedSet()), ["com.bos.files.created"], "w2 still triggers on it");
+    await handlers.workflow_delete({ workflowId: w2 });
+    assert.equal(events.getSubscribedSet().size, 0);
+  });
+
+  await t.test("a run started through workflow_run reports startSource \"tool\"; the bridge can say \"user\"", async () => {
+    const created = await handlers.workflow_create({ workflow: { name: "Sourced", steps: [STEP] } });
+    const toolRun = await handlers.workflow_run({ workflowId: created.workflow_id });
+    assert.equal(toolRun.startSource, "tool");
+    const persisted = await untilReady(async () => {
+      const run = await handlers.workflow_run_get({ workflowId: created.workflow_id, runId: toolRun.runId });
+      return run && run.state === "completed" ? run : null;
+    });
+    assert.equal(persisted.startSource, "tool");
+
+    const userRun = await handlers.workflow_run({ workflowId: created.workflow_id, startSource: "user" });
+    assert.equal(userRun.startSource, "user");
+    // A caller may not promote itself to "event" through this path.
+    await untilReady(async () => {
+      const s = await handlers.workflow_status({ workflowId: created.workflow_id });
+      return s.state === "completed" && !s.running ? s : null;
+    });
+    const faked = await handlers.workflow_run({ workflowId: created.workflow_id, startSource: "event", triggerEventId: "evt-x" });
+    assert.equal(faked.startSource, "tool");
+  });
+
+  await bos.close();
+
+  await t.test("an event-triggered run carries its provenance and is NOT blocked by an in-flight run (FR-041/FR-043)", async () => {
+    const slowBos = await startFakeBos({ delegate: () => new Promise(() => {}) }); // an agent that never answers
+    pointVfsAt(slowBos);
+    for (const mod of MODS) delete require.cache[require.resolve(mod)];
+    const { makeHandlers: makeFresh, makeRunStarter } = require("../handlers");
+    const ctx = { log: () => {}, defaultMaxConcurrentSteps: 5 };
+    const live = makeFresh(ctx);
+    const startRun = makeRunStarter(ctx);
+    const created = await live.workflow_create({
+      workflow: { name: "Slow triggered", steps: [{ id: "a", outputType: "delegate", agentSource: { kind: "ephemeral", task: "forever" } }], triggers: ["com.bos.files.created"] },
+    });
+
+    const first = await startRun({
+      workflowId: created.workflow_id,
+      startSource: "event",
+      triggerEventId: "evt-1",
+      triggerEventType: "com.bos.files.created",
+      eventContext: { path: "/a.csv" },
+    });
+    const second = await startRun({
+      workflowId: created.workflow_id,
+      startSource: "event",
+      triggerEventId: "evt-2",
+      triggerEventType: "com.bos.files.created",
+      eventContext: { path: "/b.csv" },
+    });
+
+    assert.notEqual(first.runId, second.runId, "two events → two independent runs");
+    assert.equal(first.startSource, "event");
+    assert.equal(second.triggerEventId, "evt-2");
+
+    // A tool run is still refused while a run is in flight.
+    await assert.rejects(() => live.workflow_run({ workflowId: created.workflow_id }), /already has a run in progress/);
+
+    const runA = await live.workflow_run_get({ workflowId: created.workflow_id, runId: first.runId });
+    assert.equal(runA.startSource, "event");
+    assert.equal(runA.triggerEventType, "com.bos.files.created");
+    assert.deepEqual(runA.eventContext, { path: "/a.csv" });
+    const runB = await live.workflow_run_get({ workflowId: created.workflow_id, runId: second.runId });
+    assert.deepEqual(runB.eventContext, { path: "/b.csv" });
+
+    // Both runs are visible as active; the newest is the one workflow_status
+    // and workflow_cancel address.
+    const runList = await live.workflow_run_list({ workflowId: created.workflow_id });
+    assert.deepEqual(runList.map((r) => r.runId).sort(), [first.runId, second.runId].sort());
+    assert.ok(runList.every((r) => r.startSource === "event"));
+
+    await slowBos.close();
+    pointVfsAt(bos);
+    for (const mod of MODS) delete require.cache[require.resolve(mod)];
+  });
 });

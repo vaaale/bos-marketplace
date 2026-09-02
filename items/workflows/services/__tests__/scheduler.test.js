@@ -6,13 +6,13 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { startFakeBos } = require("./_fake-bos");
+const { startFakeBos, pointVfsAt } = require("./_fake-bos");
 
 test("scheduler.js", async (t) => {
   const bos = await startFakeBos({
     delegate: (body) => [{ type: "done", result: { output: `handled: ${body.task}` } }],
   });
-  process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+  pointVfsAt(bos);
   delete require.cache[require.resolve("../vfs")];
   delete require.cache[require.resolve("../engine/executor")];
   delete require.cache[require.resolve("../engine/scheduler")];
@@ -98,7 +98,7 @@ test("scheduler.js", async (t) => {
     // exercises the scheduler's own failure handling, so force a failure
     // deterministically via a delegate backend that reports an error.
     const failingBos = await startFakeBos({ delegate: () => [{ type: "error", error: "step exploded" }] });
-    process.env.NEXT_PUBLIC_APP_ORIGIN = failingBos.origin;
+    pointVfsAt(failingBos);
     delete require.cache[require.resolve("../vfs")];
     delete require.cache[require.resolve("../engine/executor")];
     delete require.cache[require.resolve("../engine/scheduler")];
@@ -117,7 +117,7 @@ test("scheduler.js", async (t) => {
     assert.equal(steps.a.status, "failed");
     assert.equal(steps.b.status, "neutral");
     await failingBos.close();
-    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    pointVfsAt(bos);
     delete require.cache[require.resolve("../vfs")];
     delete require.cache[require.resolve("../engine/executor")];
     delete require.cache[require.resolve("../engine/scheduler")];
@@ -172,7 +172,7 @@ test("scheduler.js", async (t) => {
         { type: "done", result: { output: "On reflection I think shipping is interesting too." } },
       ],
     });
-    process.env.NEXT_PUBLIC_APP_ORIGIN = selectiveBos.origin;
+    pointVfsAt(selectiveBos);
     delete require.cache[require.resolve("../vfs")];
     delete require.cache[require.resolve("../engine/executor")];
     delete require.cache[require.resolve("../engine/scheduler")];
@@ -194,7 +194,7 @@ test("scheduler.js", async (t) => {
     assert.equal(steps.shipping.status, "skipped");
     assert.equal(steps.shipping.reason, "branch-not-selected");
     await selectiveBos.close();
-    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    pointVfsAt(bos);
     delete require.cache[require.resolve("../vfs")];
     delete require.cache[require.resolve("../engine/executor")];
     delete require.cache[require.resolve("../engine/scheduler")];
@@ -226,13 +226,13 @@ test("scheduler.js", async (t) => {
   async function withBos(delegate, fn) {
     const fake = await startFakeBos({ delegate });
     const previous = process.env.NEXT_PUBLIC_APP_ORIGIN;
-    process.env.NEXT_PUBLIC_APP_ORIGIN = fake.origin;
+    pointVfsAt(fake);
     for (const mod of ["../vfs", "../engine/executor", "../engine/scheduler"]) delete require.cache[require.resolve(mod)];
     try {
       return await fn(require("../engine/scheduler"), fake);
     } finally {
       await fake.close();
-      process.env.NEXT_PUBLIC_APP_ORIGIN = previous;
+      pointVfsAt(previous);
       for (const mod of ["../vfs", "../engine/executor", "../engine/scheduler"]) delete require.cache[require.resolve(mod)];
     }
   }
