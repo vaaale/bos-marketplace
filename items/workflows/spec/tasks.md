@@ -429,3 +429,158 @@ with documented latency (US15).
 - [x] T088 [P] E2e: update `e2e/001-...spec.ts` — US7 routing now uses the structured signal (via dry-run fixtures) and asserts `skipped`; the US45 UI test asserts the per-step list is GONE and inspects a node via the panel instead
 - [x] T089 [P] `skills/workflow-manager/SKILL.md` — research-as-default for parallel investigation + realistic latency table, the structured-selection/Option A/topology rules, dry-run usage, timeouts, ephemeral tool fidelity
 - [x] T090 [P] `docs/usage.md`, `docs/tool-reference.md`, `docs/dev/architecture.md` — trajectory panel, latency, dry-run examples, the new tool inputs/outputs, and the engine's new modules
+
+---
+
+## Phase 15: Scope-Add 002 — Event-System Integration (US16-18, FR-039-051)
+
+**Spec**: `item-workflows/spec.md` US16-18 | **Design**: `design.md` §9-19 | **Plan**: `plan.md` (scope-add addendum) | **Platform dep**: `/Specs/user-specs/core-platform/037-event-namespace-relaxation/spec.md`
+
+**Delegation split**: Phase 15-A = `dev_delegate` (bos-core, 037). Phases 15-B..F = `agent_delegate` (contentOnly) → `app_build` (existing item id `workflows`).
+
+**Path note**: `run-state.js` (not `store.js`) for run-record provenance; `http-bridge.js` (not `vfs.js`) for loopback HTTP helpers — per plan path-correction.
+
+### Phase 15-A: 037 Platform Change (bos-core) 🎯 Gate for US16
+
+**Goal**: Remove the 034 namespace-ownership check on handler registration so any component can subscribe to any event type (user decision: no restriction on event subscription). This is the platform prerequisite for US16's non-owned subscription.
+
+**Independent Test**: A service with id `workflows` calls `register()` with eventType `com.bos.other-svc.thing` (no grant) — registration succeeds (no `namespace-not-owned` error). The ack-ownership test still passes (cross-handler ack rejected).
+
+- [ ] T091 Remove the `ownsNamespace` rejection block from `register()` in `src/lib/events/api.ts` (the `if (!ownsNamespace(...)) throw new EventsApiError("namespace-not-owned")` guard). Remove the `resolveGrantedNamespaces()` helper if it's now dead code (037 FR-005). The `ownsNamespace()` function in `types.ts` may stay as dead code or be removed (037 FR-006 — either acceptable).
+- [ ] T092 [P] Find and flip the 034 test that asserts `namespace-not-owned` — locate it in `tests/events/` (search for `namespace-not-owned` or `ownsNamespace`). Change the assertion to expect registration success. KEEP the ack-ownership test unchanged (037 SC-003, `ack-forbidden` still thrown for cross-handler ack).
+- [ ] T093 [P] Check `e2e/034-event-notification-system.spec.ts` for any namespace-rejection assertion — if present, flip to expect success. If absent, no change needed (037 SC-004: no other 034 e2e test should break).
+- [ ] T094 Sweep `tests/events/` and `e2e/` for any other test that depends on the `namespace-not-owned` rejection path (search for `namespace-not-owned`, `ownsNamespace`, `resolveGrantedNamespaces`). If found, update them. This is 037's "confirm no other test depends on the gate" step.
+
+**Checkpoint**: 037 complete. `dev_git_status` shows the bos-core changes on `bos/002-workflow-event-integration`. US16's non-owned-subscription e2e will now pass. US17/US18 are unblocked regardless.
+
+---
+
+### Phase 15-B: Item — Event Node + Discovery Tool (US17 + US18, 037-independent)
+
+**Goal**: The two 037-independent capabilities: (US18) a new `event` node output type that emits a configurable 034 event, and (US17) the `workflow_event_types` tool for event-type discovery. These can be built and tested BEFORE 037 lands (emit has no platform gate — ADR-13).
+
+**Independent Test US18**: Author a workflow with a single `event` node (type `com.bos.workflows.test.hello`, static payload `{"msg":"hi"}`); run it via `workflow_run`; confirm the event appears in the 034 system with correct type, source (`appId: "workflows"`), and payload. Node completes.
+
+**Independent Test US17**: Call `workflow_event_types`; confirm it returns the list of registered event types (matching `GET /api/events/handlers` output). Empty list if no handlers registered (not an error).
+
+- [ ] T095 [P] [US18] Add `"event"` to the `outputType` union in `services/engine/node-model.js`. Add the `EmitEventNodeConfig` shape: `{ eventType: string, payload: { mode: "static", value: object } | { mode: "template", text: string, fallback?: any } }`. Validate on load: `eventType` matches `^[a-z0-9]+(\.[a-z0-9_-]+)+$`; `payload` is one of the two modes.
+- [ ] T096 [P] [US17] Add `workflow_event_types` to the tool declarations in `services/tools.js` — name `workflow_event_types`, description "Returns the list of event types currently registered in the BOS event system, for use when authoring workflow triggers", input schema `{}` (no params, per design §16.6). This is the 13th tool (FR-002 says "at minimum" — adding is compliant).
+- [ ] T097 [US18] Implement the `event` output-type branch in `services/engine/executor.js`. On entering a node with `outputType: "event"`: (a) resolve the payload — if `mode: "static"`, use `value` as-is; if `mode: "template"`, parse `{{nodeId.field}}` placeholders from `text` and resolve each via dot-path lookup in `run.outputs[nodeId]` (design §13.3 algorithm); (b) build the emit body: `{ type, source: { appId: "workflows" }, payload: { resolvedPayload, _wf: { workflowId, runId, nodeId } } }`; (c) loopback `POST /api/events` (reuse `http-bridge.js` origin + fetch); (d) on 2xx → node completes with `outputs[nodeId] = { emitted: true, eventId }`; on HTTP error → node fails with the error body (design §13.4, FR-047). The `event` node is NOT an agent step — no LLM call, no `agentSource` requirement.
+- [ ] T098 [P] [US17] Implement the `workflow_event_types` handler in `services/handlers.js`. Call loopback `GET /api/events/handlers` (reuse `http-bridge.js`); parse the grouped response; map to `[{ type, handlerCount, displayName }]` where `handlerCount = ui.length + headless.length` and `displayName` is the first handler's display name (or `null` if none). Return the array. On HTTP error → tool error (NFR-002). On empty registry → return `[]` (not an error, FR-045).
+- [ ] T099 [US18] Add FR-048 validation rules to `services/engine/validate.js`: (a) all `triggers` array entries (if present) match the event-type pattern; (b) all `event` node configs have `eventType` under `com.bos.workflows.*` (item policy, ADR-14); (c) all `{{nodeId.field}}` template references in `event` node payloads refer to nodes that exist in the workflow graph. Add alongside existing US11 topology checks.
+- [ ] T100 [P] [US18] Write unit tests for the event node in `services/__tests__/`: node-model (valid/invalid EmitEventNodeConfig, outputType union includes "event"), executor (static payload emit, template resolution with `{{nodeId.field}}`, unresolved → null, fallback, JSON-parse failure → node fail, emit HTTP error → node fail), validate (FR-048b eventType under com.bos.workflows.*, FR-048c template refs exist).
+- [ ] T101 [P] [US17] Write unit test for the `workflow_event_types` handler in `services/__tests__/`: mock the loopback `GET /api/events/handlers` response; verify the mapping (type, handlerCount, displayName); verify empty registry → `[]`; verify HTTP error → tool error.
+
+**Checkpoint**: US17 + US18 functional. `workflow_event_types` returns registered types; an `event` node emits correctly. Testable WITHOUT 037 active.
+
+---
+
+### Phase 15-C: Item — Event-Triggered Runs (US16, gated on 037)
+
+**Goal**: The inbound direction — a workflow with a `triggers` array starts a new run when a matching event is emitted to the 034 system. The service subscribes to the union of all trigger types via `handler_declare` and handles dispatch by firing a run with provenance + eventContext injection.
+
+**⚠️ Depends on Phase 15-A (037 active)**: The non-owned-subscription test asserts `namespace-not-owned` is absent — only passes once 037 is in place.
+
+**Independent Test**: Create a workflow with `triggers: ["com.bos.test.workflow-trigger"]`; emit that event via `emit_event`; confirm a new run starts with `startSource: "event"`, `triggerEventId`/`triggerEventType` set, and the event payload available as `eventContext` in the first node's input. Non-matching event → no run.
+
+- [ ] T102 [US16] Create `services/events.js` — the event-integration module. Implement: (a) `deriveTriggerUnion(workflows)` — reads the `triggers` array from each workflow JSON, returns `Set<string>` of distinct event types; (b) `reconcileSubscriptions(workflows, ipcPost)` — compute the target set, diff against currently-subscribed set (tracked in module-level `Set`); for each new type: `ipcPost({ type: "handler_declare", payload: { handlerId: "workflows:" + eventType, eventType, mode: "headless" } })`; for each removed type: loopback `POST /api/events/unregister { eventType, handlerId }` (design §10/§12.2); idempotent.
+- [ ] T103 [US16] In `services/events.js`, implement `handleEventDispatch(payload, startRun, ack)` — the `event_dispatch` handler. On receipt: (a) look up the workflow(s) whose `triggers` include `payload.eventType`; (b) for each matching workflow, call `startRun({ workflowId, startSource: "event", triggerEventId: payload.eventId, triggerEventType: payload.eventType, eventContext: payload.event.payload })` (FR-008 fire-and-poll); (c) immediately loopback `POST /api/events/<eventId>/ack { handlerId, callerId: "workflows" }` (NFR-007 — ack on run-start, not run-completion); (d) log structured events (NFR-005). Concurrent runs of the same workflow are valid (FR-043).
+- [ ] T104 [US16] Wire the event integration into the service lifecycle: in `services/index.js`, on `initialized` — call `events.reconcileSubscriptions()`. Add `case "event_dispatch"` to the IPC switch → `events.handleEventDispatch`. In `services/handlers.js`, after every `workflow_create`/`workflow_modify`/`workflow_delete` VFS write — call `events.reconcileSubscriptions()` (union may have changed). (Design §13.1, FR-040.)
+- [ ] T105 [US16] Add run provenance fields to `services/engine/run-state.js`: `startSource` ("user" | "tool" | "event"), `triggerEventId`, `triggerEventType`, `eventContext`. Persist in the run record JSON. In the root-node input assembly (design §11, ADR-10): when `startSource === "event"` and `eventContext` is non-null, append a structured `eventContext` block to the assembled input for root nodes.
+- [ ] T106 [P] [US16] Write unit tests for `services/events.js` in `services/__tests__/`: `deriveTriggerUnion` (empty, single, multiple workflows with overlapping/non-overlapping triggers); `reconcileSubscriptions` (initial subscribe, add new type, remove type, idempotent re-declare, `enabled` preservation); `handleEventDispatch` (matching → run starts with provenance + eventContext, non-matching → no run, concurrent → two independent runs, ack called correctly, ack failure → logged but run continues). Mock `ipcPost` and loopback `fetch`.
+
+**Checkpoint**: US16 functional (with 037 active). A workflow with `triggers` starts a run on matching event emission, with provenance and eventContext. Non-matching events are ignored. Concurrent runs are independent.
+
+---
+
+### Phase 15-D: Item UI (FR-049)
+
+**Goal**: The workflow editor gains: (a) a Triggers configuration section, (b) an event node config form, (c) run provenance display in the trajectory panel.
+
+**Depends on**: Phase 15-B + 15-C.
+
+- [ ] T107 [P] [US16] Add a "Triggers" tab/section to the workflow editor in `app/src/components/DetailView.tsx` (or `RunView.tsx`). UI: chips/tags for each trigger event type with remove (×) buttons. An "Add trigger" input: free-text field OR a "Browse" button that calls `workflow_event_types` (via the existing service RPC path) and shows a dropdown of registered types. On add/remove: persists via `workflow_modify`. Visual: matches existing dark theme + tab pattern.
+- [ ] T108 [P] [US18] Add an event node config form to the node editor in `app/src/components/` (shown when `outputType: "event"`). Fields: (a) Event type — text input, live-validated against `com.bos.workflows.*`; (b) Payload — mode toggle ("Static JSON" / "Template"): Static = JSON textarea; Template = text input with `{{nodeId.field}}` syntax + hint/dropdown of upstream node IDs. Saves to the node's `config` field.
+- [ ] T109 [US16] Add a run provenance block to the trajectory panel in `app/src/components/TrajectoryPanel.tsx`. When `startSource === "event"`: show trigger event type, event id (truncated), and a reference to the source event. For non-event runs: show `startSource` minimally.
+
+**Checkpoint**: FR-049 complete. The user can configure triggers (with browse) and author event nodes via the UI. Run provenance is visible.
+
+---
+
+### Phase 15-E: Docs + Skill (FR-050)
+
+**Goal**: Document the event-system integration for developers, end users, and the assistant.
+
+**Depends on**: Phases 15-B, C, D.
+
+- [ ] T110 [P] Update `skills/workflow-manager/SKILL.md`: add sections for (a) event-triggered workflows — `workflow_event_types` usage, `triggers` array configuration, re-entrancy semantics; (b) emit-event nodes — configuration (type + payload template), the `com.bos.workflows.*` namespace policy, and the cycle warning; (c) `workflow_event_types` in the tool table.
+- [ ] T111 [P] Update `docs/dev/architecture.md` (and `contribution.md` if needed): document the 034 integration — trigger union + `reconcileSubscriptions`, `handler_declare`/`event_dispatch` wire shapes, `event` node executor, `eventContext` injection (ADR-10), and the 037 platform change's impact. Add the emit→trigger cycle risk to "Known pitfalls".
+- [ ] T112 [P] Update `docs/usage.md` (and `tool-reference.md`): document the end-user workflow for event-triggered runs ("To make a workflow start automatically when [event] happens: open Triggers tab, add the type"). Document the `event` node for power users. Add `workflow_event_types` to the tool reference.
+
+**Checkpoint**: FR-050 complete. Docs + skill in sync with implemented behavior.
+
+---
+
+### Phase 15-F: E2E Tests + Converge
+
+**Goal**: Playwright e2e for US16/17/18 + FR-049 UI, plus the full converge cycle.
+
+**Depends on**: All prior phases.
+
+- [ ] T113 [P] [US16] E2E in `e2e/003-workflow-event-integration.spec.ts`: (a) create a workflow with `triggers: ["com.bos.e2e.workflow-trigger"]`; (b) emit via `POST /api/events`; (c) poll `workflow_status` until run starts; (d) assert `startSource: "event"`, `triggerEventId` matches, `triggerEventType` matches; (e) assert event payload in `eventContext`; (f) emit non-matching type; (g) assert no new run (SC-027); (h) emit two matching events rapidly; (i) assert two independent runs (SC-028).
+- [ ] T114 [P] [US17] E2E (same file): (a) call `workflow_event_types`; (b) assert returned list includes registered types; (c) assert shape `[{ type, handlerCount, displayName }]`; (d) if no handlers → assert `[]`.
+- [ ] T115 [P] [US18] E2E (same file): (a) author a workflow with a single `event` node (type `com.bos.e2e.workflow-emitted`, static payload); (b) run via `workflow_run`; (c) poll until complete; (d) assert event appears via `GET /api/events` with correct type, `source.appId: "workflows"`, `_wf` provenance; (e) test template payload `{{nodeId.field}}` → resolved; (f) test unresolvable ref → `null` (emit still succeeds, SC-026).
+- [ ] T116 [P] [FR-049] E2E (same file): (a) open workflow editor; (b) navigate to Triggers tab; (c) add trigger via free-text; (d) add via Browse dropdown; (e) remove a trigger; (f) save + reload — triggers persist; (g) create an event node; (h) configure type + payload; (i) save — persists; (j) open an event-triggered run; (k) assert trajectory panel shows provenance block.
+- [ ] T117 Run `buildstudio_run_tests` on `item-workflows` — full e2e suite including 001 regression + 002 e2e (T113-T116) + 034 e2e (possibly modified by T092/T093). All must pass.
+- [ ] T118 Analyze + converge: compare built item against spec.md US16-18 + 037 spec. Check FR-039..051, NFR-007..009, SC-024..028, 037 SC-001..004. Record discrepancies. Update spec status. Cross-reference 034 FR-023 as superseded by 037.
+
+**Checkpoint**: Scope-add 002 fully converged. Event-system integration (US16-18) + 037 platform change complete, tested, documented. User Promotes from Active ▾ menu.
+
+---
+
+## Dependencies & Execution Order (scope-add 002)
+
+### Phase Dependencies
+
+- **Phase 15-A (037)**: No dependencies. BLOCKS Phase 15-C (US16).
+- **Phase 15-B (US17+US18)**: No dependencies on 037. Can run in parallel with 15-A.
+- **Phase 15-C (US16)**: Depends on 15-A (037 active).
+- **Phase 15-D (UI)**: Depends on 15-B + 15-C.
+- **Phase 15-E (Docs)**: Depends on 15-B + C + D.
+- **Phase 15-F (E2E + Converge)**: Depends on all prior.
+
+### Parallel Opportunities
+
+- **T091-T094 (037)**: T092 and T093 are [P]. T094 depends on T091.
+- **T095-T101 (US17+18)**: T095, T096, T098 are [P] (different files). T097 depends on T095. T099 depends on T095. T100, T101 are [P].
+- **T102-T106 (US16)**: T102→T103 sequential (same file). T104 depends on T102+T103. T105 is [P] with T104. T106 is [P].
+- **T107-T109 (UI)**: T107, T108 are [P]. T109 depends on T107.
+- **T110-T112 (Docs)**: All [P].
+- **T113-T116 (E2E)**: All [P] (different test blocks in same file).
+
+### Build Order Summary
+
+```
+Phase 15-A (037)  ──────────────────────────┐
+                                            │ gates
+Phase 15-B (US17+18) ──┐                    │
+                        │                    ▼
+                        └──► Phase 15-C (US16) ───► Phase 15-D (UI)
+                                                       │
+                                                       ▼
+                                                  Phase 15-E (Docs)
+                                                       │
+                                                       ▼
+                                                  Phase 15-F (E2E + Converge)
+```
+
+---
+
+## Notes (scope-add 002)
+
+- T091-T118 = 28 tasks for the scope-add (continuing from T090).
+- 037 is a separate spec (`user-specs/core-platform/037-...`) but shares the feature branch — promotes with the item.
+- The 034 spec's FR-023 is superseded by 037 — record at converge (T118).
+- The `event` node is the cheapest possible node type (no LLM, no agent) — pure I/O.
+- Template resolution follows design §13.3 exactly.
+- The cycle warning (US18 emitting an event that triggers the same workflow) is documented but NOT guarded — user's responsibility.
