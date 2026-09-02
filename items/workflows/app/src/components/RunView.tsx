@@ -5,6 +5,7 @@ import { api } from "../lib/bridge";
 import { liveStepsFor } from "../lib/liveStatus";
 import { nodeTrajectory } from "../lib/trajectory";
 import { PanelDivider, TrajectoryPanel, usePanelWidth } from "./TrajectoryPanel";
+import { RunProvenance } from "./RunProvenance";
 import { WorkflowStatusPill } from "./StatusPill";
 
 interface RunViewProps {
@@ -126,6 +127,11 @@ export function RunView({ workflow, runId, onBack }: RunViewProps) {
           </button>
         ) : null}
       </div>
+
+      {/* US16/FR-041/FR-049 — run provenance. An event-triggered run gets the
+          full block (trigger type, event id, injected payload); a user/tool
+          run gets the one-line label. */}
+      <RunProvenance run={run} />
 
       {run?.warnings?.length ? (
         <div className="wf-warning-banner">

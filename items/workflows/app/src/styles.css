@@ -1037,3 +1037,215 @@ body {
     transform: rotate(360deg);
   }
 }
+
+/* ------------------------------------------------------------------------ */
+/* US16/US18 (FR-049) — event triggers, event-node config, run provenance.   */
+/* Amber is the item's "event" accent throughout: the graph node marker, the  */
+/* trigger chips and the provenance block all use the same hue so an         */
+/* event-shaped thing is recognizable wherever it appears.                    */
+/* ------------------------------------------------------------------------ */
+
+.wf-trigger-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.1);
+  color: #fde68a;
+  padding: 3px 6px 3px 10px;
+  font-size: 11px;
+}
+
+.wf-trigger-chip-glyph {
+  font-size: 10px;
+  opacity: 0.9;
+}
+
+.wf-trigger-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  width: 16px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+}
+
+.wf-trigger-chip-remove:hover {
+  background: rgba(248, 113, 113, 0.3);
+  color: #fecaca;
+}
+
+.wf-trigger-chip-remove:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.wf-event-type-list {
+  margin-top: 8px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.wf-event-type-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: transparent;
+  color: inherit;
+  padding: 6px 10px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 11px;
+}
+
+.wf-event-type-row:hover:not(:disabled) {
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.wf-event-type-row:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.wf-event-type-name {
+  color: #fde68a;
+}
+
+.wf-event-type-display {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.wf-event-type-count {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* Event-node config form (GraphEditor) */
+
+.wf-event-config {
+  margin-top: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  background: rgba(251, 191, 36, 0.05);
+  padding: 10px;
+}
+
+.wf-event-config-icon {
+  color: #fbbf24;
+}
+
+.wf-input-invalid {
+  border-color: rgba(248, 113, 113, 0.7) !important;
+  background: rgba(248, 113, 113, 0.06);
+}
+
+.wf-field-error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #fecaca;
+}
+
+.wf-mode-toggle {
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* Graph node marker */
+
+.wf-node-glyph {
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* Run provenance (RunView + the historical replay card) */
+
+.wf-provenance {
+  margin-bottom: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.08);
+  padding: 8px 10px;
+}
+
+.wf-provenance-icon {
+  color: #fbbf24;
+}
+
+.wf-provenance-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: #fde68a;
+}
+
+.wf-provenance-type {
+  border-radius: 999px;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 1px 8px;
+  font-size: 11px;
+  color: #fde68a;
+}
+
+.wf-provenance-id {
+  border: none;
+  background: transparent;
+  color: rgba(253, 230, 138, 0.7);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  text-decoration: underline dotted;
+}
+
+.wf-provenance-id:hover {
+  color: #fde68a;
+}
+
+.wf-provenance-note {
+  margin-top: 4px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.wf-provenance-payload {
+  margin-top: 6px;
+  max-height: 200px;
+  overflow: auto;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wf-provenance-min {
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.wf-provenance-glyph {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.wf-run-chip-event {
+  color: #fbbf24;
+  font-size: 10px;
+}

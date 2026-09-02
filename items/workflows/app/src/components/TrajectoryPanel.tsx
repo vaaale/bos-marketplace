@@ -148,14 +148,18 @@ export function TrajectoryPanel({ trajectory, runBadge, mode, width, onClose }: 
 
       <div className="wf-traj-panel-body">
         <div className="wf-traj-identity">
-          <div className="wf-traj-identity-icon">{trajectory.outputType === "tool" ? "⚒" : trajectory.outputType === "research" ? "⑂" : "⌬"}</div>
+          <div className="wf-traj-identity-icon">
+            {trajectory.outputType === "tool" ? "⚒" : trajectory.outputType === "research" ? "⑂" : trajectory.outputType === "event" ? "⚡" : "⌬"}
+          </div>
           <div style={{ minWidth: 0, flex: 1 }}>
             <div className="wf-traj-identity-title">
               <span className="wf-traj-identity-name">{trajectory.id}</span>
               <StatusChip status={trajectory.status} />
             </div>
             <div className="wf-mono wf-traj-identity-meta">
-              <span>{trajectory.outputType === "tool" ? "⚒" : "⌬"} {trajectory.agentSource}</span>
+              <span>
+                {trajectory.outputType === "tool" ? "⚒" : trajectory.outputType === "event" ? "⚡" : "⌬"} {trajectory.agentSource}
+              </span>
               <span>⬒ {trajectory.outputLabel}</span>
             </div>
           </div>

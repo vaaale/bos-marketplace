@@ -3,7 +3,31 @@
 // loose (mostly `unknown`/optional) since the app only ever reads these over
 // HTTP — it never re-implements validation, that's the service's job.
 
-export type OutputType = "delegate" | "tool" | "research" | "ag-ui";
+export type OutputType = "delegate" | "tool" | "research" | "ag-ui" | "event";
+
+/** How an `event` node builds the payload it emits (services/engine/node-model.js). */
+export type EventPayloadMode = "static" | "template";
+
+/**
+ * An `event` node's `config` (US18/FR-046). `payload.value` is the literal
+ * object emitted in static mode; `payload.text` is a JSON template string with
+ * `{{nodeId.field}}` placeholders resolved against upstream outputs.
+ */
+export interface EventNodeConfig {
+  eventType?: string;
+  payload?: {
+    mode?: EventPayloadMode;
+    value?: unknown;
+    text?: string;
+    fallback?: unknown;
+  };
+}
+
+/** ADR-14/FR-048b: this item may only emit events under its own namespace. */
+export const WORKFLOWS_EVENT_NAMESPACE = "com.bos.workflows.";
+
+/** FR-046/FR-048a: dot-separated, lowercase — the service's own pattern. */
+export const EVENT_TYPE_PATTERN = /^[a-z0-9]+(\.[a-z0-9_-]+)+$/;
 
 export interface AgentSource {
   kind: "static" | "ephemeral";
@@ -26,6 +50,8 @@ export interface WorkflowStep {
   outputConvention?: string;
   retryLimit?: number;
   timeout?: number;
+  /** Only meaningful for `outputType: "event"` (US18/FR-046). */
+  config?: EventNodeConfig;
 }
 
 export interface WorkflowConfig {
@@ -39,6 +65,8 @@ export interface Workflow {
   name: string;
   version: number;
   config?: WorkflowConfig;
+  /** US16/FR-039: event types whose arrival starts a run of this workflow. */
+  triggers?: string[];
   steps: WorkflowStep[];
   createdAt?: number;
   updatedAt?: number;
@@ -105,6 +133,16 @@ export interface StepState {
   error?: string;
 }
 
+/** US17/FR-044: one entry of `workflow_event_types`. */
+export interface EventTypeEntry {
+  type: string;
+  handlerCount: number;
+  displayName?: string | null;
+}
+
+/** US16/FR-041: who started a run. Pre-US16 run records have none — "tool". */
+export type RunStartSource = "user" | "tool" | "event";
+
 export type RunFinalState = "running" | "completed" | "completed_with_warnings" | "failed" | "cancelled" | "never_run";
 
 export interface RunEvent {
@@ -131,7 +169,16 @@ export interface BranchWarning {
   reason?: string;
 }
 
-export interface RunSummary {
+/** US16/FR-041 run PROVENANCE, carried identically by the live projection and
+ *  the persisted log (services/engine/run-state.js + runs.js). */
+export interface RunProvenance {
+  startSource?: RunStartSource;
+  triggerEventId?: string | null;
+  triggerEventType?: string | null;
+  eventContext?: unknown;
+}
+
+export interface RunSummary extends RunProvenance {
   runId: string;
   startedAt?: number;
   endedAt?: number;

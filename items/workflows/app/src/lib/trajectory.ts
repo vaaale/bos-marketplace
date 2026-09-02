@@ -72,6 +72,8 @@ export function describeStep(step: WorkflowStep): string {
   if (step.outputType === "tool") return step.toolName || "unnamed-tool";
   if (step.outputType === "research") return `${(step.researchAgents || step.candidates || []).length} agent(s)`;
   if (step.outputType === "ag-ui") return step.outputConvention || "artifact";
+  // An event node's identity IS the type it emits (node-model.js describeNode).
+  if (step.outputType === "event") return step.config?.eventType || "unnamed-event";
   return step.agentSource?.kind === "ephemeral" ? "ephemeral" : step.agentSource?.agentId || "agent";
 }
 
@@ -80,6 +82,8 @@ function agentSourceLabel(step: WorkflowStep | undefined): string {
   if (step.outputType === "tool") return "tool node";
   if (step.outputType === "research") return `research fan-out · ${(step.researchAgents || []).length} agent(s)`;
   if (step.outputType === "ag-ui") return "no delegation";
+  // An event node has no agent at all — it is a pure I/O step (FR-046).
+  if (step.outputType === "event") return "no agent · emits an event";
   return step.agentSource?.kind === "ephemeral" ? "Ephemeral agent" : step.agentSource?.agentId || "agent";
 }
 
