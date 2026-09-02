@@ -615,3 +615,540 @@ runs are refused (FR-007). The **empty-state copy** ("the engine, Files, and the
 read the same location") is the UX statement of ADR-2's invisible-content fix. The graph
 renders node labels as `outputType · sub` (e.g. `tool · fetch:csv`, `ag-ui · normalize`,
 `delegate · db`) — consistent with the node-model axes (§3.4.2).
+
+---
+
+# §9+ Scope-Add 002 — Event-System Integration (US16–US18, FR-039–FR-051)
+
+> **Addendum, not a rewrite.** §1–§8 above are the converged, implemented design
+> for the 001 engine pivot (status: Implemented & Promoted 2026-08-21). This section
+> is the authoritative structural design for the 2026-09-02 scope-add: workflows as
+> **first-class participants in the 034 event system** — *inbound* (event-triggered
+> runs, US16), *discovery* (`workflow_event_types`, US17), and *outbound* (`event`
+> node, US18). It **extends** the item's service and app facets in place; it does not
+> re-derive the engine, the VFS bridge, the execution contract, or the tool surface
+> those earlier sections already settled. The only *new* target shape this scope-add
+> introduces is a small, isolated **`bos-core` platform change** (037) — §15.
+
+## 9. Classification (delta)
+
+**Primary target — `marketplace-item` (the `workflows` item, in place):** the scope-add
+lives entirely inside the existing item — its **service facet** gains a
+headless-handler subscription path, an `event` node output type, and one new
+service-declared tool (`workflow_event_types`); its **app facet** gains a Triggers
+editor and an event-node config form (FR-049). This **agrees** with spec.md's
+`App Target: marketplace-item`.
+
+**Secondary target — `bos-core` (037-event-namespace-relaxation), new for this scope-add:**
+US16 requires the workflow service to subscribe to *arbitrary* event types (e.g.
+`com.bos.gsuite.email.received`) via `handler_declare`. The 034 implementation still
+rejects such a registration with `namespace-not-owned` (the `ownsNamespace` check in
+`src/lib/events/api.ts` `register()`). 037 removes that check. This is the one
+non-marketplace deliverable, and its file-level scope is bounded in §15.
+
+**Agreement check:** spec.md's `App Target` field is `marketplace-item` only; the 037
+bos-core change is recorded in spec.md's Context/Assumptions as a *platform dependency*
+(its own spec is at `user-specs/core-platform/037-event-namespace-relaxation/`). No
+disagreement — but Build Studio must schedule 037 (bos-core, feature branch) and the
+item scope-add (marketplace, `app_build`) as **two delegations on the shared feature
+branch** `bos/002-workflow-event-integration` (037's spec names the same branch), never
+conflated. Build-ordering: §14/ADR-13.
+
+## 10. Constitution check (delta)
+
+| Principle | Compliance (this scope-add) |
+|---|---|
+| **II. Server Authority & SSR Boundary** | Complies. The service reaches the 034 system **only** over worker IPC (`handler_declare`, and being invoked via `event_dispatch`) and loopback HTTP (`POST /api/events`, `GET /api/events/handlers`, `POST /api/events/:id/ack`, `POST /api/events/unregister`). It never imports `@/lib/events/*` (the worker is unbundled, outside the `@/` graph — §3.2 / `target-marketplace-item.md`). **No self-contained token/credential scheme is introduced:** the service is a handler *callee*; it acks over loopback with `callerId: "workflows"`, which the unchanged ack-ownership check (`kernel.ts` `ack()` — `reg.ownerId !== input.callerId ⇒ ack-forbidden`) validates *by identity*, exactly as 034 intended. |
+| **IV. Minimize Blast Radius** | Complies. The only bos-core edit is 037's single rejection-path removal in `api.ts` `register()` (plus optional dead-code cleanup it permits) — §15. The item change is additive inside the already-implemented service/app facets. |
+| **V. The VFS Is Not the Source** | Complies. `triggers` live in the workflow JSON already persisted to real VFS `/Workflows/` (§4.1/ADR-2); no new storage location. |
+| **VI. Specs & Docs Stay in Sync** | Complies. 037 supersedes 034 FR-023; the item's `docs/dev/Workflows/*` + skill (FR-050) must document event-triggered workflows and `event` nodes (flagged for implement, §14). |
+| **VII. Respect Boundaries** | Complies. Item files stay under `data/user-apps/items/workflows/`; 037 is feature-branch-isolated. |
+
+**037's security posture is unchanged.** 037 removes the *subscription* check (a
+collision-guard, per the 034 design doc's own characterization: "a same-container
+integrity check, not a network security boundary"). The *ack* ownership check — the
+real integrity guard on the settlement path — is explicitly **unchanged** (037 FR-002,
+verified present in `kernel.ts` `ack()`). In BOS's single-container trust model this
+removal does not weaken any boundary. No constitution conflict beyond what 037 already
+records.
+
+## 11. Architecture (delta)
+
+The 001 Context/Container diagram is unchanged. This scope-add adds **two arrows** to
+it: the service facet now also (a) **subscribes** to 034 event types via the existing
+headless-handler channel, and (b) **emits** 034 events from `event` nodes — both
+reaching the same **BOS main-thread event kernel** the 034 routes delegate to.
+
+```text
+                        ┌──────────────────────────────────────────────┐
+  034 EVENT KERNEL (BOS main thread, already implemented — unchanged)
+                        │  src/lib/events/{kernel,dispatch,api,store}  │
+                        │  · handler registry (in-memory + JSONL)      │
+                        │  · FIFO per-handler dispatch, retry/backoff  │
+                        │  · emit = O(1) shard append (FR-004: does   │
+                        │    NOT await handler completion)            │
+                        └───────┬──────────────────────┬───────────────┘
+        handler_declare         │  event_dispatch       │  loopback HTTP
+        (Worker→Main IPC)       │  (Main→Worker IPC)     │  (127.0.0.1)
+        [037 removes the        ▼          │             ▼
+         ownsNamespace gate]   │           │             │
+                        ┌──────┴───────────┴─────────────┴────────────┐
+                        │  Workflow Manager SERVICE (worker thread)    │
+                        │  + events.js  (NEW: trigger union, subsc-   │
+                        │    ribe/unsubscribe, event_dispatch handler │
+                        │      → fire-and-poll run + loopback ack)    │
+                        │  + engine/node-model.js (MOD: +"event" out) │
+                        │  + engine/executor.js (MOD: event-node emit)│
+                        │  + tools.js/handlers.js (MOD: +event_types) │
+                        └──────────────────────────────────────────────┘
+```
+
+The two directions are **asymmetric in their 037 dependency**, which drives build
+ordering (§14/ADR-13):
+- **Inbound (US16, subscribe)** — the `handler_declare` for a non-owned type is
+  *rejected* by the pre-037 `ownsNamespace` gate. **Depends on 037.**
+- **Outbound (US18, emit)** — `api.emit()` has **no** namespace check at all (verified:
+  `api.ts` `emit()` validates only type shape, payload size, and `source.appId`). An
+  `event` node emits into `com.bos.workflows.*` (the service's owned root) *or any type*
+  with no platform gate; only the item's own `workflow_validate` (FR-048b) restricts it
+  to the owned namespace for provenance clarity. **Does NOT depend on 037.**
+
+## 12. Wire protocol (all shapes verified against source)
+
+### 12.1 Subscribe — `handler_declare` (Worker→Main)
+
+The service emits one `handler_declare` per distinct trigger event type. Exact
+`HandlerDeclarePayload` (`src/core/service/types.ts:169`), one message per type:
+
+```js
+parentPort.postMessage({
+  type: "handler_declare",
+  payload: {
+    callId:      callId(),                    // opaque correlation id (service-generated)
+    handlerId:   `workflows:${eventType}`,    // STABLE & deterministic (see §13)
+    eventType:   eventType,                   // exact type string, e.g. "com.bos.gsuite.email.received"
+    displayName: `Workflow trigger: ${eventType}`,
+    description: `Starts a run of the workflow(s) that declare this trigger.`,
+    timeoutMs:   undefined,                   // default 30_000 (DEFAULT_HANDLER_TIMEOUT_MS); ack is O(run-start), not O(run-completion)
+  },
+});
+```
+
+ServiceManager's existing `case "handler_declare"` (`ServiceManager.ts:378`) forwards
+this to `eventsApi.register({ mode:"headless", ownerId: serviceId /* "workflows" */,
+declaredBy:"service", grantedNamespaces: manifest.eventNamespaces, ... })`. **After 037,
+the `ownsNamespace` gate is gone, so a non-owned `eventType` registers successfully**
+without any `eventNamespaces` grant (US16 AS1; FR-051). Pre-037 the same message throws
+`namespace-not-owned` — logged as `handler_declare:rejected` — which is exactly the
+failure the US16 e2e asserts is absent. Re-declaring the same `handlerId` is an
+**idempotent upsert** (`api.ts` `register()` preserves a previously-set `enabled`), so
+service restart is safe (US16 AS5).
+
+### 12.2 Invoked — `event_dispatch` (Main→Worker)
+
+When the kernel emits an event whose type matches a registered workflow trigger, it
+dispatches to the service over the existing `event_dispatch` channel. Exact
+`EventDispatchPayload` (`src/core/service/types.ts`):
+
+```js
+{ type: "event_dispatch", payload: {
+    callId:    "evt-call-<ts>-<n>",   // exactly-once-settle guard (dispatch.ts nextCallId)
+    eventId:   record.id,             // the 034 event's id
+    handlerId: `workflows:${eventType}`,
+    record:    { id, type, payload, source, ts, sequence, summary },  // EventRecord
+} }
+```
+
+The service's `event_dispatch` handler (new `events.js`) does **exactly** this, then
+acks — it does **not** wait for the run:
+
+1. Resolve which workflow(s) to start: every workflow whose `triggers` array contains
+   `record.type` (exact match; FR-041). A type shared by N workflows starts N runs.
+2. For each matching workflow, **start a fire-and-poll run** (§13) with provenance
+   `startSource: "event"`, `triggerEventId: record.id`, `triggerEventType: record.type`,
+   and `eventContext: record.payload` (FR-041/FR-042).
+3. **Ack immediately** over loopback (NFR-007 — ack on run *start*, not completion):
+
+```js
+await fetch(`${ORIGIN}/api/events/${encodeURIComponent(eventId)}/ack`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ handlerId, callerId: "workflows", callId, result: { startedRuns: runIds } }),
+});
+```
+
+`callerId: "workflows"` must equal the handler's `ownerId` (it does — ServiceManager
+sets `ownerId: serviceId` = `"workflows"`), so the **unchanged** ack-ownership check
+passes. `callId` is echoed so `dispatch.ts settleAck` matches the exact outstanding
+attempt (not a superseded retry). If no workflow matches (shouldn't happen — the type is
+registered precisely because one declared it), ack with `result: { startedRuns: [] }`.
+
+### 12.3 Emit — `event` node (loopback `POST /api/events`)
+
+An `event` node emits via the same loopback `emit` the 034 routes use (verified
+`src/app/api/events/route.ts` `POST` → `api.emit` → 201):
+
+```js
+await fetch(`${ORIGIN}/api/events`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    type:    nodeConfig.eventType,              // must be com.bos.workflows.* (FR-048b, validate-only)
+    payload: { ...resolvedUserPayload, _wf: {   // FR-047 provenance envelope
+                 workflowId, runId, nodeId, triggerEventId? } },
+    source:  { appId: "workflows", name: "Workflow Manager" },  // FR-047 source.appId
+  }),
+});
+```
+
+Response (201): `{ id, sequence, ts, processing, read, activeHandlers }`. The node
+**completes when the emit HTTP returns** (FR-046) — the kernel's emit is a shard append
+that does **not** await handler completion (`kernel.ts` `emit()` → `dispatchEmittedEvent`
+enqueues, never awaits), so this is well within the 30s node timeout (NFR-008).
+Emitted events are queryable via `query_events`/Event Viewer (SC-026).
+
+### 12.4 Discovery — `GET /api/events/handlers`
+
+`workflow_event_types` reads the in-memory grouped registry (verified
+`src/app/api/events/handlers/route.ts` `GET` → `api.listHandlersGrouped()` →
+`Record<eventType, { headless: HeadlessHandlerView[], ui: UiHandlerView[] }>`). Each
+`HeadlessHandlerView` carries `{ handlerId, displayName, icon?, enabled, timeoutMs,
+recentFailures, ownerId }` (kernel.ts `listHandlersGrouped`). No disk I/O on the hot
+path (NFR-009). Mapping to the tool response: §13.4.
+
+## 13. Behavioral design (the five key questions)
+
+### 13.1 Trigger-union derivation & maintenance (FR-040)
+
+**The `triggers` arrays in the workflow JSON are the single source of truth — no
+separate subscription store** (spec Key Entities: `EventTrigger`; US16 AS5). The union
+is always re-derived:
+
+```text
+deriveTriggerUnion():
+  types = Set()
+  for wf in readAllWorkflows():            # real VFS /Workflows/*.json via loopback /api/fs
+    for t in (wf.triggers ?? []): types.add(t)   # absent/empty ⇒ contributes nothing (FR-039)
+  return types
+
+reconcileSubscriptions():                  # called on start AND after every create/modify/delete
+  target = deriveTriggerUnion()
+  current = declaredHandlerIds()           # in-memory Set of handlerIds the service believes are live
+  for t in (target - current):  emit handler_declare(t)        # 12.1
+  for t in (current - target):  loopback POST /api/events/unregister { handlerId: workflows:t, ownerId: "workflows" }
+  declared = target
+```
+
+Notes:
+- **No `handler_unregister` worker-IPC message exists** (verified: `WorkerToMainMessage`
+  has only `handler_declare`). Removal therefore goes over loopback
+  `POST /api/events/unregister` (`src/app/api/events/unregister/`), the same transport
+  the service already uses for ack/emit. Owner check on unregister (`ownerId ===
+  "workflows"`) passes by identity.
+- **Stable `handlerId = workflows:<eventType>`** makes re-declare an idempotent upsert
+  and makes removal trivially addressable. A deterministic id is also what lets
+  `enabled` (user toggled in Settings → Configuration) survive a service restart's
+  re-declare — `api.register()` preserves it.
+- **Catch-up is free.** `kernel.register()` calls `dispatch.catchUpHandler(reg)` for
+  headless handlers, so a (re-)declared type immediately re-dispatches any *pending*
+  events of that type that were emitted while the service was down (034 FR-005b).
+  This is the at-least-once guarantee the service inherits without any code of its own.
+- **Timing:** run `reconcileSubscriptions()` once after `initialized` (start), and
+  synchronously inside each of the `workflow_create`/`workflow_modify`/`workflow_delete`
+  handlers after the VFS write succeeds. CRUD is already serialized per-service by the
+  tool-call model, so no extra locking is needed for the derive-diff-declare sequence.
+
+### 13.2 `eventContext` injection (FR-042)
+
+**Decision: a field on the run record, consumed by root-node input assembly — NOT a
+synthetic graph node.** (ADR-10.)
+
+- The run record (already a first-class persisted entity, §6/ADR-9) gains:
+  ```json
+  { "startSource": "event", "triggerEventId": "…", "triggerEventType": "…", "eventContext": { /* the triggering event's payload, verbatim */ } }
+  ```
+  For agent-initiated runs these fields are absent (`startSource` defaults to
+  `"agent"`). `eventContext` is persisted with the run, so it is **auditable** and
+  visible in the node trajectory panel (FR-026) — the debugging surface already exists.
+- **Mechanically**, the engine's input-assembly step (the one that builds a node's
+  prompt from upstream outputs, per §3.4.2/FR-035) special-cases the run's **root
+  nodes** (nodes with no dependencies) on an event-triggered run: it appends the
+  `eventContext` as structured input, e.g.
+  `"Triggering event (com.bos.gsuite.email.received): <JSON of eventContext>"`, so the
+  first node's agent can use the event data. This is an additive prompt section, not a
+  new node, so it cannot perturb DAG structure, routing selection (FR-018/029/031), or
+  the concurrency cap.
+- **Why not a synthetic "input" node:** it would require graph surgery (a node not in
+  the user's JSON), complicate the selection/propagation rules, and contradict the
+  spec's framing ("made available to the workflow's first node(s)"). A run-record field
+  read by root-node input assembly is simpler, auditable, and matches the spec.
+- **Non-root nodes** do not receive `eventContext` directly — they receive it *transitively*
+  through their upstream roots' outputs, exactly like any other data flow (FR-035).
+
+### 13.3 `event` node executor + template resolution (FR-046/047/048, US18)
+
+**Node config** (`EmitEventNodeConfig`, spec Key Entities):
+```json
+{ "outputType": "event",
+  "eventType": "com.bos.workflows.analysis.complete",   // required; com.bos.workflows.* (FR-048b)
+  "payload": { "…static…": "object" }                    // OR a template string (below)
+  // "payload": "{\"summary\":\"{{research_1.summary}}\", \"rows\":{{transform.rows}}}" }
+```
+`payload` is **either** a JSON object (static — emitted verbatim) **or** a string
+containing `{{nodeId.field}}` placeholders. `agentSource` is irrelevant to an `event`
+node: it performs **no** sub-agent/LLM call, so it bypasses `executor.js`'s delegate
+path entirely (it is a pure loopback emit — the cheapest possible node).
+
+**Template-resolution algorithm.** Source data structure = the run's per-node output
+map `run.outputs[nodeId]` — the same first-class structured output store FR-035
+already guarantees downstream nodes read (no file handoff). Field access is a dot-path
+into that node's output object.
+
+```text
+resolveTemplate(template, runOutputs):
+  return template.replace(/\{\{\s*([a-zA-Z0-9_-]+)\.([a-zA-Z0-9_.\-]+)(?:\s*\|\|\s*([^}]*))?\s*\}\}/g,
+    (match, nodeId, field, fallback) => {
+      const node = runOutputs[nodeId];
+      const val  = node ? getByDotPath(node, field) : undefined;   // §3.4.2 output map
+      if (val !== undefined) return String(val);                   // scalar/stringified
+      return (fallback !== undefined) ? fallback : "null";          // US18 AS3: never fails, null-or-fallback
+    });
+```
+
+- **Source of values:** only *upstream, already-completed* node outputs are resolvable
+  (the scheduler guarantees a node runs only after its dependencies complete, so any
+  referenced node that has run is complete). A node that was **never run** (neutral/
+  skipped, e.g. downstream of a failure) is absent from `run.outputs` → resolves to
+  `null` (or the inline `||fallback`). **Template resolution never fails the emit**
+  (US18 AS3). An unresolvable reference is logged at warn (NFR-005 — no silent swallow).
+- **After resolution**, the string is `JSON.parse`d. If it is a valid JSON **object**,
+  it is the user payload. If the result is not an object (e.g. the template resolved to
+  a bare scalar), the node **fails** with a clear reason ("event node payload must be a
+  JSON object") — this is a *config/authoring* error, distinct from a runtime
+  unresolvable-reference (which yields `null` and proceeds). The static-object path
+  always passes this check.
+- **Provenance envelope** (`_wf: { workflowId, runId, nodeId, triggerEventId? }`) is
+  added by the executor, not authored (FR-047). `triggerEventId` is present when the
+  run itself was event-triggered, closing the emit→provenance chain.
+- **Hard failure only on emit HTTP error** (invalid type shape, payload > 1MB,
+  non-2xx) — the node then fails and the run proceeds per its on-failure policy
+  (FR-038). Within NFR-008/001 (emit is O(1) shard append).
+
+### 13.4 `workflow_event_types` tool (FR-044/045, US17)
+
+Declared via `tool_declare` like the other 12 (so it's gated/lifecycle-managed
+identically — FR-010/011). Handler: loopback `GET /api/events/handlers`, then map the
+grouped registry to a flat list:
+
+```js
+// GET /api/events/handlers  →  { "com.bos.gsuite.email.received": { headless:[…], ui:[…] }, … }
+const grouped = await get('/api/events/handlers');
+const types = Object.entries(grouped).map(([type, g]) => ({
+  type,
+  headlessCount: g.headless.length,          // FR-045: count of registered headless handlers
+  uiCount:      g.ui.length,
+  displayName:  pickDisplayName(type, g),    // FR-045: human-readable, where available
+}));
+return { eventTypes: types, total: types.length };   // [] when none — NOT an error (US17 AS3)
+```
+
+`pickDisplayName`: prefer a non-workflow-owned `headless[].displayName` (stripping the
+`"Workflow trigger: "` prefix if it's our own), else the first `ui[].displayName`,
+else the type's last dot-segment humanized (`email.received` → "Email Received"). This
+lets the assistant browse *real* registered types (including other components') when
+authoring `triggers` — exactly the discovery friction US17 removes. Bounded by
+NFR-009 (in-memory read).
+
+## 14. File/module plan (delta — what this scope-add creates/modifies in the item)
+
+All paths relative to the item root `data/user-apps/items/workflows/`. **Create** = new
+module; **Modify** = additive change to an already-implemented file (001 is
+Implemented & Promoted, so these are real files being extended, not stubs).
+
+| Path | Action | Purpose |
+|---|---|---|
+| `services/events.js` | **Create** | The 034 integration layer: `deriveTriggerUnion()`, `reconcileSubscriptions()` (start + on CRUD), the `event_dispatch` message handler (→ fire-and-poll run + loopback ack), loopback `emit`/`ack`/`getHandlers`/`unregister` helpers (reusing the existing `vfs.js` origin + loopback pattern, §6/ADR-6). |
+| `services/index.js` | **Modify** | On `initialized`: after `tool_declare`, call `events.reconcileSubscriptions()` (start path, US16 AS5). In the `worker.on("message")` switch: add `case "event_dispatch"` → `events.handleEventDispatch(payload)`. No new lifecycle; no new IPC types. |
+| `services/tools.js` | **Modify** | Add the 13th tool declaration `workflow_event_types` (name, description, empty-input schema) — joins the existing 12 in one `tool_declare` batch at startup. |
+| `services/handlers.js` | **Modify** | Add the `workflow_event_types` handler (§13.4). In `workflow_create`/`workflow_modify`/`workflow_delete` handlers: after the VFS write/delete succeeds, call `events.reconcileSubscriptions()` (FR-040). |
+| `services/engine/node-model.js` | **Modify** | Add `"event"` to the `outputType` union; add `EmitEventNodeConfig` shape (`eventType` + `payload` object-or-template-string). `event` is orthogonal to `agentSource` (no agent needed). |
+| `services/engine/executor.js` | **Modify** | Add the `event`-output branch: bypass the delegate path, run `resolveTemplate` (§13.3), loopback `POST /api/events`, complete on 201. |
+| `services/engine/validate.js` | **Modify** | Add FR-048 checks: (a) `triggers[]` entries well-formed event types (`^[a-z0-9]+(\.[a-z0-9_-]+)+$`, ≤256); (b) `event` node `eventType` under `com.bos.workflows.*`; (c) every `{{nodeId.field}}` in an `event` node's template references a node that exists in the graph. |
+| `services/engine/store.js` | **Modify** | Accept + persist the run-record provenance fields (`startSource`, `triggerEventId`, `triggerEventType`, `eventContext`) written by event-triggered runs (§13.2); surface them in `workflow_run_get`. |
+| `app/src/main.tsx` (+ components) | **Modify** | FR-049 UI: a **Triggers** tab in the detail/editor view (list `triggers[]`, add via free text *or* a browse dropdown fed by `workflow_event_types`, remove); an **event-node config form** (event-type field + payload editor with static-JSON / template toggle and `{{nodeId.field}}` hinting). §16. |
+| `skills/workflow-manager/SKILL.md` | **Modify** | FR-050: document event-triggered workflows (how to use `workflow_event_types`, set `triggers`, configure `event` nodes with type + `{{nodeId.field}}` templates), and warn about emit→trigger cycles. |
+| `docs/dev/Workflows/*.md` | **Modify** | Developer docs for the 034 integration (subscription, eventContext, event node, wire shapes). `docs/usage/Workflows/*.md`: end-user "trigger a workflow by an event" page. |
+
+**No `service.json` change required** for US16 — after 037 the service needs no
+`eventNamespaces` grant (FR-051). If 037's FR-003 (field retained for documentation)
+is used, an advisory `eventNamespaces: ["com.bos.workflows.*"]` may be added to
+document intent — but it is **not required** and gates nothing.
+
+## 15. The 037 platform change — file-level scope (bos-core, feature branch)
+
+Verified against the current `src/lib/events/` source. This is the *entire* bos-core
+footprint of the scope-add.
+
+| Path (BOS source) | Action | Detail |
+|---|---|---|
+| `src/lib/events/api.ts` | **Modify** | In `register()`: **delete the `ownsNamespace` rejection block** — `const grants = …; if (!ownsNamespace(req.eventType, req.ownerId, grants)) throw new EventApiError("namespace-not-owned", …)` (the `grants` line + the `if`). This is the single behavioral change (037 FR-001). The rest of `register()` (idempotent upsert, `enabled` preservation) is unchanged. |
+| `src/lib/events/api.ts` | **Optional (037 FR-005)** | `resolveGrantedNamespaces()` exists *solely* to feed that check — remove it, or keep it as dead code. If removed, also drop the now-unused `RegisterRequest.grantedNamespaces` *usage* (the field itself may stay accepted-and-ignored per FR-003). |
+| `src/lib/events/types.ts` | **Optional (037 FR-004/006)** | `ownsNamespace()` may be removed or retained (must no longer be called to reject). The `"namespace-not-owned"` entry in `EventErrorCode`/`STATUS_BY_CODE` **must be retained** (backward-compatible error table) but is no longer thrown by any path. |
+| `src/core/service/ServiceManager.ts` | **None required** | The `handler_declare` handler passes `grantedNamespaces: manifest.eventNamespaces` — after 037 this arg is harmless (ignored). Leaving it is the minimal-diff choice; dropping it is cosmetic. **Do not** touch the `event_dispatch` invoker or the ack path. |
+| **Tests** | **Modify** | 034's namespace-rejection e2e/unit case (the one asserting `namespace-not-owned` for a non-owned type) is **removed or flipped to expect success** (037 SC-004). The ack-ownership test (asserting `ack-forbidden` for a cross-owner ack) is **kept unchanged** (037 US1-AS3 / SC-003) — it is the guard 037 deliberately preserves. |
+
+**Explicitly NOT touched by 037:** `kernel.ts` (emit/dispatch/ack/registry),
+`store.ts`, `dispatch.ts`, the HTTP routes, the ack-ownership check, the handler
+registry data model, and the response shapes — 037 NFR-001. Registration response
+shape and dispatch/ack semantics are unchanged; only the rejection path disappears.
+
+**Backward-compatible:** handlers registered under their own namespace keep working;
+the only behavior change is that previously-rejected (non-owned) registrations now
+succeed (037 Assumptions). No migration (NFR-002).
+
+## 16. UI mockup reference (delta — where the additions fit)
+
+`mockup.html` (same spec dir) is the baseline for the 001 views (List / Detail / Run /
+History). FR-049 adds two surfaces, both in the **Detail/editor view** (`#view-detail`)
+and the run/history node panels:
+
+1. **Triggers tab** — a new tab in the detail view's tab strip
+   (`Steps · Dependencies · Config · **Triggers**`). Lists the workflow's
+   `triggers[]` as chips with a remove (×). **Add** is a two-mode input: free text
+   (for a known type string) *or* a **browse dropdown** populated by calling
+   `workflow_event_types` (US17's tool — the app reaches it via the service over
+   `window.__bos`, same broker as the other 12 tools). Selecting a browse entry inserts
+   its `type` string. This is the discovery affordance US17 exists for — the user never
+   has to type a dot-separated type by hand. A workflow with no `triggers` shows an
+   empty state ("Not event-triggered"). Editing Triggers persists via `workflow_modify`
+   (and re-triggers `reconcileSubscriptions()` on the service, FR-040).
+2. **Event-node config form** — when an `event`-outputType node is selected in the
+   editor (the graph's node-configuration surface), a config panel shows:
+   - **Event type** field (free text; validated to `com.bos.workflows.*` live, mirroring
+     FR-048b — show the same error the `workflow_validate` tool would).
+   - **Payload editor** with a **static JSON / template** toggle. Static mode: a JSON
+     object editor. Template mode: a text editor with `{{nodeId.field}}` placeholder
+     hinting (auto-completion of node ids from the current graph, per FR-048c) and a
+     live "resolved preview" showing what the payload would look like for the last
+     known node outputs.
+
+The run/history **node trajectory panel** (FR-025/026, already in the mockup) needs one
+additive element for an event-triggered run: the run's header/provenance block shows
+`startSource: event` + `triggerEventType` + `triggerEventId`, and the **root node's**
+"Executed prompt" section (FR-026) displays the appended `eventContext` — so the user
+sees *which* event started the run and *what* the first node was told. No new panel; it
+reuses the existing trajectory rendering.
+
+## 17. ADRs (this scope-add)
+
+### ADR-10 — `eventContext` is a run-record field consumed by root-node input assembly, not a synthetic node
+- **Context:** FR-042 must make the triggering event's payload available to the
+  workflow's first node(s). Options: (a) a synthetic "input" node prepended to the DAG;
+  (b) a field on the run record that the engine's root-node input-assembly reads.
+- **Decision:** (b). The run record already is a persisted, auditable entity (ADR-9);
+  adding `eventContext` there makes it inspectable in the trajectory panel for free.
+  Root-node input assembly (the existing prompt-building step, §3.4.2) appends it as a
+  structured section.
+- **Consequences:** No graph mutation ⇒ no interaction with routing/selection
+  (FR-018/029/031) or the concurrency cap; non-root nodes receive the event data
+  transitively through outputs (FR-035). Simpler than (a), which would require
+  reconciling a node that isn't in the user's JSON against validate/router/scheduler.
+
+### ADR-11 — Stable `handlerId = workflows:<eventType>`; subscribe via worker IPC, unsubscribe via loopback
+- **Context:** The union is re-derived on start and on every CRUD (FR-040). We need
+  (a) idempotent re-declare across restarts, (b) preservation of a user-set `enabled`
+  toggle, (c) an addressable handle for removal. `WorkerToMainMessage` offers only
+  `handler_declare` (no unregister); `POST /api/events/unregister` exists over loopback.
+- **Decision:** `handlerId = workflows:<eventType>` (deterministic ⇒ upsert-idempotent,
+  `enabled`-preserving per `api.register()`). Add via `handler_declare` (IPC); remove via
+  loopback `POST /api/events/unregister`.
+- **Consequences:** Restart is safe (US16 AS5); a user disabling a trigger in Settings
+  survives restart; removal is exact. The only asymmetry (add=IPC, remove=loopback) is
+  forced by the fixed IPC vocabulary, and both use the same single-container identity.
+  Alternative rejected: a manifest-declared `eventNamespaces`/static handler list —
+  can't express a *dynamic* union that changes with workflow CRUD.
+
+### ADR-12 — `event` node is a pure loopback emit (no agent/LLM), orthogonal to agentSource
+- **Context:** US18's `event` node just publishes an event. Options: (a) run it through
+  the same delegate path as other nodes (spawn an agent to "emit"); (b) a dedicated
+  no-agent branch that resolves the template and does one loopback `POST /api/events`.
+- **Decision:** (b). Emitting an event needs no LLM/reasoning; (a) would add latency,
+  cost, and a failure mode for a deterministic action.
+- **Consequences:** `event` is the cheapest node type; it always completes in well under
+  the 30s timeout (NFR-008). `agentSource` is simply unused for this output type. This
+  is consistent with the node model's two orthogonal axes (§3.4.2) — an `event` node has
+  an output type but no meaningful agent source.
+
+### ADR-13 — Build order: 037 lands before (or is merged into) the item's US16; US18 is independent of 037
+- **Context:** US16's *subscription* to non-owned types is rejected by the pre-037
+  `ownsNamespace` gate. US18's *emit* has no such gate. Both the 037 spec and this
+  scope-add name the shared branch `bos/002-workflow-event-integration`.
+- **Decision:** They are developed on **one shared feature branch** and promoted
+  together. Within it, **037 is landed first** (it is small, self-contained bos-core);
+  the item scope-add's US16 e2e ("subscribe to a non-owned type, emit, run starts") is
+  run **against 037 present**. US17 (discovery) and US18 (emit node) do **not** depend
+  on 037 and can be built/tested in parallel with it — only US16's *non-owned*
+  subscription assertion is gated on 037 being active.
+- **Consequences:** The two delegations (bos-core 037 via `dev_delegate` on the branch;
+  item scope-add via `agent_delegate` contentOnly + `app_build`) are never conflated,
+  but they promote as one unit. A developer who builds the item scope-add on a branch
+  *without* 037 will see US16's non-owned-subscription test fail with `namespace-not-owned` —
+  that is the expected, correct signal that 037 is not yet in place, not an item bug.
+
+### ADR-14 — Emission namespace restriction is an item policy (`workflow_validate`), not a platform gate
+- **Context:** FR-048b requires `event` nodes to emit under `com.bos.workflows.*`. The
+  034 platform imposes **no** emission namespace check (verified `api.emit()`). So this
+  restriction must be enforced *somewhere*.
+- **Decision:** Enforce it in the item's `workflow_validate` (author-time) and surface
+  the same check live in the event-node config form (§16) — **not** in the platform. The
+  `source.appId: "workflows"` already marks provenance, so the restriction is for
+  clarity, not security.
+- **Consequences:** A mis-authored `event` node pointing at a foreign type is caught at
+  validate/edit time, not at emit time. Keeps the platform's open pub/sub model
+  intact (037's direction) while giving workflows a sane default. (Contrast: *subscription*
+  is deliberately unrestricted after 037 — the asymmetry is intentional: emit provenance
+  is a policy, subscription access is a platform capability.)
+
+## 18. Risks / open questions (this scope-add)
+
+1. **Emit→trigger cycles (authoring hazard, not a platform limit).** If workflow A
+   emits `com.bos.workflows.x.done` and *subscribes* to it (or A emits a type A itself
+   triggers on), runs chain indefinitely. The service does not (and per 037 *cannot*
+   safely) prevent this — it is author error. **Mitigation:** `workflow_validate`
+   (FR-048) and the skill (FR-050) **warn** when an `event` node's `eventType` intersects
+   the same workflow's (or a reachable one's) `triggers`. **Open:** how aggressive the
+   cycle warning is (same-workflow only vs. transitive across workflows) — decide at
+   implement; same-workflow is the cheap, high-value first cut.
+2. **Fan-out on a shared trigger type.** One event type matching N workflows starts N
+   concurrent runs (§13.2/FR-043). This is correct per spec but can be surprising if a
+   user shares a trigger type across many heavy workflows. **Open:** document in the
+   skill that a trigger type is a *broadcast* to all declaring workflows. No code change
+   expected.
+3. **`eventContext` size.** The triggering event's payload is ≤1MB (034 `MAX_PAYLOAD_BYTES`),
+   so `eventContext` is bounded. But a *large* eventContext in a root node's prompt can
+   bloat the delegate call. **Mitigation:** input-assembly should summarize/truncate a
+   very large `eventContext` in the prompt while keeping the full payload available via
+   the run record (auditable). **Open:** the truncation threshold — implement detail.
+4. **Template `getByDotPath` semantics on arrays.** `{{node.results.0.name}}`-style
+   numeric segments — confirm the dot-path helper treats numeric segments as array
+   indices (it should). Edge, implement-time.
+5. **037 test-suite impact.** Removing the `ownsNamespace` gate may break any 034 test
+   that *asserts* `namespace-not-owned` (037 SC-004). These must be flipped to expect
+   success; the `ack-forbidden` test is kept. Build Studio should confirm no other test
+   depends on the subscription gate before merging 037.
+6. **Self-consistency (pre-empting review).** Verified for both Job-1 failure modes:
+   **(1)** the service imports **no** `src/lib/...`/`@/...` module — it reaches the 034
+   system exclusively over worker IPC (`handler_declare`/`event_dispatch`) and loopback
+   HTTP (`/api/events*`), the same pattern as the existing `vfs.js`/`executor.js` bridges.
+   **(2)** the service does **not** hand-roll any credential/token scheme — there is no
+   headless *client* here to authenticate; the service is a handler *callee* that acks
+   with `callerId: "workflows"` matching its `ownerId` (validated by the *unchanged*
+   ack-ownership identity check, not a minted secret). Both are clean.
+
+## 19. Success-criteria mapping (this scope-add)
+
+| SC | Design anchor |
+|---|---|
+| SC-024 (run starts < 5s of emit) | §12.2 dispatch→run is synchronous fire-and-poll; `reconcileSubscriptions` keeps handlers live; kernel emit→dispatch is in-process. |
+| SC-025 (event_types == registered handlers, 100%) | §13.4 reads `GET /api/events/handlers` (the registry itself) — no independent source to drift. |
+| SC-026 (event node: exactly one emit, correct type/source/payload) | §12.3/§13.3 — one `POST /api/events` per node execution; `source.appId:"workflows"` + `_wf` envelope. |
+| SC-027 (no false-positive runs) | §12.2 exact-type match on `record.type` against `triggers` (§13.1) — no prefix/payload matching. |
+| SC-028 (concurrent runs independent) | §13.2/FR-043 — each matching event starts a new run; no coalesce/queue; run-record provenance disambiguates. |
