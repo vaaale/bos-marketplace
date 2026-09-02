@@ -205,3 +205,88 @@ test("run-state.js", async (t) => {
     assert.equal(getRunState("run-1"), undefined);
   });
 });
+
+// US16/FR-041 — run PROVENANCE: how a run was started travels with the run
+// record (live snapshot, persisted file, and replay), defaulting to "tool"
+// for every run written before the field existed.
+test("run-state.js — run provenance (US16/FR-041)", async (t) => {
+  await t.test("defaults to startSource \"tool\" with null trigger fields", () => {
+    const state = createRunState({ runId: "run-1", workflowId: "wf-1" });
+    assert.equal(state.startSource, "tool");
+    assert.equal(state.triggerEventId, null);
+    assert.equal(state.triggerEventType, null);
+    assert.equal(state.eventContext, null);
+    const snap = state.snapshot();
+    assert.equal(snap.startSource, "tool");
+    assert.equal(snap.eventContext, null);
+  });
+
+  await t.test("accepts \"user\" and \"event\", and rejects anything else back to \"tool\"", () => {
+    assert.equal(createRunState({ runId: "r", startSource: "user" }).startSource, "user");
+    assert.equal(createRunState({ runId: "r", startSource: "event" }).startSource, "event");
+    assert.equal(createRunState({ runId: "r", startSource: "cron" }).startSource, "tool");
+  });
+
+  await t.test("an event-triggered run carries the event id, type and payload", () => {
+    const state = createRunState({
+      runId: "run-2",
+      workflowId: "wf-1",
+      startSource: "event",
+      triggerEventId: "evt-7",
+      triggerEventType: "com.bos.files.created",
+      eventContext: { path: "/a.csv" },
+    });
+    const snap = state.snapshot();
+    assert.equal(snap.startSource, "event");
+    assert.equal(snap.triggerEventId, "evt-7");
+    assert.equal(snap.triggerEventType, "com.bos.files.created");
+    assert.deepEqual(snap.eventContext, { path: "/a.csv" });
+  });
+
+  await t.test("trigger fields are dropped for a non-event run (they can only describe an event)", () => {
+    const state = createRunState({ runId: "r", startSource: "tool", triggerEventId: "evt-7", eventContext: { path: "/a" } });
+    assert.equal(state.triggerEventId, null);
+    assert.equal(state.eventContext, null);
+  });
+
+  await t.test("provenance survives persist → replay", () => {
+    const state = createRunState({
+      runId: "run-3",
+      workflowId: "wf-1",
+      workflowName: "Triage",
+      startSource: "event",
+      triggerEventId: "evt-9",
+      triggerEventType: "com.bos.mail.received",
+      eventContext: { from: "a@b.c" },
+    }).seedSteps([{ id: "a" }]);
+    state.record({ type: "step.complete", stepId: "a", payload: "done" });
+    state.record({ type: "workflow.complete", finalState: "completed" });
+
+    const persisted = JSON.parse(JSON.stringify(state.toPersisted()));
+    assert.equal(persisted.startSource, "event");
+    assert.deepEqual(persisted.eventContext, { from: "a@b.c" });
+
+    const replayed = replayRunState(persisted).snapshot();
+    assert.equal(replayed.startSource, "event");
+    assert.equal(replayed.triggerEventId, "evt-9");
+    assert.equal(replayed.triggerEventType, "com.bos.mail.received");
+    assert.deepEqual(replayed.eventContext, { from: "a@b.c" });
+  });
+
+  await t.test("a pre-US16 persisted run replays as a \"tool\" run (backward compatibility)", () => {
+    const legacy = {
+      schemaVersion: 2,
+      workflowId: "wf-1",
+      runId: "old-run",
+      startedAt: 1,
+      endedAt: 2,
+      state: "completed",
+      steps: { a: { status: "completed", attempts: 1 } },
+      events: [],
+    };
+    const snap = replayRunState(legacy).snapshot();
+    assert.equal(snap.startSource, "tool");
+    assert.equal(snap.triggerEventId, null);
+    assert.equal(snap.eventContext, null);
+  });
+});

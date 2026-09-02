@@ -1,15 +1,15 @@
 {
   "id": "workflows",
   "name": "Workflow Manager",
-  "version": "2.1.0",
-  "description": "Service-owned workflow engine: node model (agent source x output type), structured branch routing with Option A selection propagation, parallel scheduling with per-step/per-run timeouts, a live per-step run state (status/attempt/current action/per-sub-agent fan-out/agent trace) served to both the tools and the app, dry-run fixtures, event emission from an `event` node into BOS's event system, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get/event_types).",
+  "version": "2.3.0",
+  "description": "Service-owned workflow engine: node model (agent source x output type), structured branch routing with Option A selection propagation, parallel scheduling with per-step/per-run timeouts, a live per-step run state (status/attempt/current action/per-sub-agent fan-out/agent trace) served to both the tools and the app, dry-run fixtures, EVENT-TRIGGERED runs (a workflow's `triggers` list subscribes it to 034 notification events; a dispatch starts a run with the event payload as its input and acks on run-start), EVENT EMISSION from an `event` node into BOS's event system plus event-type discovery, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get/event_types).",
   "entry": "index.js",
   "deploymentMode": "tools",
   "toolGroups": [
     {
       "id": "workflows",
       "name": "Workflows",
-      "description": "Multi-step workflow automation: creating, reading, editing and validating workflows, running them, watching or cancelling a run, listing past runs, and discovering the event types a workflow can be triggered by.",
+      "description": "Multi-step workflow automation: creating, reading, editing and validating workflows, running them, watching or cancelling a run, listing past runs, emitting BOS events from a workflow step, and discovering the event types a workflow can be triggered by.",
       "aliases": [
         "workflow",
         "pipeline",
@@ -19,6 +19,9 @@
         "run steps"
       ]
     }
+  ],
+  "eventNamespaces": [
+    "com.bos.*"
   ],
   "configSchema": {
     "type": "object",

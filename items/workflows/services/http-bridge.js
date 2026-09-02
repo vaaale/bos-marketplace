@@ -96,7 +96,10 @@ function createRequestHandler({ handlers, getRuntime }) {
         const action = parts[2];
         if (action === "run" && req.method === "POST") {
           const body = await readBody(req);
-          return send(res, 200, await handlers.workflow_run({ workflowId, ...body }));
+          // This bridge IS the app's transport, so a run started here is a
+          // USER run unless the caller says otherwise (US16/FR-041) — the
+          // assistant's runs arrive over the 039 tool_call path instead.
+          return send(res, 200, await handlers.workflow_run({ workflowId, startSource: "user", ...body }));
         }
         if (action === "cancel" && req.method === "POST") return send(res, 200, await handlers.workflow_cancel({ workflowId }));
         if (action === "status" && req.method === "GET") return send(res, 200, await handlers.workflow_status({ workflowId }));

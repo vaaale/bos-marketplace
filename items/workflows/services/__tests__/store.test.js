@@ -2,11 +2,11 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { startFakeBos } = require("./_fake-bos");
+const { startFakeBos, pointVfsAt } = require("./_fake-bos");
 
 test("store.js", async (t) => {
   const bos = await startFakeBos();
-  process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+  pointVfsAt(bos);
   delete require.cache[require.resolve("../vfs")];
   delete require.cache[require.resolve("../engine/store")];
   const store = require("../engine/store");

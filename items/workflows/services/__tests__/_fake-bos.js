@@ -147,6 +147,39 @@ function startFakeBos({ vfs: initialVfs = {}, delegate, events = {} } = {}) {
   });
 }
 
+/**
+ * Point the service's loopback bridge at a fake BOS.
+ *
+ * MUST be used instead of setting NEXT_PUBLIC_APP_ORIGIN by hand: vfs.js
+ * resolves its port from `process.env.PORT` FIRST (that is the real Next.js
+ * bind port when BOS spawns the worker) and only falls back to
+ * NEXT_PUBLIC_APP_ORIGIN. So in any environment where PORT is set — e.g. a
+ * shell where BOS itself is running on :3000 — a test that only sets the
+ * origin silently talks to the REAL /api/fs and writes its fixtures into the
+ * user's actual VFS. Setting both keeps every test hermetic.
+ */
+function pointVfsAt(bos) {
+  // Accepts a startFakeBos() handle, a bare origin string, or undefined
+  // (restoring "nothing was set", as scheduler.test.js's withBos does).
+  if (!bos) {
+    delete process.env.NEXT_PUBLIC_APP_ORIGIN;
+    delete process.env.PORT;
+    return;
+  }
+  const origin = typeof bos === "string" ? bos : bos.origin;
+  process.env.NEXT_PUBLIC_APP_ORIGIN = origin;
+  let port = typeof bos === "string" ? "" : String(bos.port);
+  if (typeof bos === "string") {
+    try {
+      port = new URL(bos).port;
+    } catch {
+      port = "";
+    }
+  }
+  if (port) process.env.PORT = port;
+  else delete process.env.PORT;
+}
+
 function json(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -167,4 +200,4 @@ function readJsonBody(req) {
   });
 }
 
-module.exports = { startFakeBos, createMemoryFs };
+module.exports = { startFakeBos, createMemoryFs, pointVfsAt };

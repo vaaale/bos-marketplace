@@ -4,7 +4,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { startFakeBos } = require("./_fake-bos");
+const { startFakeBos, pointVfsAt } = require("./_fake-bos");
 const { normalizeNode } = require("../engine/node-model");
 
 test("executor.js", async (t) => {
@@ -14,7 +14,7 @@ test("executor.js", async (t) => {
       { type: "done", result: { output: `handled: ${body.task}` } },
     ],
   });
-  process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+  pointVfsAt(bos);
   delete require.cache[require.resolve("../vfs")];
   delete require.cache[require.resolve("../engine/executor")];
   const { delegateOnce, delegateRequestFor, executeNode } = require("../engine/executor");
@@ -28,13 +28,13 @@ test("executor.js", async (t) => {
 
   await t.test("delegateOnce rejects when the stream reports an error event", async () => {
     const failing = await startFakeBos({ delegate: () => [{ type: "error", error: "boom" }] });
-    process.env.NEXT_PUBLIC_APP_ORIGIN = failing.origin;
+    pointVfsAt(failing);
     delete require.cache[require.resolve("../vfs")];
     delete require.cache[require.resolve("../engine/executor")];
     const fresh = require("../engine/executor");
     await assert.rejects(() => fresh.delegateOnce({ task: "x" }), /boom/);
     await failing.close();
-    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    pointVfsAt(bos);
     delete require.cache[require.resolve("../vfs")];
     delete require.cache[require.resolve("../engine/executor")];
   });
@@ -143,7 +143,7 @@ test("executor.js", async (t) => {
         { type: "done", result: { output: "raw.csv (12,480 rows)" } },
       ],
     });
-    process.env.NEXT_PUBLIC_APP_ORIGIN = tracingBos.origin;
+    pointVfsAt(tracingBos);
     for (const mod of ["../vfs", "../engine/executor"]) delete require.cache[require.resolve(mod)];
     const fresh = require("../engine/executor");
 
@@ -169,7 +169,7 @@ test("executor.js", async (t) => {
     assert.equal(events.filter((e) => e.type === "agent.response").pop().text, "raw.csv (12,480 rows)");
 
     await tracingBos.close();
-    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    pointVfsAt(bos);
     for (const mod of ["../vfs", "../engine/executor"]) delete require.cache[require.resolve(mod)];
   });
 
@@ -194,7 +194,7 @@ test("executor.js", async (t) => {
         throw new Error("a dry-run node must never reach the delegate route");
       },
     });
-    process.env.NEXT_PUBLIC_APP_ORIGIN = neverBos.origin;
+    pointVfsAt(neverBos);
     for (const mod of ["../vfs", "../engine/executor"]) delete require.cache[require.resolve(mod)];
     const fresh = require("../engine/executor");
 
@@ -218,9 +218,68 @@ test("executor.js", async (t) => {
     assert.equal(fresh.fixtureFor(node, { dryRun: true, fixtures: { other: 1 } }), null);
 
     await neverBos.close();
-    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    pointVfsAt(bos);
     for (const mod of ["../vfs", "../engine/executor"]) delete require.cache[require.resolve(mod)];
   });
 
   await bos.close();
+});
+
+// US16/FR-042 — an event-triggered run's payload must be AVAILABLE to the
+// node(s) the event woke up. These are pure prompt-assembly assertions (no
+// delegate call, so no fake BOS needed).
+test("executor.js — eventContext in the root-node input (US16/FR-042)", async (t) => {
+  const { buildTaskText, buildToolTaskText, eventContextBlock } = require("../engine/executor");
+
+  const eventCtx = {
+    outputs: new Map(),
+    workflowName: "Triage",
+    startSource: "event",
+    triggerEventType: "com.bos.files.created",
+    triggerEventId: "evt-42",
+    eventContext: { path: "/Downloads/report.csv", size: 128 },
+  };
+  const root = normalizeNode({ id: "read", outputType: "delegate", agentSource: { kind: "ephemeral", task: "Summarize the new file." } });
+
+  await t.test("a root node's task text carries the triggering event's type, id and payload", () => {
+    const task = buildTaskText(root, eventCtx);
+    assert.match(task, /Triggering event:/);
+    assert.match(task, /com\.bos\.files\.created/);
+    assert.match(task, /evt-42/);
+    assert.match(task, /"path": "\/Downloads\/report\.csv"/);
+    assert.match(task, /^Summarize the new file\./, "the node's own task still comes first");
+  });
+
+  await t.test("a DEPENDENT node gets no event block — it receives the data through its upstream output", () => {
+    const downstream = normalizeNode({
+      id: "notify",
+      outputType: "delegate",
+      dependencies: ["read"],
+      agentSource: { kind: "ephemeral", task: "Notify." },
+    });
+    assert.equal(eventContextBlock(downstream, eventCtx), "");
+    assert.doesNotMatch(buildTaskText(downstream, { ...eventCtx, outputs: new Map([["read", "summary"]]) }), /Triggering event/);
+  });
+
+  await t.test("a tool node's constrained prompt carries the block too", () => {
+    const toolNode = normalizeNode({ id: "t", outputType: "tool", toolName: "file_read", input: { path: "x" }, agentSource: { kind: "static", agentId: "a" } });
+    const task = buildToolTaskText(toolNode, eventCtx);
+    assert.match(task, /Call ONLY the tool named "file_read"/);
+    assert.match(task, /Triggering event:/);
+    assert.match(task, /"size": 128/);
+  });
+
+  await t.test("a tool/user-started run's prompt is unchanged (no event block at all)", () => {
+    const plain = { outputs: new Map(), workflowName: "Triage", startSource: "tool", eventContext: null };
+    assert.equal(eventContextBlock(root, plain), "");
+    assert.doesNotMatch(buildTaskText(root, plain), /Triggering event/);
+    // …and a run whose startSource says "event" but which carries no payload
+    // (an event with an empty payload) adds nothing either.
+    assert.equal(eventContextBlock(root, { ...eventCtx, eventContext: null }), "");
+    assert.equal(eventContextBlock(root, undefined), "");
+  });
+
+  await t.test("a string payload is rendered verbatim rather than JSON-quoted", () => {
+    assert.match(eventContextBlock(root, { ...eventCtx, eventContext: "just text" }), /just text/);
+  });
 });

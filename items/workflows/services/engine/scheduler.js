@@ -240,7 +240,7 @@ function buildAdjacency(steps) {
  * a leaf the routing node did not select is marked "skipped"; steps left
  * unreached by a sibling failure are marked "neutral" (never ran).
  */
-async function runWorkflow(wfInput, { runId, workflowName, featureBranch, conversationId, abortSignal, emit, maxConcurrentSteps, dryRun, fixtures }) {
+async function runWorkflow(wfInput, { runId, workflowName, featureBranch, conversationId, abortSignal, emit, maxConcurrentSteps, dryRun, fixtures, startSource, triggerEventId, triggerEventType, eventContext }) {
   const wf = normalizeWorkflow(wfInput);
   const steps = wf.steps;
   const stepsById = new Map(steps.map((s) => [s.id, s]));
@@ -280,6 +280,13 @@ async function runWorkflow(wfInput, { runId, workflowName, featureBranch, conver
     dryRun: dryRun === true,
     fixtures: dryRun === true ? fixtures || {} : null,
     defaultStepTimeout: DEFAULT_STEP_TIMEOUT_SEC,
+    // US16/FR-041/FR-042 — run provenance travels with the execution context
+    // so executor.js can hand an event-triggered run's payload to the root
+    // node(s) it woke up.
+    startSource: startSource || "tool",
+    triggerEventId: triggerEventId ?? null,
+    triggerEventType: triggerEventType ?? null,
+    eventContext: eventContext ?? null,
   };
 
   const pending = new Set(steps.map((s) => s.id));
@@ -313,7 +320,11 @@ async function runWorkflow(wfInput, { runId, workflowName, featureBranch, conver
 
   for (const id of remainingDeps.keys()) enqueueIfReady(id);
 
-  emitEvent("workflow.start", { dryRun: ctx.dryRun || undefined });
+  emitEvent("workflow.start", {
+    dryRun: ctx.dryRun || undefined,
+    startSource: ctx.startSource,
+    ...(ctx.startSource === "event" ? { triggerEventType: ctx.triggerEventType, triggerEventId: ctx.triggerEventId } : {}),
+  });
 
   while (pending.size > 0 || inFlight.size > 0) {
     if (signal.aborted) cancelled = true;

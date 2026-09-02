@@ -9,7 +9,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { startFakeBos } = require("./_fake-bos");
+const { startFakeBos, pointVfsAt } = require("./_fake-bos");
 
 const REGISTRY = {
   "com.bos.gsuite.email.received": {
@@ -23,8 +23,11 @@ const REGISTRY = {
   "com.bos.workflows.analysis.complete": { ui: [], headless: [] },
 };
 
-function loadHandlers(origin) {
-  process.env.NEXT_PUBLIC_APP_ORIGIN = origin;
+// `pointVfsAt(bos)` rather than setting NEXT_PUBLIC_APP_ORIGIN by hand: vfs.js
+// resolves `process.env.PORT` FIRST, so a test that only sets the origin talks
+// to the REAL BOS (and the real VFS) in any shell where PORT is set.
+function loadHandlers(bos) {
+  pointVfsAt(bos);
   for (const mod of ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"]) {
     delete require.cache[require.resolve(mod)];
   }
@@ -51,14 +54,16 @@ test("tools.js declares workflow_event_types (US17/FR-044)", async (t) => {
 
 test("workflow_event_types handler", async (t) => {
   const savedPort = process.env.PORT;
-  delete process.env.PORT;
+  const savedOrigin = process.env.NEXT_PUBLIC_APP_ORIGIN;
   t.after(() => {
+    pointVfsAt(savedOrigin);
     if (savedPort !== undefined) process.env.PORT = savedPort;
+    else delete process.env.PORT;
   });
 
   await t.test("maps the grouped registry to { type, handlerCount, displayName }", async () => {
     const bos = await startFakeBos({ events: { handlers: REGISTRY } });
-    const { handlers } = loadHandlers(bos.origin);
+    const { handlers } = loadHandlers(bos);
     const types = await handlers.workflow_event_types();
     assert.deepEqual(types, [
       { type: "com.bos.gsuite.email.received", handlerCount: 2, displayName: "Open in Mail" },
@@ -70,7 +75,7 @@ test("workflow_event_types handler", async (t) => {
 
   await t.test("takes no arguments — a stray args object is ignored", async () => {
     const bos = await startFakeBos({ events: { handlers: REGISTRY } });
-    const { handlers } = loadHandlers(bos.origin);
+    const { handlers } = loadHandlers(bos);
     const types = await handlers.workflow_event_types({ unexpected: true });
     assert.equal(types.length, 3);
     await bos.close();
@@ -78,28 +83,28 @@ test("workflow_event_types handler", async (t) => {
 
   await t.test("FR-045: an empty registry is an empty list, not an error", async () => {
     const bos = await startFakeBos({ events: { handlers: {} } });
-    const { handlers } = loadHandlers(bos.origin);
+    const { handlers } = loadHandlers(bos);
     assert.deepEqual(await handlers.workflow_event_types(), []);
     await bos.close();
   });
 
   await t.test("NFR-002: an HTTP error is a tool error naming the route and status", async () => {
     const bos = await startFakeBos({ events: { handlersStatus: 500, handlersBody: { error: { code: "kernel-unavailable", message: "event kernel unavailable" } } } });
-    const { handlers } = loadHandlers(bos.origin);
+    const { handlers } = loadHandlers(bos);
     await assert.rejects(() => handlers.workflow_event_types(), /GET \/api\/events\/handlers -> 500.*event kernel unavailable/s);
     await bos.close();
   });
 
   await t.test("a handler entry with no displayName maps to null rather than undefined", async () => {
     const bos = await startFakeBos({ events: { handlers: { "com.bos.anon.type": { ui: [{ handlerId: "anon" }], headless: [] } } } });
-    const { handlers } = loadHandlers(bos.origin);
+    const { handlers } = loadHandlers(bos);
     assert.deepEqual(await handlers.workflow_event_types(), [{ type: "com.bos.anon.type", handlerCount: 1, displayName: null }]);
     await bos.close();
   });
 
   await t.test("a headless-only type takes its displayName from the headless handler", async () => {
     const bos = await startFakeBos({ events: { handlers: { "com.bos.headless.only": { headless: [{ handlerId: "h", displayName: "Headless One" }] } } } });
-    const { handlers } = loadHandlers(bos.origin);
+    const { handlers } = loadHandlers(bos);
     assert.deepEqual(await handlers.workflow_event_types(), [{ type: "com.bos.headless.only", handlerCount: 1, displayName: "Headless One" }]);
     await bos.close();
   });

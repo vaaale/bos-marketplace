@@ -34,6 +34,11 @@ const AGENT_EVENT_TYPES = ["agent.prompt", "agent.reasoning", "agent.tool_call",
 
 const TERMINAL_STEP_STATUSES = new Set(["completed", "failed", "cancelled", "skipped", "neutral"]);
 
+/** US16/FR-041 — how a run was started. "user" = the app's Run button,
+ *  "tool" = the `workflow_run` tool (the historical default), "event" = a 034
+ *  event dispatch matched one of the workflow's `triggers` (events.js). */
+const START_SOURCES = ["user", "tool", "event"];
+
 function emptyTrace() {
   return { toolCalls: [] };
 }
@@ -86,10 +91,17 @@ function mergeToolCall(trace, ev) {
 }
 
 class RunState {
-  constructor({ runId, workflowId, workflowName, startedAt } = {}) {
+  constructor({ runId, workflowId, workflowName, startedAt, startSource, triggerEventId, triggerEventType, eventContext } = {}) {
     this.runId = runId;
     this.workflowId = workflowId;
     this.workflowName = workflowName;
+    // US16/FR-041 — run PROVENANCE. `startSource` defaults to "tool" so a run
+    // record written before this field existed (and any caller that does not
+    // pass one) reads back exactly as it always did.
+    this.startSource = START_SOURCES.includes(startSource) ? startSource : "tool";
+    this.triggerEventId = this.startSource === "event" ? (triggerEventId ?? null) : null;
+    this.triggerEventType = this.startSource === "event" ? (triggerEventType ?? null) : null;
+    this.eventContext = this.startSource === "event" ? (eventContext ?? null) : null;
     this.status = "running";
     this.finalState = undefined;
     this.startedAt = startedAt ?? Date.now();
@@ -332,6 +344,10 @@ class RunState {
       runId: this.runId,
       workflowId: this.workflowId,
       workflowName: this.workflowName,
+      startSource: this.startSource,
+      triggerEventId: this.triggerEventId,
+      triggerEventType: this.triggerEventType,
+      eventContext: this.eventContext,
       status: this.status,
       state: this.status,
       finalState: this.finalState,
@@ -353,6 +369,10 @@ class RunState {
       workflowId: this.workflowId,
       workflowName: this.workflowName,
       runId: this.runId,
+      startSource: this.startSource,
+      triggerEventId: this.triggerEventId,
+      triggerEventType: this.triggerEventType,
+      eventContext: this.eventContext,
       startedAt: this.startedAt,
       endedAt: this.endedAt,
       state: this.status,
@@ -423,6 +443,12 @@ function replayRunState(persisted) {
     workflowId: persisted.workflowId,
     workflowName: persisted.workflowName,
     startedAt: persisted.startedAt,
+    // A pre-US16 run record carries none of these — the constructor's "tool"
+    // default is exactly the right answer for it (FR-041).
+    startSource: persisted.startSource,
+    triggerEventId: persisted.triggerEventId,
+    triggerEventType: persisted.triggerEventType,
+    eventContext: persisted.eventContext,
   });
   for (const ev of persisted.events || []) {
     rs.events.push(ev);
@@ -468,6 +494,7 @@ function runStatesForWorkflow(workflowId) {
 
 module.exports = {
   RunState,
+  START_SOURCES,
   STEP_EVENT_TYPES,
   AGENT_EVENT_TYPES,
   TERMINAL_STEP_STATUSES,

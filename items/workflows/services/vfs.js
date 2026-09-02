@@ -124,10 +124,13 @@ async function rename(vfsPath, to) {
   if (res.status !== 200) throw errorFor(res, `rename failed: ${vfsPath} -> ${to}`);
 }
 
-// `jsonRequest` is exported too, because the VFS is not the only BOS API this
-// service reaches over the same loopback: the event surface (US17/US18 —
-// GET /api/events/handlers, POST /api/events) is a plain JSON request against
-// the SAME origin, so it reuses this one origin-resolution + request helper
-// rather than re-deriving the port anywhere else. Callers get the raw
-// { status, body } pair and decide what a non-2xx means for them.
-module.exports = { list, stat, exists, readText, writeText, mkdir, remove, rename, vfsBaseUrl, resolvePort, jsonRequest };
+// `jsonRequest` is exported for the loopback calls that are NOT /api/fs, so
+// the VFS is not the only BOS API this service reaches over the same bridge:
+//   - US16's event-kernel ack/unregister (events.js) -> /api/events/*
+//   - US17's type discovery                          -> GET /api/events/handlers
+//   - US18's `event` node emit (executor.js)         -> POST /api/events
+// All of them are plain JSON requests against the SAME origin, so they reuse
+// this one origin-resolution rule + transport rather than re-deriving the port
+// anywhere else. Callers get the raw { status, body } pair and decide what a
+// non-2xx means for them.
+module.exports = { list, stat, exists, readText, writeText, mkdir, remove, rename, jsonRequest, vfsBaseUrl, resolvePort };

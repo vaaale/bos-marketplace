@@ -6,7 +6,7 @@
 // service; executor.js is only the "run one node" primitive scheduler.js and
 // router.js call into.
 //
-// This file now also owns three scope-add responsibilities:
+// This file now also owns four scope-add responsibilities:
 //
 //   * AGENT TRACE (US10/FR-028) — it emits `agent.*` events (prompt,
 //     reasoning, per tool call with args/result/ok, response) through
@@ -241,6 +241,34 @@ function renderUpstream(id, out) {
   return `- ${id}: ${JSON.stringify(out).slice(0, 4000)}`;
 }
 
+/**
+ * FR-042 — the triggering event's payload, rendered for a ROOT node of an
+ * event-triggered run.
+ *
+ * "Root" = a node with no declared dependencies, i.e. one of the nodes the
+ * event actually woke up; a downstream node receives the event data the
+ * normal way, through its upstream step's output. Research fan-out sub-nodes
+ * inherit their parent's `dependencies`, so a root research node's sub-agents
+ * each see the block too.
+ *
+ * Returns "" for every other case (a tool/user-started run, a run with no
+ * event payload, a non-root node), so a non-event run's prompt is
+ * byte-for-byte what it was before US16.
+ */
+function eventContextBlock(node, ctx) {
+  if (!ctx || ctx.startSource !== "event" || ctx.eventContext == null) return "";
+  if ((node.dependencies || []).length > 0) return "";
+  const payload = typeof ctx.eventContext === "string" ? ctx.eventContext : JSON.stringify(ctx.eventContext, null, 2);
+  return [
+    "",
+    "",
+    "Triggering event:",
+    `This workflow run was started by the event "${ctx.triggerEventType}"${ctx.triggerEventId ? ` (id ${ctx.triggerEventId})` : ""}.`,
+    "Its payload is the input for this step:",
+    payload,
+  ].join("\n");
+}
+
 function buildTaskText(node, ctx) {
   const deps = (node.dependencies ?? []).map((d) => renderUpstream(d, ctx.outputs.get(d))).join("\n");
   const inputJson = node.input == null ? "" : `\n\nInput:\n${JSON.stringify(node.input, null, 2)}`;
@@ -248,16 +276,18 @@ function buildTaskText(node, ctx) {
   const upstream = deps ? `\n\nUpstream step outputs:\n${deps}` : "";
   const base = node.agentSource?.kind === "ephemeral" ? node.agentSource.task : `Workflow step "${node.id}" in workflow "${ctx.workflowName}".`;
   const routing = needsSelectBranch(node) ? `\n${routingInstruction(node.candidates, node.candidates.length > 1)}` : "";
-  return `${base}${inputJson}${upstream}${convention}${routing}`;
+  return `${base}${inputJson}${eventContextBlock(node, ctx)}${upstream}${convention}${routing}`;
 }
 
 /** outputType:"tool" constrains the delegate to calling exactly one tool. */
 function buildToolTaskText(node, ctx) {
   const inputJson = node.input == null ? "(none)" : JSON.stringify(node.input);
+  const triggered = eventContextBlock(node, ctx);
   return [
     `You are executing a single workflow step.`,
     `Call ONLY the tool named "${node.toolName}". Do not call any other tool.`,
     `Tool input: ${inputJson}`,
+    triggered ? triggered.replace(/^\n+/, "") : "",
     node.outputConvention ? `Output convention: ${node.outputConvention}` : "",
     `When the tool returns, briefly summarize its result in plain text.`,
     needsSelectBranch(node) ? routingInstruction(node.candidates, node.candidates.length > 1) : "",
@@ -524,6 +554,7 @@ module.exports = {
   resolveEventTemplate,
   buildTaskText,
   buildToolTaskText,
+  eventContextBlock,
   executeNode,
   fixtureFor,
   needsSelectBranch,

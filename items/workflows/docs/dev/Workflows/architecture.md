@@ -26,6 +26,7 @@ services/
 ├── http-bridge.js            # REST server the APP talks to (same handlers, different transport)
 ├── vfs.js                    # loopback bridge to BOS's /api/fs (ADR-2)
 ├── migration.js               # additive legacy-workflow recovery (ADR-5)
+├── events.js                  # US16: trigger-union subscriptions + event_dispatch -> run
 ├── runs.js                    # fire-and-poll run tracking + first-class run persistence (ADR-8/9)
 └── engine/
     ├── node-model.js          # the two orthogonal node axes (agentSource x outputType)
@@ -249,6 +250,71 @@ Two independent, additive-only, copy-then-archive-never-delete concerns:
 
 Both run once at startup, after the tool-declare handshake (never gating it),
 and are safe/idempotent to run on every boot.
+
+## Event-triggered runs (`events.js`) — US16
+
+A workflow may declare `triggers: ["com.bos.files.created", …]`. The service
+turns that into subscriptions on BOS's 034 event kernel and starts a run when
+one of those events is emitted.
+
+**Subscriptions are derived, never hand-managed.** `deriveTriggerUnion()`
+computes the set of distinct event types across ALL workflows;
+`reconcileSubscriptions()` makes the declared handler set equal it:
+
+| direction | transport | message |
+|---|---|---|
+| subscribe | Worker→Main IPC (the same channel as `tool_declare`) | `handler_declare { callId, handlerId: "workflows:<type>", eventType, mode: "headless", displayName }` |
+| unsubscribe | loopback HTTP (`vfs.jsonRequest`) | `POST /api/events/unregister { handlerId, ownerId: "workflows" }` |
+
+Reconcile runs at startup (`index.js`, after the handshake and migration —
+never before, so a declare can't gate `initialized`) and after every
+`workflow_create` / `workflow_modify` / `workflow_delete`. It is idempotent: a
+type already subscribed is skipped, so a no-op reconcile sends no IPC at all
+and a user's per-handler `enabled` toggle is never clobbered. One handler is
+declared per distinct TYPE, not per workflow — N workflows on the same trigger
+share it.
+
+`service.json` grants `eventNamespaces: ["com.bos.*"]`. Without it the kernel
+rejects every declare outside this service's owned root
+(`com.bos.workflows.*`) — and reacting to OTHER components' events is the
+whole point of a trigger.
+
+**Dispatch → run.** A Main→Worker `event_dispatch { callId, eventId,
+handlerId, record }` reaches `index.js`'s IPC switch, which calls
+`events.handleEventDispatch()`. It:
+
+1. finds every workflow whose `triggers` match `record.type` (exact, or the
+   kernel's `prefix.*` pattern);
+2. starts ONE INDEPENDENT run per match through the same run starter
+   `workflow_run` uses (`handlers.js`'s `makeRunStarter`), with
+   `startSource: "event"`, `triggerEventId`, `triggerEventType` and
+   `eventContext` (= `record.payload`);
+3. **acks immediately** — `POST /api/events/<id>/ack { handlerId, callerId:
+   "workflows", callId }` — on run-START, not run-completion (NFR-007). A
+   workflow run can take hours; the kernel's per-handler dispatch queue is
+   serial, so a late ack would stall every later event of that type. An ack
+   failure is logged and swallowed: the run has already started, and the
+   kernel's re-dispatch may duplicate it, which FR-043 accepts.
+
+A dispatch that matches zero workflows is still acked — an un-acked event
+stays pending and is re-dispatched forever.
+
+**Concurrency.** Event runs are NOT subject to the single-active-run guard:
+two events for one workflow start two independent runs (FR-043). `runs.js`
+therefore tracks active runs per workflow as a LIST; `isRunning`/`activeRunId`
+keep their old meaning (the newest run), and each run clears only its own
+entry when it settles. A user/tool `workflow_run` is still refused while any
+run is in flight.
+
+**Provenance + FR-042.** `run-state.js` records `startSource`
+("user" | "tool" | "event", defaulting to "tool" so pre-US16 run files replay
+unchanged), `triggerEventId`, `triggerEventType` and `eventContext` on the run
+— live snapshot, persisted file and replay. The scheduler puts them on the
+execution ctx, and `executor.js`'s `eventContextBlock()` appends a
+"Triggering event:" section (type, id, JSON payload) to the task text of
+ROOT nodes only — the nodes the event actually woke up. Downstream nodes get
+the data the normal way, through their upstream step's output, and a
+tool/user-started run's prompt is byte-for-byte what it was before US16.
 
 ## The app's REST bridge (`http-bridge.js`)
 

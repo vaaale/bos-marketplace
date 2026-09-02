@@ -15,7 +15,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { startFakeBos } = require("./_fake-bos");
+const { startFakeBos, pointVfsAt } = require("./_fake-bos");
 
 function eventNode(config, extra = {}) {
   return { id: "notify", outputType: "event", config, ...extra };
@@ -120,9 +120,12 @@ test("node-model: the `event` output type", async (t) => {
 
 test("executor: emitting an `event` node", async (t) => {
   const bos = await startFakeBos({});
-  process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+  // pointVfsAt, not a bare NEXT_PUBLIC_APP_ORIGIN assignment: vfs.js resolves
+  // `process.env.PORT` FIRST, so setting only the origin would let this test
+  // POST real events at a live BOS in any shell where PORT is set.
   const savedPort = process.env.PORT;
-  delete process.env.PORT;
+  const savedOrigin = process.env.NEXT_PUBLIC_APP_ORIGIN;
+  pointVfsAt(bos);
   for (const mod of ["../vfs", "../engine/executor"]) delete require.cache[require.resolve(mod)];
   const executor = require("../engine/executor");
   const { normalizeNode } = require("../engine/node-model");
@@ -138,7 +141,9 @@ test("executor: emitting an `event` node", async (t) => {
 
   t.after(async () => {
     await bos.close();
+    pointVfsAt(savedOrigin);
     if (savedPort !== undefined) process.env.PORT = savedPort;
+    else delete process.env.PORT;
   });
 
   await t.test("a static payload is POSTed to /api/events verbatim, and the node output records the event id", async () => {
@@ -267,13 +272,13 @@ test("executor: emitting an `event` node", async (t) => {
 
   await t.test("an emit HTTP error fails the node with the API's error body", async () => {
     const failing = await startFakeBos({ events: { emit: () => ({ status: 400, body: { error: { code: "invalid-type", message: "payload must be a JSON object" } } }) } });
-    process.env.NEXT_PUBLIC_APP_ORIGIN = failing.origin;
+    pointVfsAt(failing);
     for (const mod of ["../vfs", "../engine/executor"]) delete require.cache[require.resolve(mod)];
     const fresh = require("../engine/executor");
     const node = normalizeNode(eventNode(STATIC_CONFIG));
     await assert.rejects(() => fresh.executeNode(node, ctxFor()), /payload must be a JSON object/);
     await failing.close();
-    process.env.NEXT_PUBLIC_APP_ORIGIN = bos.origin;
+    pointVfsAt(bos);
     for (const mod of ["../vfs", "../engine/executor"]) delete require.cache[require.resolve(mod)];
   });
 
