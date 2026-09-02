@@ -1,4 +1,5 @@
-// handlers.js — tool handlers for the 12 workflow_* tools (FR-002/014/016/024),
+// handlers.js — tool handlers for the 13 workflow_* tools (FR-002/014/016/024,
+// plus workflow_event_types — US17/FR-044/045),
 // wired to the engine (store/validate/generate) and to runs.js for execution
 // + historical inspection. Each handler is `(args, ctx) => Promise<any>`; ctx
 // carries `log(level, message)` for structured logging (NFR-005) and
@@ -10,6 +11,7 @@
 // but handlers surface a clear message rather than a raw TypeError).
 
 const store = require("./engine/store");
+const vfs = require("./vfs");
 const { validateWorkflow } = require("./engine/validate");
 const { generateWorkflowFromTask } = require("./engine/generate");
 const runs = require("./runs");
@@ -160,6 +162,31 @@ function makeHandlers(ctx) {
     workflow_run_list: async (args) => {
       const id = requireString(args, "workflowId");
       return runs.listRuns(id);
+    },
+
+    // US17/FR-044/045: event-type discovery for trigger authoring. Reads BOS's
+    // OWN handler registry over the same loopback origin vfs.js resolves
+    // (GET /api/events/handlers → { "<type>": { ui: [...], headless: [...] } }).
+    // An empty registry is an empty list, NOT an error (FR-045); an HTTP
+    // failure IS an error, so the assistant never mistakes "the registry is
+    // unreachable" for "nothing is registered" (NFR-002).
+    workflow_event_types: async () => {
+      const res = await vfs.jsonRequest("GET", "/api/events/handlers");
+      if (res.status !== 200) {
+        const detail = (res.body && ((res.body.error && (res.body.error.message || res.body.error)) || res.body.message)) || "no error body";
+        throw new Error(`could not read the BOS event registry (GET /api/events/handlers -> ${res.status}): ${detail}`);
+      }
+      const grouped = res.body && typeof res.body === "object" && !Array.isArray(res.body) ? res.body : {};
+      const types = Object.entries(grouped)
+        .map(([type, group]) => {
+          const ui = Array.isArray(group && group.ui) ? group.ui : [];
+          const headless = Array.isArray(group && group.headless) ? group.headless : [];
+          const first = [...ui, ...headless][0];
+          return { type, handlerCount: ui.length + headless.length, displayName: (first && first.displayName) ?? null };
+        })
+        .sort((a, b) => a.type.localeCompare(b.type));
+      log("info", `workflow_event_types: ${types.length} event type(s) registered`);
+      return types;
     },
 
     workflow_run_get: async (args) => {

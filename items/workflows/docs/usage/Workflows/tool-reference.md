@@ -1,6 +1,6 @@
 # Workflow Manager — Tool Reference
 
-The service declares 12 tools at startup via `tool_declare` (039-compliant —
+The service declares 13 tools at startup via `tool_declare` (039-compliant —
 `deploymentMode: "tools"` in `services/service.json`). They are gated exactly
 like built-in tools (allowlist/deferred approval) and disappear from the
 registry the instant the service stops or is uninstalled.
@@ -9,7 +9,7 @@ All handlers live in `services/handlers.js`; schemas in `services/tools.js`.
 
 ## Tool group
 
-All 12 tools appear under the **Workflows** group, declared in
+All 13 tools appear under the **Workflows** group, declared in
 `services/service.json`'s `toolGroups` (bos-spec 041). The group's name and
 description are what the assistant sees in its system prompt, and an agent that
 has these tools deferred reaches them with `find_tools(group: "workflows")`.
@@ -168,6 +168,22 @@ its completion), `agent.response`, `agent.sub_agent`, alongside `step.start` /
 `step.retry` / `step.running` / `step.complete` / `step.fail` / `step.skip` and
 the run-level `workflow.start` / `workflow.complete` / `workflow.fail` /
 `workflow.cancel` / `workflow.branch.skipped`.
+
+## `workflow_event_types`
+
+List the event types currently registered in the BOS event system, so a
+workflow's triggers (and an `event` node's downstream expectations) can be
+authored against types that actually exist. **Read-only, `parallelSafe`.**
+
+- Input: `{}`
+- Output: array of `{ type, handlerCount, displayName }`, sorted by `type` —
+  `handlerCount` is the total of the type's UI + headless handlers, and
+  `displayName` is the first registered handler's label (`null` when a type is
+  registered with no handler that names itself).
+
+An empty registry is an empty array, not an error. If the event registry cannot
+be read at all, the tool fails with an error naming the route and status — so
+"the registry is unreachable" is never reported as "nothing is registered".
 
 ## A full build → run → poll → cancel → inspect loop
 

@@ -21,7 +21,7 @@ self-contained, with zero BOS-source dependency.
 services/
 ├── service.json           # deploymentMode:"tools", configSchema (port/host/maxConcurrentSteps)
 ├── index.js                # worker entry: lifecycle, tool_declare, IPC dispatch, migration bootstrap
-├── tools.js                 # the 12 tool declarations + JSON schemas
+├── tools.js                 # the 13 tool declarations + JSON schemas
 ├── handlers.js               # tool implementations, wired to the engine
 ├── http-bridge.js            # REST server the APP talks to (same handlers, different transport)
 ├── vfs.js                    # loopback bridge to BOS's /api/fs (ADR-2)
@@ -43,11 +43,28 @@ A node is defined by two axes that combine freely:
 
 - **`agentSource`** — `{ kind: "static", agentId }` or
   `{ kind: "ephemeral", task, tools?, skills?, systemPrompt? }`.
-- **`outputType`** — `"delegate" | "tool" | "research" | "ag-ui"`.
+- **`outputType`** — `"delegate" | "tool" | "research" | "ag-ui" | "event"`.
 
 A node may additionally declare `candidates: [{ id, agentId?, description? }]`
 for dynamic routing (see below), and `researchAgents` (an array of
 agent-source-like entries) when `outputType` is `"research"`.
+
+An `"event"` node is the one output type with **no agent at all** — it needs no
+`agentSource`. It carries
+`config: { eventType, payload: { mode: "static", value } | { mode: "template", text, fallback? } }`
+and emits that event into BOS's event system with one `POST /api/events`
+(US18). `eventType` must match `^[a-z0-9]+(\.[a-z0-9_-]+)+$` **and** live under
+`com.bos.workflows.*` — a workflow only emits in its own namespace (FR-048b,
+ADR-14). In template mode, every `{{nodeId.field}}` placeholder in `text` is
+replaced with the JSON-serialized upstream output (a leading `output` segment
+names the output root, and a numeric segment indexes an array); an unresolved
+reference becomes `null`, or `payload.fallback` when one is declared. The
+rendered text must parse as a JSON **object**, otherwise the node fails with a
+config error rather than emitting a malformed event. Every emitted payload
+carries a `_wf: { workflowId, runId, nodeId }` provenance envelope (FR-047).
+`validate.js` also checks that each template reference names a step that exists
+(FR-048c) and that every entry of a workflow's optional `triggers` array is a
+well-formed event type (FR-048a).
 
 ## The execution contract (`engine/executor.js`)
 
@@ -57,6 +74,12 @@ running a named or ephemeral agent and streaming NDJSON. `executeNode()`:
 
 - short-circuits `"ag-ui"` nodes entirely (no network call — the node's
   `input` IS the output),
+- handles `"event"` nodes inline — resolve the payload, one
+  `POST /api/events`, output `{ emitted: true, eventId }` — with no delegate
+  call, no model, and no sub-process (the cheapest node type there is); a
+  non-2xx from the event API fails the node with the API's own error text, and
+  a dry-run fixture short-circuits the emit so a rehearsal never fires a real
+  event,
 - builds a delegate request from the node's `agentSource` (an `agent` field
   for static, an `ephemeral` object for ephemeral),
 - for `"tool"` nodes, constrains the task text to "call ONLY the tool named X",

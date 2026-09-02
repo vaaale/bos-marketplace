@@ -164,6 +164,7 @@ function dispatchAction(node) {
   if (node.outputType === "research") return `fanning out ${(node.researchAgents || []).length} sub-agent(s)`;
   if (node.outputType === "tool") return `calling ${node.toolName || "tool"}`;
   if (node.outputType === "ag-ui") return "producing artifact";
+  if (node.outputType === "event") return `emitting ${node.config?.eventType || "event"}`;
   return `delegating to ${node.agentSource?.kind === "static" ? node.agentSource.agentId || "agent" : "ephemeral agent"}`;
 }
 
