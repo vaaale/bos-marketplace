@@ -1195,6 +1195,7 @@ no `dev_delegate`.
 | **V. The VFS Is Not the Source** | Complies — the delete **targets the real-VFS run-log location** `/Workflows/.runs/<workflowId>/<runId>.json` (ADR-9), never a host path, and **only that location** (the workflow definition at `/Workflows/<id>-workflow.json` is a different path and is never touched). |
 | **VI. Specs & Docs Stay in Sync** | Complies (flagged for implement). The item's `skills/workflow-manager/SKILL.md` + `docs/dev/Workflows/*` + `docs/usage/Workflows/*` must document the runs table, the delete action, and the new `workflow_run_delete` tool (its name, schema, and result shape). |
 | **VII. Respect Boundaries** | Complies. Item files stay under `data/user-apps/items/workflows/`. No `src/` file is created or modified by this scope-add. |
+| **App capability surface (no new grant)** | Complies — and pinned explicitly. The app invokes the service's run-delete handler via `__bos.services.call` (the service's own REST sub-path, see §20.8); it does **NOT** use `fs:delete` directly. No new app capability grant is required — `services:read` is already held (the broker's `CAP_FOR_METHOD["services:call"] = "services:read"`; a direct `fs:delete` would map to the ungranted `fs:write`). |
 
 No conflicts. The only behavioral surface this adds to the *service* is one more declared tool —
 which is precisely the extension 039 was built for, and which FR-014's "every lifecycle operation
@@ -1230,6 +1231,8 @@ existing mechanisms and adding one operation to each.
                                                              └─────────────────────────────────────┘
 ```
 
+(Note: on the diagram's service→VFS `op:"delete"` arrow, `/api/fs` is EXISTING — but the run-delete **handler + the service REST route** the app reaches via `__bos.services.call` are **NEW** to this scope-add; the implemented service has no per-run delete today, so this is a new route, not an existing one. See §20.4.1.)
+
 **The two invoke faces converge on ONE handler.** This is the single most important structural
 fact of the scope-add, and it resolves the "which mechanism does the app use?" question:
 
@@ -1258,6 +1261,8 @@ scope-add adds the **14th**: `workflow_run_delete`. It is declared **the same wa
 `src/core/service/ServiceManager.ts` `case "tool_declare"`), filed under the **same single
 tool group** (`workflows`) the other 13 use, so 041's `registerTool` group-resolution
 (`service-tool-bridge.ts`) needs no change.
+
+**NEW operation — not an existing one:** unlike the 13 existing tools, `workflow_run_delete` is a **NEW** operation — the implemented service currently has no per-run delete; this scope-add introduces it as both a `tool_declare`d tool (assistant face) and a REST route on the service (app face, reachable via `__bos.services.call`). The existing `workflow_delete` tool (which removes an entire workflow and all its runs) is unchanged and is a different operation with a larger blast radius.
 
 **Disambiguation against FR-002's existing `delete`:** FR-002's tool list names a
 `workflow_delete` — that deletes a **WORKFLOW** (its definition + all its runs). `workflow_
@@ -1494,6 +1499,8 @@ run-log JSON, and do **not** persist selection/inspection state. Duration is `en
 selection and the inspected-run marker are client state that resets on reload (matching the
 mockup). The run-log file schema is **unchanged** by this scope-add.
 
+**Delete-path note (pinned, see §20.2):** the app invokes the service's run-delete handler via `__bos.services.call` (path: the service's own REST sub-path, see §20.8); it does **NOT** use `fs:delete` directly. No new app capability grant is required — `services:read` is already held.
+
 ## 20.7 Integration points (delta — existing mechanisms merely CALLED, not modified)
 
 | Mechanism | Real route/file | Called for (this scope-add) |
@@ -1575,7 +1582,7 @@ persistence).
 - **Consequences:** No risk of deleting a live log. Double-enforced: not a row in the table (so
   not selectable) **and** a server-side `not_found` no-op if an agent passes a live id. The rule
   is stated as: *a run is deletable iff its terminal run-log file exists*; the in-progress run is
-  out of scope for delete by construction, not by an extra flag.
+  out of scope for delete by construction, not by an extra flag. **Normative invariant (MUST):** the service MUST NOT write the run-log file to VFS before the run reaches a terminal state (completed/failed/cancelled); the run file's existence is the sole predicate for "historical run" in `workflow_run_list` and for deletability in `workflow_run_delete`.
 
 ## 20.10 Risks / edge cases (delta)
 
