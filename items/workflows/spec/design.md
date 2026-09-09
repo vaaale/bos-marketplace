@@ -1152,3 +1152,498 @@ reuses the existing trajectory rendering.
 | SC-026 (event node: exactly one emit, correct type/source/payload) | §12.3/§13.3 — one `POST /api/events` per node execution; `source.appId:"workflows"` + `_wf` envelope. |
 | SC-027 (no false-positive runs) | §12.2 exact-type match on `record.type` against `triggers` (§13.1) — no prefix/payload matching. |
 | SC-028 (concurrent runs independent) | §13.2/FR-043 — each matching event starts a new run; no coalesce/queue; run-record provenance disambiguates. |
+
+---
+
+# §20 Scope-Add 003 — Historical Runs Table with Selection + Bulk Delete (US19, FR-052–FR-055)
+
+> **Addendum, not a rewrite.** §1–§19 are the converged, implemented design (001 engine pivot
+> **Implemented & Promoted 2026-08-21**; 002 event-integration addendum §9–§19). This section is
+> the authoritative structural design for the 2026-09-09 scope-add: a workflow's historical runs
+> become a **datetime-sorted table** (US19/FR-052) with **per-row + select-all checkboxes**
+> (FR-053) and **bulk delete** of the selected runs (FR-054), backed by one new service-declared
+> tool **`workflow_run_delete`** (FR-055). It **extends** the installed `workflows` item's service
+> and app facets in place; it does **not** re-derive the engine, the VFS bridge, the execution
+> contract, the tool surface, or the run-persistence model those earlier sections already
+> settled. **No new target shape, no new bos-core change, no new dependency, no new persisted
+> field.** The binding UI contract is `mockup.html` (the `#view-detail` "Historical runs"
+> block) — §20.7.
+
+## 20.1 Classification (delta)
+
+**`marketplace-item` (the `workflows` item, in place) — app facet + service facet of the SAME
+item.** This **agrees exactly** with spec.md's `App Target: marketplace-item` field and with the
+001/002 classification. The delta touches only:
+- **service facet** — one new tool declaration (`workflow_run_delete`) + one new handler that
+  deletes run-log files over the existing loopback `/api/fs` bridge;
+- **app facet** — the historical-runs surface changes from a plain selector (FR-017) to a
+  datetime-sorted, selectable table with a bulk-delete action (FR-052/053/054).
+
+There is **no `bos-core` deliverable in this scope-add** (unlike 002's 037). The 039
+service-tool-bridge, worker IPC, and the `/api/fs` loopback are all **already implemented and
+unchanged** — the new tool rides them exactly like the existing 13. This is the single-target
+shape; Build Studio schedules it as one `agent_delegate` (`contentOnly`) → `app_build`
+(contentOnly trip-wires + `data/user-apps` branch-coupling per `target-marketplace-item.md`),
+no `dev_delegate`.
+
+## 20.2 Constitution check (delta)
+
+| Principle | Compliance (this scope-add) |
+|---|---|
+| **II. Server Authority & SSR Boundary** | Complies. The delete runs **in the worker**; it reaches the VFS **only** over the existing loopback `/api/fs` bridge (`POST { op:"delete", path }`), the same call the run persistence already makes (ADR-2). The worker imports **no** `@/` module and hand-rolls **no** VFS logic (path-traversal protection, mount routing) — it sends one `op:delete` per run id. The app reaches the service **only** over `window.__bos.services.call` (the 028 broker) — never a direct cross-origin fetch to the service port. |
+| **IV. Minimize Blast Radius** | Complies. Item-internal, additive. One tool added to the existing `tool_declare` batch; one handler added; the table replaces the existing selector in the app. **No `service.json` change, no capability change, no bos-core file touched.** |
+| **V. The VFS Is Not the Source** | Complies — the delete **targets the real-VFS run-log location** `/Workflows/.runs/<workflowId>/<runId>.json` (ADR-9), never a host path, and **only that location** (the workflow definition at `/Workflows/<id>-workflow.json` is a different path and is never touched). |
+| **VI. Specs & Docs Stay in Sync** | Complies (flagged for implement). The item's `skills/workflow-manager/SKILL.md` + `docs/dev/Workflows/*` + `docs/usage/Workflows/*` must document the runs table, the delete action, and the new `workflow_run_delete` tool (its name, schema, and result shape). |
+| **VII. Respect Boundaries** | Complies. Item files stay under `data/user-apps/items/workflows/`. No `src/` file is created or modified by this scope-add. |
+
+No conflicts. The only behavioral surface this adds to the *service* is one more declared tool —
+which is precisely the extension 039 was built for, and which FR-014's "every lifecycle operation
+is tool-reachable" principle already anticipated (extended to run history).
+
+## 20.3 Architecture (delta)
+
+The 001/002 Context/Container diagram is **unchanged** except that the existing app facet →
+service facet arrow gains **two operations** (run listing, run delete) over the channel the app
+**already uses**, and the service → real-VFS arrow gains **one delete** over the bridge the run
+persistence **already uses**. Nothing new is introduced — this is a matter of naming the two
+existing mechanisms and adding one operation to each.
+
+```text
+   APP facet (opaque-origin iframe)                       SERVICE facet (worker thread)
+ ┌──────────────────────────────────────────┐            ┌───────────────────────────────────────┐
+ │ runs table (FR-052)                        │            │  run-state.js / runs.js (EXISTING)     │
+ │  · workflow_run_list  ───────────────────┐│            │    persists each run to               │
+ │  · per-row + select-all checkbox (FR-053)││  __bos.    │    /Workflows/.runs/<wf>/<run>.json   │
+ │  · Delete(n)  workflow_run_delete ───────┼┤  services. │         ▲ (write)      ▲ (delete)      │
+ │  · row click / eye = inspect  ───────────┘│  call()     │    runs.js           handlers.js      │
+ │    workflow_run_get (US10, retained)      │  (028      │              └──────────┤             │
+ └──────────────────────────────────────────┘  broker,   │                         │             │
+      ▲ services:read cap                                 │   workflow_run_delete  │ (NEW handler) │
+                                                         │   (FR-055)              │             │
+   ASSISTANT (039 path, separate)                         └───────────┬─────────────┘             │
+ ┌────────────────────────────┐ tool_call/worker-IPC                  │ loopback /api/fs          │
+ │ service-tool-bridge.invoke │──────────────────────────────────────▶│ op:"delete"              │
+ │ (schema-validated, gated)  │  (same handler, 039 face)             ▼                             ▼
+ └────────────────────────────┘                              ┌─────────────────────────────────────┐
+                                                             │  /api/fs (BOS main thread, EXISTING)  │
+                                                             │  real VFS /Workflows/.runs/<wf>/<id>  │
+                                                             └─────────────────────────────────────┘
+```
+
+**The two invoke faces converge on ONE handler.** This is the single most important structural
+fact of the scope-add, and it resolves the "which mechanism does the app use?" question:
+
+- **App → service:** the opaque-origin app's only channel to *invoke* the service is
+  `window.__bos.services.call(id, path, init)` (028). It already uses this for
+  `workflow_run_list`/`workflow_run_get`. **Bulk delete uses the same call.** This is **not**
+  the 039 worker-IPC `tool_call` path — that is assistant-only (`src/lib/agent/
+  service-tool-bridge.ts` `invoke()`), and an iframe cannot emit `tool_declare`/`tool_call`
+  over worker IPC (it has no `parentPort`).
+- **Assistant → service:** the 039 path — the service declares `workflow_run_delete` via
+  `tool_declare` (FR-001), BOS validates the args against its `inputSchema` and dispatches a
+  `tool_call` over worker IPC (FR-003/FR-010 gating, FR-011 lifecycle cleanup).
+
+Both faces route to the **same service-side handler** (the run-delete function in
+`handlers.js`), so there is one delete implementation with two entry points — no divergence
+between what the UI can do and what the agent can do (the same "one live state, two consumers"
+principle 001 applied to a write operation).
+
+## 20.4 Service facet (delta) — `workflow_run_delete`
+
+### 20.4.1 Where it slots into the `tool_declare` surface
+
+The existing 001 surface declares 12 tools; 002 added the 13th (`workflow_event_types`). This
+scope-add adds the **14th**: `workflow_run_delete`. It is declared **the same way** — one
+`tool_declare` in the startup batch (`services/index.js` → the `tool_declare` handling in
+`src/core/service/ServiceManager.ts` `case "tool_declare"`), filed under the **same single
+tool group** (`workflows`) the other 13 use, so 041's `registerTool` group-resolution
+(`service-tool-bridge.ts`) needs no change.
+
+**Disambiguation against FR-002's existing `delete`:** FR-002's tool list names a
+`workflow_delete` — that deletes a **WORKFLOW** (its definition + all its runs). `workflow_
+run_delete` deletes one or more **RUNS** of a workflow and **leaves the workflow definition
+intact** (FR-054). They are different operations with different blast radius and must not be
+merged. The spec's FR-002 list is being extended (it does not yet name run-level delete);
+this design adds `workflow_run_delete` to that list's tool surface. The skill + docs must keep
+the two names distinct (FR-050/VI).
+
+### 20.4.2 Input JSON-schema (strict — FR-003)
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "workflowId": { "type": "string", "minLength": 1 },
+    "runIds": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "required": ["workflowId", "runIds"],
+  "additionalProperties": false
+}
+```
+
+- **`workflowId` is REQUIRED.** This is the **cross-workflow run-id collision guard** (risk §20.6):
+  run ids are scoped *per workflow* (they are the filename under `.runs/<workflowId>/`), so a
+  bare run id is not globally unique. Requiring `workflowId` means the handler can **only ever
+  resolve a path inside the named workflow's run directory** — a run id can never delete a run
+  belonging to a different workflow, because the workflow id is part of the path, not an
+  afterthought.
+- **`runIds` is an array, `minItems:1`.** A single-run delete is a one-element array
+  (`runIds: ["r1"]`). Array-only (rather than `oneOf [string, array]`) keeps the path
+  resolution uniform and the schema strict — there is one normalization, not two.
+- **`uniqueItems` + `minLength`** are cheap strictness that 002's `workflow_validate` already
+  relies on the Ajv compile for (`service-tool-bridge.ts` compiles the schema once, reuses it
+  on every invocation). Invalid calls are rejected **before dispatch** (FR-003, `invoke()`
+  `if (!validate(args)) throw`).
+- **`parallelSafe` is NOT set** on this tool. `serviceToolTypes.ts` is explicit: "Never set it
+  on a writer" — two concurrent deletes could race on the same file. `workflow_run_delete` is a
+  writer; it stays strictly sequential.
+
+### 20.4.3 The delete operation → the real VFS (cite the existing persistence path)
+
+The run-log location is **already fixed** by 001: each run persists to
+`/Workflows/.runs/<workflowId>/<runId>.json` (spec Key Entities — *Run*; design ADR-9), via the
+loopback `/api/fs` bridge (ADR-2, NFR-004). The **same loopback `/api/fs` op** the run
+persistence uses to *write* (`POST /api/fs { op:"write" }`) is used here to *delete*
+(`POST /api/fs { op:"delete", path }`) — no new persistence mechanism, no new VFS route. The
+existing loopback origin + fetch helpers live in the service's `http-bridge.js` (001's
+`vfs.js`, renamed per plan.md's path-correction note) — `workflow_run_delete` reuses that
+helper's origin resolution (ADR-6: `NEXT_PUBLIC_APP_ORIGIN`/`APP_ORIGIN`, loopback
+`127.0.0.1`).
+
+**Per-step outcomes are embedded in the run-log file, not a separate file.** Spec Key Entities
+defines *Run* as a single `.json` holding "per-step outcomes, and the persisted event log"
+(US6/FR-015/FR-028); design ADR-9 confirms one file per run at `.runs/<wf>/<runId>.json`.
+Therefore deleting that **one file removes the run log AND its per-step outcomes AND its event
+log** — there is no sibling outcome file to delete. FR-054's "(+ per-step outcomes)" is
+satisfied by the single `op:delete` on the run-log path.
+
+```
+for each runId in runIds:
+  path = `/Workflows/.runs/${workflowId}/${runId}.json`      # workflowId from input, never derived
+  # existence check first (cheap op:list/read, or rely on delete's not-found) for idempotency:
+  if not exists(path):
+     results.push({ runId, status: "not_found", error: `no run log at ${path}` })   # NOT an abort
+  else:
+     loopback POST /api/fs { op:"delete", path }
+     results.push({ runId, status: "deleted" })
+     # ALSO drop the run from the worker's in-memory live run-state map if present
+     # (defensive — a terminal run normally has no live entry, see §20.4.4)
+deleted = results.filter(r => r.status === "deleted").length
+return { workflowId, deleted, results }                       # JSON-stringified by the 039 bridge
+```
+
+**"Workflow definition untouched" guarantee, made explicit:** the run-log path
+`/Workflows/.runs/<workflowId>/<runId>.json` is a **different, disjoint path** from the workflow
+definition path `/Workflows/<id>-workflow.json` (spec Key Entities — *Workflow* vs *Run*; ADR-2).
+The delete resolves **only** the run-log path from `(workflowId, runId)`; it never reads, writes,
+or deletes the workflow JSON. The two share the `/Workflows/` prefix but the `.runs/` subpath is
+the sole thing touched. The app's post-delete flash (mockup `#runs-delete-note`) states exactly
+this: "Deleted N run logs from `/Workflows/.runs/` — workflow definition untouched."
+
+### 20.4.4 Idempotency + in-progress safety
+
+- **Deleting an already-deleted run is a no-op, not an error.** If the run-log file does not
+  exist (already deleted, or never existed), the handler records `{ status:"not_found" }` for
+  that run and **continues** with the rest — the batch does not abort, and `not_found` is **not**
+  counted in `deleted`. Calling `workflow_run_delete` twice with the same `runIds` returns the
+  same outcome the second time as `{ deleted:0, results:[…not_found…] }` (idempotent in the
+  sense that it is safe to retry and leaves state unchanged). `deleted` counts only runs whose
+  log file **actually existed and was removed** — the honest number (SC-030: "correct deleted
+  count").
+- **In-progress runs are not deletable, by construction.** 001's run persistence (ADR-9) writes
+  the run-log file **on completion/failure/cancel** — a terminal event. A run that is still
+  executing lives only in the worker's in-memory live run-state map (`engine/run-state.js`),
+  **not** as a persisted terminal run-log. So an in-progress run id has **no file** at
+  `.runs/<wf>/<runId>.json` — attempting to delete it resolves to `not_found`, a no-op, with
+  **no risk of deleting a half-written log**.
+- **`workflow_run_list` (the table's source) returns only terminal runs** (FR-016: "list
+  **historical** runs"). The app's table is built from `workflow_run_list`, so an in-progress run
+  is **not a row** and cannot be selected (ADR-17). The in-progress rule is thus enforced twice:
+  not selectable in the UI, and a server-side `not_found` no-op if an agent calls the tool with a
+  live run id. (The live run is still reachable/inspectable via `workflow_status`/`run_get` and
+  cancellable via `workflow_cancel` — those are unchanged.)
+
+### 20.4.5 Result shape (FR-055: deleted count + per-run errors)
+
+```json
+{
+  "workflowId": "wflow-datapipeline",
+  "deleted": 2,
+  "results": [
+    { "runId": "run-123", "status": "deleted" },
+    { "runId": "run-456", "status": "deleted" },
+    { "runId": "run-789", "status": "not_found", "error": "no run log at /Workflows/.runs/wflow-datapipeline/run-789.json" }
+  ]
+}
+```
+
+`status` ∈ `{ "deleted", "not_found", "error" }`. `deleted` = count of `status:"deleted"`.
+`"error"` is reserved for an actual I/O failure of the `op:delete` (distinct from the expected
+`"not_found"`). Over the 039 path, `service-tool-bridge.ts` `invoke()` JSON-stringifies this
+object for the assistant (`typeof outcome.result === "string" ? … : JSON.stringify(…)`); over the
+app path, `__bos.services.call` already returns the parsed JSON body (IframeApp.tsx
+`services:call`). The **app consumes this to update the table** (§20.5.3).
+
+## 20.5 App facet (delta) — the runs table
+
+The app already reads runs via `workflow_run_list` and inspects via `workflow_run_get` (001
+FR-016/017, 002 §16). The change is confined to the **detail view's historical-runs block**: it
+becomes the datetime-sorted table below. All state is **ephemeral client state** (the mockup's
+module-level JS: `RUNS`, `runsSelected`, `currentHistory`) — **nothing is persisted**, and
+**no new field is stored** (§20.6/data-model).
+
+### 20.5.1 Data source + sort (FR-052)
+
+- `RUNS` = the `workflow_run_list` result for the current `workflowId` (fetched via
+  `__bos.services.call("workflows", …)` — same call as today).
+- **Sort client-side by the run's start datetime, descending** (most recent first) — the
+  mockup's "sorted: datetime ↓" chip. The run entity already carries start/end timestamps
+  (Key Entities), so this is a pure `sort` on an existing field; the service needs no change to
+  the `run_list` shape. (If `run_list` already returns datetime-desc, the client sort is a
+  no-op — idempotent either way.)
+- **Minimum columns** (FR-052): **Datetime** (start ts, `time · date`), **Run** (run id, shown
+  as `#<id>`), **Final state** (chip). **Duration** is a **derived extra** column =
+  `end − start` computed at render time — it is **not** stored and **not** a new field (the
+  mockup's `dur` field).
+- **Empty state:** a workflow with no terminal runs shows an empty table (the header + a
+  "no runs yet" row); the Delete button stays disabled.
+
+### 20.5.2 Selection state + select-all indeterminate (FR-053)
+
+Held in client state, mirroring the mockup exactly (`runsSelected = new Set<runId>()`,
+`updateSelectAll`):
+
+```
+total   = RUNS.length
+selected = runsSelected
+# header select-all checkbox (id: run-selectall):
+  .checked        = total > 0 && selected.size === total
+  .indeterminate  = selected.size > 0 && selected.size < total     # the partial-selection state
+# row checkbox (per run id): toggle add/remove that id in `selected`
+# header click (toggleSelectAll): if selected.size === total → clear; else → add every id
+```
+
+This is the **indeterminate** behavior FR-053 requires: unchecked-but-indeterminate when some
+(not all) rows are selected; checked when all are; unchecked when none are.
+
+### 20.5.3 Delete action (FR-054) — and how it invokes the service
+
+**Mechanism (chosen, and why):** the Delete button invokes **`workflow_run_delete` over the
+existing `__bos.services.call` REST-bridge path** — the same channel the app already uses for
+`workflow_run_list`/`workflow_run_get`. It does **not** route through the assistant and it does
+**not** open worker IPC. Rationale: (a) it is *consistent with how the existing app drives the
+service* (all 13 current app→service operations already go through `__bos.services.call`;
+002 §16 says the app "reaches it via the service over `window.__bos`, same broker as the other
+12 tools"), and (b) it is the *only* invoke channel an opaque-origin iframe has
+(IframeApp.tsx). The `tool_declare`d `workflow_run_delete` (FR-055) is the **assistant's** 039
+face of the same handler — the app and the agent reach the same delete two different ways,
+by design.
+
+**No new capability grant:** `__bos.services.call` requires `services:read` (IframeApp.tsx
+`CAP_FOR_METHOD`), which the app **already holds** to drive `run_list`/`run_get`. Bulk delete
+reuses it — no `service.json`/manifest change.
+
+**Flow** (mockup `deleteSelectedRuns`):
+1. If `selected.size === 0` → no-op (the button is disabled anyway — §20.5.4).
+2. Call the service: `__bos.services.call("workflows", "<run-delete endpoint>", { method:"POST", body:{ workflowId, runIds:[…selected] } })` → the §20.4.5 result.
+3. On result: remove the rows whose `status === "deleted"` from `RUNS` (rows disappear —
+   FR-054); clear `selected`; update the select-all + Delete button.
+4. **Inspect-collision handling:** if the **currently-inspected** run (`currentHistory`, the
+   violet-tinted row) was among the deleted, close the history view (`go("detail")`) — the mockup
+   does exactly this (`if (deletedOpen) go('detail')`), so the user is not left looking at the
+   replay of a run whose log is now gone (risk §20.6).
+5. Show the `#runs-delete-note` flash: "Deleted N run logs from `/Workflows/.runs/` — workflow
+   definition untouched." For any `not_found`/`error` in `results`, surface them in the same
+   note (so a partially-failed batch is not silently treated as fully successful).
+
+**Inspect stays independent of selection (FR-052/FR-017 retained):** row **click** and the **eye**
+button both call `openHistoryRun(id)` → `workflow_run_get` → the graph + node trajectory replay
+(US10). This is a **read**, orthogonal to the checkbox's **delete-selection** — checking a box
+never inspects, and inspecting never checks a box (the mockup's note calls this out explicitly).
+
+### 20.5.4 Delete(n) enable/disable (FR-054, mockup contract)
+
+`runs-delete-btn` is `disabled` **iff** `selected.size === 0`; its label shows the count
+(`Delete (n)`, id `runs-delete-count`); a `title` tooltip explains the disabled state ("Select at
+least one run to enable delete") and, when enabled, states the blast radius ("Delete N selected
+run(s) (run logs only — workflow definition untouched)"). This is the "no-op/disabled when
+nothing is selected" of FR-054 — the button is **disabled** (not merely a no-op) so the state is
+visually unambiguous.
+
+## 20.6 Data model (delta) — NO new persisted fields
+
+**This scope-add adds zero persisted fields.** Everything the table needs is already on the *Run*
+entity (spec Key Entities; ADR-9):
+
+| Table column | Source | Stored? |
+|---|---|---|
+| Datetime | Run **start** timestamp | yes (existing) |
+| Run (id) | Run **runId** | yes (existing) |
+| Final state | Run **final state** (completed / failed / cancelled / completed_with_warnings) | yes (existing) |
+| Duration | **derived**: `end − start` at render time | **no — derived** |
+| Selection (checkbox) | **ephemeral app state** (`runsSelected` Set) | **no — not persisted** |
+| Inspected row (violet tint) | **ephemeral app state** (`currentHistory`) | **no — not persisted** |
+
+**Explicit instruction to implement:** do **not** add a `stepCount`/`duration` column to the
+run-log JSON, and do **not** persist selection/inspection state. Duration is `end − start`;
+selection and the inspected-run marker are client state that resets on reload (matching the
+mockup). The run-log file schema is **unchanged** by this scope-add.
+
+## 20.7 Integration points (delta — existing mechanisms merely CALLED, not modified)
+
+| Mechanism | Real route/file | Called for (this scope-add) |
+|---|---|---|
+| **039 service-tool-bridge** (assistant face) | `src/lib/agent/service-tool-bridge.ts` (`registerTool` Ajv-validates + registers; `invoke` re-validates FR-003, dispatches, JSON-stringifies result), `src/core/service/serviceToolTypes.ts` (`ToolDeclaration {name, description, inputSchema, group?, parallelSafe?}`, `ToolInvocation/Result`), `src/core/service/ServiceManager.ts` `case "tool_declare"` (L341) | Declaring `workflow_run_delete` (14th tool, same `workflows` group, `parallelSafe` unset); schema-validation before dispatch; allowlist/deferred **gating like the other tools (FR-010)**; removal on stop/uninstall (FR-011). |
+| **App→service REST-bridge broker** (app face) | `src/components/apps/IframeApp.tsx` (`CAP_FOR_METHOD["services:call"] = "services:read"`; the `services:call` case resolves `httpPath`/`runtime.port` via `GET /api/services/<id>/config` then fetches the service's own port in the trusted frame), `src/lib/iframe-sdk/index.ts` (`services.call(id, path, init)`) | The table's `run_list`, the delete's `run_delete`, and inspect's `run_get` — all the app's operations on the service. **`services:read` already granted**; no new grant. |
+| **Real-VFS loopback delete** | `src/app/api/fs/route.ts` (`POST { op:"delete", path }`), `src/os/vfs.ts` | Removing each run-log file at `/Workflows/.runs/<wf>/<runId>.json`. Same op the run persistence uses for write (ADR-2). Path-traversal protection + mount routing handled by `/api/fs`, not the worker. |
+| **Existing run persistence + run tools** | the item's `runs.js` / `engine/run-state.js` (001 US6/FR-015/016/017, ADR-9) + `workflow_run_list`/`workflow_run_get` handlers | The table's data source (`run_list`), the inspect path (`run_get`), and the run-log location/format the delete targets. The delete **reuses** this persistence contract; it does not redefine it. |
+
+These are dependencies, not deliverables — none is created or modified by this scope-add.
+
+## 20.8 Concrete file/module plan (delta — item only; built module names)
+
+All paths relative to the item root `data/user-apps/items/workflows/`. **Modify** = additive
+change to an already-implemented, promoted file (001/002 are Implemented & Promoted). Built-name
+convention follows plan.md's path-correction note: the service's loopback helpers are
+`services/http-bridge.js` and run state is `engine/run-state.js` (001's `runs.js` holds run
+persistence).
+
+| Path | Action | Purpose |
+|---|---|---|
+| `services/tools.js` | **Modify** | Add the 14th tool declaration `workflow_run_delete` — name, description, and the §20.4.2 `inputSchema` (`workflowId` + `runIds` required). Join the existing `tool_declare` batch; same `workflows` group; **no** `parallelSafe`. |
+| `services/handlers.js` | **Modify** | Add the `workflow_run_delete` handler (§20.4.3–20.4.5): resolve each path as `.runs/<workflowId>/<runId>.json`, idempotent per-run delete via `http-bridge.js` `op:delete` (existence check → `deleted`/`not_found`/`error`), drop any matching in-memory live entry defensively, return `{ workflowId, deleted, results }`. **Also** expose the same handler as the service's **inbound REST** operation so `__bos.services.call` (the app face) routes to it — one function, two entry points (§20.3). |
+| `services/http-bridge.js` | **Reuse (no change expected)** | Already provides loopback origin + fetch for `/api/fs`; the delete is one more `op:delete` through it. Add a delete helper only if the current helper doesn't already expose `op`-parametric calls. |
+| `engine/run-state.js` | **Modify (minor)** | After a successful delete, drop the run id from the in-memory live map **if present** (defensive — terminal runs normally have no live entry, §20.4.4). No schema change. |
+| `app/src/main.tsx` (+ components/CSS) | **Modify** | Replace the detail view's historical-runs **selector** with the **table** (§20.5): `workflow_run_list` → client-side datetime-desc sort; per-row checkbox + header select-all (with `indeterminate`); `Delete(n)` button (disabled when empty) → `__bos.services.call` run_delete → remove deleted rows + flash; row-click/eye → `workflow_run_get` replay (US10, retained, independent of selection); violet-tint the inspected row. Matches `mockup.html` `#view-detail`. |
+| `skills/workflow-manager/SKILL.md` | **Modify** | FR-050/VI: document the runs table + bulk delete and the `workflow_run_delete` tool (name, schema, result shape), and **distinguish it from `workflow_delete`** (run vs workflow). |
+| `docs/dev/Workflows/*.md` | **Modify** | Developer page: the two invoke faces (039 tool + app REST bridge) converging on one handler; the idempotent/terminal-only delete semantics; the run-log path contract. |
+| `docs/usage/Workflows/*.md` | **Modify** | End-user page: how to view, select, and delete historical runs from the table; the "workflow definition untouched" guarantee. |
+
+**No `service.json` change** (no new port, no new group, no new capability, no `eventNamespaces`).
+**No `config/workflows.json` change.** **No `src/` change.** **No new dependency.**
+
+## 20.9 ADRs (this scope-add)
+
+### ADR-15 — Delete acts immediately, no confirm modal
+- **Context:** FR-054 + the **approved** `mockup.html` both specify that bulk delete fires
+  immediately on click — the mockup has no confirmation dialog; it has a disabled-when-empty
+  button, a `Delete(n)` count, and a post-action success flash. A destructive bulk action usually
+  warrants a confirm step.
+- **Options:** (a) immediate delete (mockup-conformant); (b) a confirm modal before delete.
+- **Decision:** (a) immediate. The mockup is the **binding UI contract** for this table and it
+  encodes immediate delete; the delete is scoped and low-stakes (run logs are auditable
+  *history*, not the workflow definition or any user data, and the workflow + its future runs are
+  untouched). The disabled-when-empty button + the visible `Delete(n)` count + the blast-radius
+  tooltip are the guardrails in place of a modal.
+- **Consequences:** Faster UX; matches the contract implement must hit. The safety rails are
+  (i) the table only lists terminal runs, (ii) selection is explicit per-row + select-all, (iii)
+  the button is disabled at zero selection, (iv) the post-delete flash names what was removed and
+  that the definition is untouched. If a confirm step is later wanted, it is a pure app-facet
+  add (no service change) — the delete handler is idempotent (§20.4.4), so a modal adds no
+  correctness, only caution.
+
+### ADR-16 — `workflowId` is required input; the tool is workflow-scoped (run-scope guard)
+- **Context:** Run ids are per-workflow (the filename under `.runs/<workflowId>/`). A bare run id
+  is not globally unique, so an unscoped delete risks acting on the wrong workflow's run, or
+  being ambiguous.
+- **Options:** (a) require `workflowId` in the tool input; (b) accept a bare `runId` and search
+  all workflows for it.
+- **Decision:** (a). The handler resolves each path **only** from `(workflowId, runId)`; a run id
+  cannot delete a run in another workflow because the workflow id is part of the path. (b) is
+  rejected: it is ambiguous (two workflows can share a run id), slow (scans all `.runs/*`), and
+  opens the exact cross-workflow-collision hole the guard exists to close.
+- **Consequences:** Slightly more verbose call (`{workflowId, runIds}`), but deterministic and
+  safe. The app always knows its current `workflowId` (it's on the detail view), so this costs
+  the UI nothing. SC-030 ("only the named runs are removed") is met by construction.
+
+### ADR-17 — In-progress runs are excluded from the delete table (terminal-only delete)
+- **Context:** Should a run still executing be selectable/deletable? The table is "**historical**
+  runs" (FR-052); deleting a half-written live log would be unsafe.
+- **Options:** (a) the table lists only terminal runs (the default, from `workflow_run_list` =
+  "historical runs"), and the tool no-ops (`not_found`) on any non-terminal/live run id; (b) the
+  table lists live runs too, with a guard preventing their delete.
+- **Decision:** (a). It follows directly from FR-016 (`run_list` = historical runs) and from
+  ADR-9 (run-log is written **on** completion/failure/cancel — a live run has no persisted
+  run-log file yet). The in-progress run is still fully reachable via `workflow_status`/
+  `run_get` (inspect) and `workflow_cancel` (stop) — those are unchanged; only **delete** is
+  terminal-scoped.
+- **Consequences:** No risk of deleting a live log. Double-enforced: not a row in the table (so
+  not selectable) **and** a server-side `not_found` no-op if an agent passes a live id. The rule
+  is stated as: *a run is deletable iff its terminal run-log file exists*; the in-progress run is
+  out of scope for delete by construction, not by an extra flag.
+
+## 20.10 Risks / edge cases (delta)
+
+1. **Deleting the run currently open for inspection.** The violet-tinted row is
+   `currentHistory`. If it is deleted, the app closes the history view and returns to detail
+   (§20.5.3 step 4, mockup `if (deletedOpen) go('detail')`) — the user is not left on the replay
+   of a deleted run. No service concern (inspect is a read; the log is simply gone).
+2. **Deleting while a run is still in progress.** Resolved by **ADR-17**: the table lists only
+   terminal runs (so a live run isn't a row), and the tool returns `not_found` (a no-op) for any
+   live run id because ADR-9 persists the run-log only at terminal state. A live run can never be
+   deleted through this path; it is cancelled via `workflow_cancel` instead.
+3. **Cross-workflow run id collision.** Resolved by **ADR-16**: `workflowId` is required and the
+   path is `.runs/<workflowId>/<runId>.json`; a run id can only resolve inside the named
+   workflow's directory.
+4. **Empty selection.** The `Delete(n)` button is **disabled** at zero selection (FR-054, mockup
+   `runs-delete-btn` `disabled`), and the handler's `minItems:1` schema also rejects an empty
+   `runIds` array (FR-003) — defense in depth, so even a direct assistant call with `[]` is
+   schema-rejected before dispatch.
+5. **Partial-batch failure.** Some run ids `deleted`, others `not_found`/`error`. The handler does
+   **not** abort on `not_found` (idempotency); the app removes only the `deleted` rows and
+   surfaces the non-deleted ones in the flash (§20.5.3 step 5). `deleted` reports the honest
+   count (SC-030). A genuine `op:delete` I/O error (`"error"`) is logged (NFR-005) and reported
+   per-run — it does not crash the service (NFR-002) or the batch.
+6. **`/api/fs` `op:delete` on a missing file — error vs no-op.** The handler **pre-checks
+   existence** (a cheap `op:list`/read of the run directory or the file) so the idempotency
+   behavior (`not_found`) is deterministic and does not depend on `/api/fs`'s delete-on-missing
+   status code. **Confirm at implement** the exact `/api/fs` delete response on a missing path
+   (`src/app/api/fs/route.ts`) and code the pre-check to match; if delete is already a silent
+   no-op on missing, the pre-check can be dropped.
+7. **Per-step outcomes as a sibling file (contingency).** This design assumes outcomes + event
+   log are **embedded** in the single run-log `.json` (per spec Key Entities + ADR-9). **Confirm
+   at implement** against the built `runs.js`/`run-state.js`: if the built item writes per-step
+   outcomes as a **separate** sibling file, the delete must remove that too (a second
+   `op:delete`, or delete the run's directory entry). The spec's data model says single file; the
+   plan's path-correction note is the one signal the built item diverged from the 001 design on
+   module layout, so verify the on-disk layout, not just the module names.
+8. **Self-consistency (pre-empting review), both Job-1 failure modes checked.**
+   **(1)** The service imports **no** `src/lib/…`/`@/…` module — the delete reaches the VFS only
+   over the existing loopback `/api/fs` (`http-bridge.js`), the same pattern as run persistence;
+   the app reaches the service only over `window.__bos.services.call` (028 broker) — neither side
+   crosses its boundary. **(2)** There is **no** new credential/token scheme and **no** port-less
+   exposure: the service still binds its own port (ADR-3) and the app still reaches it via
+   `httpPath`/`runtime.port` (services.md §11, through `__bos.services.call`); the delete adds no
+   new network surface at all. Both clean.
+
+## 20.11 UI mockup reference (binding contract)
+
+`mockup.html` (same spec dir), the `#view-detail` **"Historical runs"** block, is the binding UI
+contract for this scope-add. Element→behavior map (all ids as in the mockup):
+
+| Mockup element | Behavior | FR |
+|---|---|---|
+| `#runs-tbody` (one `<tr>` per run) | Rows from `workflow_run_list`, **datetime-desc**; cols: Datetime · Run(`#id`) · Final state(chip) · Duration(derived) · Inspect | FR-052 |
+| `#run-selectall` (header checkbox) | `checked`/`indeterminate` per §20.5.2; click = select-all / clear-all toggle | FR-053 |
+| per-row `<input type=checkbox>` | toggle that run's id in `runsSelected` (independent of row-click) | FR-053 |
+| `#runs-delete-btn` + `#runs-delete-count` | `Delete (n)`; **disabled** at `n=0`; tooltip = blast radius; click → `__bos.services.call` run_delete → remove deleted rows | FR-054 |
+| `#runs-delete-note` (flash) | "Deleted N run logs from `/Workflows/.runs/` — workflow definition untouched." | FR-054 |
+| row **click** + **eye** button | `openHistoryRun` → `workflow_run_get` replay (graph + trajectory, US10) — **independent** of the checkbox; the violet-tinted row = the inspected run (`currentHistory`) | FR-017/052 (retained) |
+| the violet "Mockup note" box | States the three-way split: header = select-all, row checkbox = select-to-delete, row/eye = inspect (independent) | — |
+
+The mockup's `RUN_STATE` chip palette (completed / completed_with_warnings / failed / cancelled)
+and the `updateSelectAll` / `updateDeleteBtn` / `renderRunsTable` / `toggleRun` /
+`toggleSelectAll` / `deleteSelectedRuns` functions **are** the reference implementation the app
+facet should match line-for-line in behavior.
+
+## 20.12 Success-criteria mapping (delta)
+
+| SC | Design anchor |
+|---|---|
+| SC-029 (table datetime-desc, checkboxes, select-all, bulk delete leaves definition untouched) | §20.5 (app) + §20.4.3 (disjoint run-log vs workflow-def path; single `op:delete` on `.runs/` only). |
+| SC-030 (`workflow_run_delete` removes exactly the named runs; correct deleted count / errors) | §20.4.2 (workflow-scoped paths) + §20.4.3/20.4.5 (per-run `deleted`/`not_found`/`error`; `deleted` counts only real removals; `minItems:1`). |
