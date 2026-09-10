@@ -1,11 +1,12 @@
-import React, { useEffect, useMemo, useState } from "react";
-import type { RunDetail, RunSummary, StepLiveStatus, Workflow, ValidationResult } from "../lib/types";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import type { RunDeleteResult, RunDetail, RunSummary, StepLiveStatus, Workflow, ValidationResult } from "../lib/types";
 import { Graph, GraphLegend } from "./Graph";
 import { GraphEditor } from "./GraphEditor";
 import { WorkflowStatusPill } from "./StatusPill";
 import { PanelDivider, TrajectoryPanel, usePanelWidth } from "./TrajectoryPanel";
 import { TriggersPanel } from "./TriggersPanel";
 import { RunProvenance, RunSourceGlyph } from "./RunProvenance";
+import { RunsTable } from "./RunsTable";
 import { nodeTrajectory } from "../lib/trajectory";
 import { api } from "../lib/bridge";
 
@@ -28,6 +29,9 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
   const [editing, setEditing] = useState(false);
   // Historical replay: which node's trajectory is open, and how wide.
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  // US19 — the brief post-delete flash ("Deleted N run log(s)…").
+  const [flash, setFlash] = useState<string | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { width, dividerProps } = usePanelWidth();
 
   useEffect(() => {
@@ -48,6 +52,46 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
     setSelectedRun(run);
     // Switching runs resets the panel; the user picks a node in the new run.
     setSelectedNode(null);
+  }
+
+  function showFlash(text: string) {
+    setFlash(text);
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlash(null), 8000);
+  }
+
+  useEffect(
+    () => () => {
+      if (flashTimer.current) clearTimeout(flashTimer.current);
+    },
+    [],
+  );
+
+  // US19 — bulk-delete run logs through the service (never a direct VFS
+  // delete: the app holds services:read, not fs:write). Immediate, no confirm
+  // modal; the flash states the blast radius after the fact.
+  async function deleteRuns(runIds: string[]): Promise<RunDeleteResult | null> {
+    let result: RunDeleteResult;
+    try {
+      result = (await api.runDelete(workflow.id, runIds)) as RunDeleteResult;
+    } catch (err) {
+      showFlash(`Delete failed: ${(err as Error).message}`);
+      return null;
+    }
+    const deletedIds = new Set(result.results.filter((r) => r.status === "deleted").map((r) => r.runId));
+    setRuns((prev) => prev.filter((r) => !deletedIds.has(r.runId)));
+    // The replay view must not keep showing a run whose log is gone.
+    if (selectedRun && deletedIds.has(selectedRun.runId)) {
+      setSelectedRun(null);
+      setSelectedNode(null);
+    }
+    const notFound = result.results.filter((r) => r.status === "not_found");
+    const errors = result.results.filter((r) => r.status === "error");
+    let text = `Deleted ${result.deleted} run log(s) from /Workflows/.runs/ — workflow definition untouched.`;
+    if (notFound.length) text += ` ${notFound.length} already gone.`;
+    if (errors.length) text += ` Failed: ${errors.map((r) => `${r.runId} (${r.error || "unknown error"})`).join(", ")}.`;
+    showFlash(text);
+    return result;
   }
 
   async function runValidate() {
@@ -71,6 +115,12 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
     () => (selectedNode && selectedRun ? nodeTrajectory(selectedNode, workflow.steps, selectedRun) : null),
     [selectedNode, selectedRun, workflow.steps],
   );
+
+  // US19 — the runs table lists TERMINAL runs only: an in-progress run has no
+  // persisted log yet, so it can't be deleted (or replayed) — it stays a live
+  // chip above the table, watchable exactly as before.
+  const activeRuns = runs.filter((r) => r.state === "running");
+  const terminalRuns = runs.filter((r) => r.state !== "running");
 
   return (
     <div className="wf-view">
@@ -171,28 +221,23 @@ export function DetailView({ workflow, liveStatus, onBack, onRun, onCancel, onDe
       </div>
 
       <div style={{ marginTop: 16 }}>
-        <h3 className="wf-section-title">
-          Historical runs <span className="wf-tool-label">workflow_run_list</span>
-        </h3>
-        {runs.length === 0 ? (
-          <div className="wf-dim" style={{ fontSize: 12 }}>
-            No runs yet.
-          </div>
-        ) : (
-          <div className="wf-row" style={{ flexWrap: "wrap" }}>
-            {runs.map((r) => (
-              <button
-                key={r.runId}
-                className={`wf-run-chip ${selectedRun?.runId === r.runId ? "wf-run-chip-active" : ""}`}
-                onClick={() => (r.state === "running" ? onWatchRun(r.runId) : openRun(r.runId))}
-              >
+        {activeRuns.length ? (
+          <div className="wf-row" style={{ flexWrap: "wrap", marginBottom: 8 }}>
+            {activeRuns.map((r) => (
+              <button key={r.runId} className="wf-run-chip" onClick={() => onWatchRun(r.runId)} title="This run is still in progress — click to watch it live">
                 <RunSourceGlyph startSource={r.startSource} />
                 <span className="wf-mono">#{r.runId.slice(4, 12)}</span>
                 <WorkflowStatusPill status={r.state} />
               </button>
             ))}
           </div>
-        )}
+        ) : null}
+        {flash ? (
+          <div className="wf-runs-flash" onClick={() => setFlash(null)} title="click to dismiss">
+            {flash}
+          </div>
+        ) : null}
+        <RunsTable runs={terminalRuns} inspectedRunId={selectedRun?.runId ?? null} onInspect={openRun} onDelete={deleteRuns} />
       </div>
 
       {selectedRun ? (

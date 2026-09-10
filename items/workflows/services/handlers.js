@@ -1,5 +1,6 @@
-// handlers.js — tool handlers for the 13 workflow_* tools (FR-002/014/016/024,
-// plus workflow_event_types — US17/FR-044/045; event-triggered starts go
+// handlers.js — tool handlers for the 14 workflow_* tools (FR-002/014/016/024,
+// plus workflow_event_types — US17/FR-044/045, and workflow_run_delete —
+// US19; event-triggered starts go
 // through makeRunStarter — US16/FR-041),
 // wired to the engine (store/validate/generate) and to runs.js for execution
 // + historical inspection. Each handler is `(args, ctx) => Promise<any>`; ctx
@@ -257,6 +258,26 @@ function makeHandlers(ctx) {
       const run = await runs.getRun(workflowId, runId, { since });
       if (!run) throw new Error(`no such run: ${runId} for workflow ${workflowId}`);
       return run;
+    },
+
+    // US19 — delete individual persisted run logs. The path is always built
+    // from THIS call's workflowId (never derived from the run id), so a run id
+    // that belongs to another workflow simply resolves to a path that does not
+    // exist and reports not_found — it can never reach across workflows. The
+    // per-run deleted/not_found/error semantics live in runs.deleteRunLogs;
+    // both invoke faces (this tool_call handler and the app's REST route in
+    // http-bridge.js) go through this ONE function.
+    workflow_run_delete: async (args) => {
+      const workflowId = requireString(args, "workflowId");
+      const raw = args?.runIds;
+      if (!Array.isArray(raw) || raw.length === 0) throw new Error("runIds (a non-empty array of run id strings) is required");
+      if (raw.some((r) => typeof r !== "string" || !r.trim())) throw new Error("runIds must contain only non-empty strings");
+      // The schema declares uniqueItems, but dispatch does not enforce JSON
+      // Schema — dedupe defensively so one id is never double-counted.
+      const runIds = Array.from(new Set(raw.map((r) => r.trim())));
+      const result = await runs.deleteRunLogs(workflowId, runIds);
+      log("info", `workflow_run_delete: workflow ${workflowId} — ${result.deleted}/${runIds.length} run log(s) deleted`);
+      return result;
     },
   };
 }

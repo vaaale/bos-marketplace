@@ -21,7 +21,7 @@ self-contained, with zero BOS-source dependency.
 services/
 ├── service.json           # deploymentMode:"tools", configSchema (port/host/maxConcurrentSteps)
 ├── index.js                # worker entry: lifecycle, tool_declare, IPC dispatch, migration bootstrap
-├── tools.js                 # the 13 tool declarations + JSON schemas
+├── tools.js                 # the 14 tool declarations + JSON schemas
 ├── handlers.js               # tool implementations, wired to the engine
 ├── http-bridge.js            # REST server the APP talks to (same handlers, different transport)
 ├── vfs.js                    # loopback bridge to BOS's /api/fs (ADR-2)
@@ -234,6 +234,50 @@ with what's durably persisted, since persistence happens strictly after a run
 settles — a run that just finished is visible in memory before its
 `persistRun()` write lands on disk.
 
+**Path disjointness is the deletion-safety contract.** A workflow definition
+lives at `/Workflows/<id>-workflow.json`; its run logs live under the separate
+`/Workflows/.runs/<workflowId>/<runId>.json` tree. Nothing that deletes a run
+log can ever address a definition, because the two path shapes don't overlap.
+
+## Deleting run logs (US19 — `workflow_run_delete`)
+
+Individual run logs can be deleted without touching the workflow. **Two invoke
+faces, ONE implementation**: the assistant reaches it as the `workflow_run_delete`
+tool over the 039 `tool_call` path, and the app reaches it as
+`POST /workflows/<id>/runs/delete { runIds: [...] }` on the service's own REST
+bridge (via `window.__bos.services.call` under `services:read` — the app holds
+no `fs:write` capability, and no new capability, port, group, or config key was
+added for this). Both converge on `handlers.js`'s `workflow_run_delete`, which
+calls `runs.deleteRunLogs(workflowId, runIds)`.
+
+Per run id, `deleteRunLogs`:
+
+1. builds the path `/Workflows/.runs/<workflowId>/<runId>.json` from the
+   CALLER's `workflowId`, never derived from the run id — a run id belonging to
+   another workflow therefore resolves to a path that doesn't exist and reports
+   `not_found` (the cross-workflow collision guard);
+2. pre-checks existence with a loopback stat (`vfs.exists`). This is what makes
+   the result deterministic: BOS's `/api/fs` `op:delete` is
+   `fs.rm(..., { force: true })`, so deleting a missing path reports plain
+   success and could never distinguish "deleted" from "was never there".
+   Absent → `{ runId, status: "not_found" }`, and the batch CONTINUES —
+   deletion is idempotent, and an in-progress run (whose log doesn't exist yet,
+   since `persistRun()` runs at settle) is simply not deletable;
+3. deletes via the same loopback bridge (`vfs.remove` →
+   `POST /api/fs {op:"delete"}`) → `{ runId, status: "deleted" }`, or
+   `{ runId, status: "error", error }` on a real I/O failure;
+4. on success, drops the run from the in-memory maps (`forgetRun`). This is
+   load-bearing, not cosmetic: a settled run stays in `LIVE`, and `listRuns()`
+   merges `LIVE` with disk — without the forget, a deleted run would keep
+   reappearing in `workflow_run_list` until the service restarts. `forgetRun`
+   refuses to touch a run still listed in `ACTIVE_BY_WORKFLOW` (a safety net;
+   the missing-log pre-check already keeps active runs out of reach).
+
+The result is `{ workflowId, deleted, results: [{ runId, status, error? }] }`
+with `deleted` counting only `status: "deleted"` entries. `workflow_delete`
+remains the whole-workflow destructor (definition + ALL runs + trigger
+unsubscribe); `workflow_run_delete` is strictly the run-log pruner.
+
 ## Migration (`migration.js`)
 
 Two independent, additive-only, copy-then-archive-never-delete concerns:
@@ -319,9 +363,28 @@ tool/user-started run's prompt is byte-for-byte what it was before US16.
 ## The app's REST bridge (`http-bridge.js`)
 
 The app is not the assistant, so it needs an ordinary HTTP surface rather
-than worker-IPC tool dispatch. `http-bridge.js` is a small router (list/read/
-create/modify/delete/run/cancel/status/export/validate/run-list/run-get, plus
-`GET /run/<runId>[?since=][&workflowId=]` for the live run projection)
-bound on the service's own configurable port (default `0`) — every route is a
-thin wrapper over the SAME `handlers.js` functions the tool surface calls, so
-the app and the assistant can never observe divergent behavior.
+than worker-IPC tool dispatch. `http-bridge.js` is a small router bound on the
+service's own configurable port (default `0`) — every route is a thin wrapper
+over the SAME `handlers.js` functions the tool surface calls, so the app and
+the assistant can never observe divergent behavior.
+
+### Route table
+
+| Route | Handler |
+|---|---|
+| `GET /health` | service runtime info |
+| `GET /run/<runId>[?since=][&workflowId=]` | live run projection (falls back to `workflow_run_get` with `?workflowId=`) |
+| `GET /event-types` | `workflow_event_types` |
+| `GET /workflows` | `workflow_list` |
+| `POST /workflows` | `workflow_create` |
+| `GET /workflows/<id>` | `workflow_read` |
+| `PATCH /workflows/<id>` | `workflow_modify` |
+| `DELETE /workflows/<id>` | `workflow_delete` |
+| `POST /workflows/<id>/run` | `workflow_run` (as `startSource: "user"`) |
+| `POST /workflows/<id>/cancel` | `workflow_cancel` |
+| `GET /workflows/<id>/status` | `workflow_status` |
+| `GET /workflows/<id>/export` | `workflow_export` |
+| `POST /workflows/<id>/validate` | `workflow_validate` |
+| `GET /workflows/<id>/runs` | `workflow_run_list` |
+| `GET /workflows/<id>/runs/<runId>` | `workflow_run_get` |
+| `POST /workflows/<id>/runs/delete` `{ runIds: [...] }` | `workflow_run_delete` (US19 — the app's bulk run-log delete) |

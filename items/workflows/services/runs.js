@@ -240,6 +240,60 @@ async function deleteRuns(workflowId) {
   ACTIVE_BY_WORKFLOW.delete(workflowId);
 }
 
+/**
+ * US19 — drop ONE run's in-memory state after its persisted log is deleted.
+ * This is load-bearing, not just defensive: a settled run stays in LIVE (the
+ * post-run grace entry is never evicted), and listRuns() merges LIVE with
+ * disk — so without this, a deleted run would keep reappearing in
+ * workflow_run_list until the service restarts. Never touches an ACTIVE run:
+ * an in-progress run has no persisted log yet (persistRun runs at settle), so
+ * deleteRunLogs() reports it not_found and never gets here — the active-list
+ * check is the safety net for that invariant.
+ */
+function forgetRun(workflowId, runId) {
+  const live = LIVE.get(runId);
+  if (!live || live.workflowId !== workflowId) return;
+  if ((ACTIVE_BY_WORKFLOW.get(workflowId) || []).includes(runId)) return;
+  LIVE.delete(runId);
+  unregisterRunState(runId);
+}
+
+/**
+ * US19 — workflow_run_delete: remove individual persisted run logs, leaving
+ * the workflow definition (and every other run) untouched. Per run:
+ *   - `deleted`   — the log existed and its /api/fs delete succeeded
+ *   - `not_found` — no persisted log at that path (already deleted, an
+ *                   in-progress run, or a run id belonging to a DIFFERENT
+ *                   workflow — the path is always built from the CALLER's
+ *                   workflowId, which is the cross-workflow collision guard)
+ *   - `error`     — the log exists but the delete itself failed
+ * The existence pre-check is what makes not_found deterministic: BOS's
+ * /api/fs `op:delete` is fs.rm(..., { force: true }) under the hood, so
+ * deleting a missing path reports plain success and could never distinguish
+ * "deleted" from "was never there". Idempotent by construction — a second
+ * call for the same ids is all not_found, never an abort.
+ */
+async function deleteRunLogs(workflowId, runIds) {
+  const results = [];
+  let deleted = 0;
+  for (const runId of runIds) {
+    const path = runPath(workflowId, runId);
+    if (!(await vfs.exists(path))) {
+      results.push({ runId, status: "not_found" });
+      continue;
+    }
+    try {
+      await vfs.remove(path);
+      forgetRun(workflowId, runId);
+      deleted++;
+      results.push({ runId, status: "deleted" });
+    } catch (err) {
+      results.push({ runId, status: "error", error: err.message });
+    }
+  }
+  return { workflowId, deleted, results };
+}
+
 /** GET /run/<runId> (http-bridge.js) — live projection by run id alone. */
 function getLiveRunState(runId) {
   return getRunState(runId);
@@ -256,5 +310,6 @@ module.exports = {
   listRuns,
   getStatus,
   deleteRuns,
+  deleteRunLogs,
   generateRunId,
 };

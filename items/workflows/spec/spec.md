@@ -28,8 +28,6 @@ This spec rewrites the Workflow Manager item so the workflow tools are exposed a
 
 **Event-system integration (scope-add, 2026-09-02)**: The Workflow Manager integrates with the 034 event-notification system in two directions. **Inbound**: a workflow MAY declare a `triggers` array of event types; the service subscribes to the union via the 034 headless-handler channel (`handler_declare` over worker IPC, 034 ADR-3) and starts a fire-and-poll run on each matching event. **Outbound**: a new `event` node output type emits a configurable event into the 034 system, making workflows first-class event producers. A `workflow_event_types` tool exposes registered event types so the assistant can author trigger subscriptions without guessing. **Platform dependency**: This feature requires a 034 platform change — removing the namespace-ownership check on handler registration (034 FR-023) so that any component can subscribe to any event type. See `user-specs/core-platform/037-event-namespace-relaxation` (specify). The headless-handler channel itself (`handler_declare` over worker IPC) and the emit API are already implemented and unchanged.
 
-**Runs-table scope-add (2026-09-09)**: The workflow detail view's historical runs are surfaced as a **datetime-sorted table** (most recent first) with a per-run **checkbox**, a **select-all** header toggle, and a **bulk delete** of the selected runs (their persisted run logs + per-step outcomes; the workflow definition is untouched). A `workflow_run_delete` service tool provides agent-side parity. See User Story 19 / FR-052–055.
-
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Workflow Tools Appear as Service-Declared Native Tools (Priority: P1)
@@ -328,25 +326,6 @@ A new node output type `event` emits a configurable event to the 034 event syste
 
 ---
 
-### User Story 19 - Historical Runs Table with Selection and Bulk Delete (Priority: P2)
-
-The workflow detail view presents a workflow's historical runs as a **table** — one row per run — **sorted by datetime (most recent first)**. Each row carries a **checkbox**; a **select-all** checkbox in the table header toggles every row at once. With one or more runs selected, a **delete** action removes the selected runs (their persisted run logs + per-step outcomes) from the real VFS, leaving the workflow definition itself untouched. Deleting a run is also reachable by the assistant through a `workflow_run_delete` tool for agent-side parity.
-
-**Why this priority**: US6/FR-015/FR-017 already persist runs and give a run selector + replay, but the historical surface is a picker, not a manageable list — there is no way to see runs at a glance in chronological order or to clean up old runs. A datetime-sorted, selectable table with bulk delete makes the run history inspectable *and* manageable from the UI, and the delete tool keeps the tool surface complete (FR-014's "every lifecycle operation is tool-reachable" principle, extended to run history).
-
-**Independent Test**: In the app, open a workflow with several completed runs; confirm they appear as a table sorted newest-first by datetime; check one or more rows, use the header checkbox to select all, click delete, and confirm the selected run logs are removed from the real VFS (and the rows disappear) while the workflow definition remains. Separately, call `workflow_run_delete` for a run id and confirm the run log is removed. Testable in isolation.
-
-**Acceptance Scenarios**:
-
-1. **Given** a workflow has several historical runs, **When** the user opens its detail view, **Then** the runs are shown as a table with one row per run, sorted by datetime (most recent first), showing at minimum the run's datetime, run id, and final state.
-2. **Given** the runs table is shown, **When** the user clicks a row's checkbox, **Then** that run is selected/deselected (toggle) without affecting other rows.
-3. **Given** the runs table is shown, **When** the user clicks the header (select-all) checkbox, **Then** all rows in the table are selected; clicking it again deselects all (toggle).
-4. **Given** one or more runs are selected, **When** the user invokes delete, **Then** the selected runs' persisted run logs (+ per-step outcomes) are removed from the real VFS, the workflow definition is unchanged, and the removed rows no longer appear.
-5. **Given** no runs are selected, **When** the user attempts to delete, **Then** no run is deleted (the action is a no-op or clearly disabled).
-6. **Given** the assistant calls `workflow_run_delete` with one or more run ids, **When** the service processes it, **Then** the corresponding run logs are removed from the real VFS and the result (deleted count / errors) is returned.
-
----
-
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
@@ -368,7 +347,7 @@ The workflow detail view presents a workflow's historical runs as a **table** �
 - **FR-015**: Each workflow run MUST be persisted as a first-class run entity (with its execution-log events — including agent-execution events per FR-028 — and per-step final outcomes) to the real VFS, so completed runs remain inspectable and auditable after execution.
 - **FR-016**: The service MUST declare `workflow_run_list` (list historical runs for a workflow) and `workflow_run_get` (read a specific run's details, per-step outcomes, and event log) so historical run inspection is achievable via tools without requiring the UI.
 - **FR-024**: The `workflow_list` tool MUST return, per workflow, its `workflow_id`, a `status` field (`running` or `idle`), and a `run_id` when the workflow is running — so an agent can poll the workflow's live status via `workflow_status`/`workflow_run_get` without requiring the UI.
-- **FR-017**: The app MUST provide a run listing on the workflow detail view (now the FR-052 datetime-sorted table) and MUST render the graph + event stream replayed from a selected run's persisted log (per-step outcomes: executed/completed, failed, cancelled, neutral), distinct from the live run view.
+- **FR-017**: The app MUST provide a run selector on the workflow detail view listing that workflow's historical runs, and MUST render the graph + event stream replayed from a selected run's persisted log (per-step outcomes: executed/completed, failed, cancelled, neutral), distinct from the live run view.
 - **FR-018**: A node MUST be able to declare a list of candidate sub-agents for dynamic routing; when the node's agent executes it MUST select the appropriate candidate(s) as its last action — exactly one in the single-choice case, several in the parallel case — with the selection enforced by a retry-loop on invalid or missing selection. The selection MUST be a **structured, machine-readable signal** (FR-029); the engine MUST NOT infer a candidate from free-form prose.
 - **FR-019**: A node with exactly one child MUST delegate to it automatically, without requiring a choice action.
 - **FR-020**: Parallel execution MUST be supported as scheduling semantics: independent ready branches and Research-node fan-out run concurrently up to the workflow's `maxConcurrentSteps` cap, independent of node type.
@@ -402,10 +381,6 @@ The workflow detail view presents a workflow's historical runs as a **table** �
 - **FR-049**: The Workflow Manager app's workflow editor MUST allow the user to: (a) configure a workflow's `triggers` array (add/remove event type strings, with a "browse available types" action that calls `workflow_event_types`); and (b) author `event` nodes (event type field + payload template editor).
 - **FR-050**: The Workflow Manager skill MUST document event-triggered workflows and emit-event nodes: how to use `workflow_event_types` to discover event types, how to set a workflow's `triggers` array, and how to configure an `event` node (type + payload template with `{{nodeId.field}}` placeholders).
 - **FR-051**: The service MUST be able to subscribe to any event type via `handler_declare` without declaring `eventNamespaces` in its `service.json`. This depends on the 034 platform change (037-event-namespace-relaxation) which removes the namespace-ownership check on handler registration.
-- **FR-052**: The app MUST present a workflow's completed runs (those with a persisted run log) as a table (one row per run) on the workflow detail view, sorted by datetime in descending order (most recent first). Each row MUST show at minimum the run's datetime, run id, and final state. This table is the primary historical-run surface — it supersedes the plain run selector of FR-017 as the listing, while the selected-run replay of FR-017 is retained.
-- **FR-053**: Each run row MUST carry a checkbox to select/deselect that run (toggle), and the table header MUST carry a select-all checkbox that selects all rows when checked and deselects all when unchecked (toggle), with an indeterminate state when only some rows are selected.
-- **FR-054**: With one or more runs selected, a delete action MUST remove the selected runs' persisted run logs (+ per-step outcomes) from the real VFS, MUST leave the workflow definition unchanged, and MUST update the table (removed rows disappear). With no runs selected, delete MUST be a no-op (or disabled).
-- **FR-055**: The service MUST declare a `workflow_run_delete` tool (via `tool_declare`) that deletes one or more runs by run id, removing their persisted run logs (+ per-step outcomes) from the real VFS and returning a result (deleted count and any per-run errors). The tool MUST be gated exactly like the other workflow tools (FR-010).
 
 ### Non-Functional Requirements
 
@@ -463,8 +438,6 @@ The workflow detail view presents a workflow's historical runs as a **table** �
 - **SC-026**: An `event` node emits exactly one 034 event per execution, with the correct type, source (`appId: "workflows"`), and payload (static or template-resolved), verifiable via `query_events`.
 - **SC-027**: A workflow with event triggers is not triggered by events of a non-matching type — zero false-positive runs in 100% of non-matching event emissions.
 - **SC-028**: Concurrent event-triggered runs of the same workflow execute independently — no coalesce, no queue, no run suppression.
-- **SC-029**: A workflow's historical runs appear in the detail view as a datetime-sorted (descending) table with per-row checkboxes and a header select-all toggle, and bulk delete of the selected runs removes exactly those runs' logs from the real VFS without altering the workflow definition.
-- **SC-030**: `workflow_run_delete` removes the requested runs' logs from the real VFS with 100% accuracy (only the named runs are removed) and returns a correct deleted count / error result.
 
 ## Assumptions
 

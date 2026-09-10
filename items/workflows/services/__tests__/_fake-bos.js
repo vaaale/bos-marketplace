@@ -44,8 +44,12 @@ function createMemoryFs(initial = {}) {
  *   body })` overriding the POST /api/events response (default 201 with a
  *   generated event id). Everything POSTed to /api/events is recorded on the
  *   returned `emitted` array.
+ * @param {(path: string) => ({status?: number, body?: object} | undefined)} [opts.fsDelete]
+ *   US19 — optional override for POST /api/fs {op:"delete"}: return a
+ *   {status, body} to force that response for a given path (simulating a real
+ *   I/O failure), or undefined to fall through to the normal in-memory delete.
  */
-function startFakeBos({ vfs: initialVfs = {}, delegate, events = {} } = {}) {
+function startFakeBos({ vfs: initialVfs = {}, delegate, events = {}, fsDelete } = {}) {
   const mem = createMemoryFs(initialVfs);
   const delegateFn = delegate || ((body) => [{ type: "done", result: { output: `echo: ${body.task}` } }]);
   const emitted = [];
@@ -80,6 +84,10 @@ function startFakeBos({ vfs: initialVfs = {}, delegate, events = {} } = {}) {
           return json(res, 200, { ok: true });
         }
         if (body.op === "delete") {
+          if (typeof fsDelete === "function") {
+            const override = fsDelete(body.path);
+            if (override) return json(res, override.status ?? 500, override.body ?? { error: "delete failed" });
+          }
           const prefix = `${body.path}/`;
           for (const p of Array.from(mem.files.keys())) {
             if (p === body.path || p.startsWith(prefix)) mem.files.delete(p);

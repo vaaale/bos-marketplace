@@ -47,8 +47,8 @@ test("tools.js declares workflow_event_types (US17/FR-044)", async (t) => {
     assert.match(declaration.description, /registered in the BOS event system/);
   });
 
-  await t.test("it brings the declared tool surface to 13", () => {
-    assert.equal(DECLARATIONS.length, 13);
+  await t.test("it is part of the 14-tool declared surface (13 + US19's workflow_run_delete)", () => {
+    assert.equal(DECLARATIONS.length, 14);
   });
 });
 

@@ -147,6 +147,20 @@ export const api = {
   runGet: (id: string, runId: string, since?: number) =>
     call(`workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}${since ? `?since=${since}` : ""}`),
   /**
+   * US19 — bulk-delete persisted run logs (the workflow definition is never
+   * touched). Same `workflow_run_delete` handler the assistant's tool calls
+   * reach, exposed as POST /workflows/<id>/runs/delete on the service's own
+   * REST bridge. Through `call()` this rides the app's existing invoke channel
+   * (direct fetch, or the window.__bos services broker under `services:read`)
+   * — the app deliberately holds no fs:write capability.
+   */
+  runDelete: (id: string, runIds: string[]) =>
+    call(`workflows/${encodeURIComponent(id)}/runs/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ runIds }),
+    }),
+  /**
    * The service's live run projection, addressed by runId alone
    * (services/engine/run-state.js + http-bridge.js's GET /run/<runId>). This
    * is the single source of truth the trajectory panel tails: `since` is the

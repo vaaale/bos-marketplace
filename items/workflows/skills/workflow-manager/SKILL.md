@@ -7,7 +7,7 @@ description: Build, run, and inspect multi-step agent workflows (DAGs of delegat
 
 The Workflow Manager service owns a complete workflow engine — a node model, a
 parallel scheduler, dynamic routing, and persistence — and exposes it to you
-as 13 native tools (see the tool table at the end of this skill). Use this
+as 14 native tools (see the tool table at the end of this skill). Use this
 skill whenever a task calls for a multi-step, possibly-branching,
 possibly-parallel piece of work that's worth saving and re-running rather than
 doing once inline — and whenever that work should start **when something
@@ -330,6 +330,41 @@ per-step outcomes and event log — useful for "why did step X fail last time"
 or "what did the research step find" after the fact, without needing the app
 open.
 
+## Deleting historical runs — `workflow_run_delete`
+
+`workflow_run_delete` removes one or more of a workflow's persisted **run
+logs**. The workflow definition and all of its future runs are completely
+intact — this only prunes history.
+
+- Input: `{ "workflowId": "<id>", "runIds": ["<runId>", ...] }` — a non-empty,
+  duplicate-free array of run ids, all belonging to that one workflow.
+- Result: `{ workflowId, deleted, results: [{ runId, status, error? }] }` —
+  `deleted` counts the runs whose log was actually removed; per run, `status`
+  is `"deleted"`, `"not_found"` (no such log — already deleted, still in
+  progress, or a run of a different workflow; not counted in `deleted`), or
+  `"error"` (the log exists but its delete failed, with `error` explaining
+  why). It is idempotent: re-deleting the same ids just reports `not_found`
+  and never aborts the batch.
+- **Terminal runs only.** An in-progress run has no persisted log yet, so it
+  cannot be deleted — use `workflow_cancel` to stop it first (it then persists
+  as `cancelled` and becomes deletable like any other historical run).
+
+**Do not confuse it with `workflow_delete` — the blast radius is different.**
+`workflow_run_delete` removes selected run logs and nothing else; the workflow
+keeps existing and keeps running. `workflow_delete` removes the ENTIRE
+workflow: its definition, its trigger subscriptions, and ALL of its runs, and
+cannot be undone. When a user asks to "clean up old runs", they mean
+`workflow_run_delete`; reach for `workflow_delete` only when they want the
+workflow itself gone.
+
+In the app, the same operation is the detail view's **historical runs table**:
+runs are listed newest-first with their datetime, run id, final-state chip and
+duration; each row has a checkbox (the header checkbox selects/deselects all,
+showing a mixed state for a partial selection), and the **Delete (n)** button
+removes the selected run logs immediately — no confirmation dialog — then
+confirms "workflow definition untouched". Clicking a row (not its checkbox)
+still opens the run's replay. In-progress runs never appear in the table.
+
 ## Dry-run mode — validate a workflow in seconds, not an hour
 
 Before committing to a long run, validate the DAG, the branch routing, and
@@ -422,9 +457,10 @@ to dependent steps as structured data automatically.
 | `workflow_run` | Start a run. Asynchronous — returns `{ runId }` at once. Accepts `dryRun` + `fixtures`. |
 | `workflow_status` | The live run projection: per-step status, attempts, current action, sub-agent fan-out, agent trace, and run provenance. |
 | `workflow_cancel` | Stop the in-progress run. |
-| `workflow_delete` | Delete a workflow (and unsubscribe its triggers). |
+| `workflow_delete` | Delete the ENTIRE workflow — definition, trigger subscriptions, and ALL its runs. Cannot be undone. |
 | `workflow_export` | The workflow as portable JSON. |
 | `workflow_validate` | DAG acyclicity, node shape, candidate topology, trigger types, event-node namespace and template references. |
 | `workflow_run_list` | A workflow's past runs, newest first, each with `startSource`/`triggerEventType`/`triggerEventId`. |
 | `workflow_run_get` | One run's full detail: per-step outcomes, agent traces, routing selections, and the complete event log. |
+| `workflow_run_delete` | Delete selected historical run LOGS only (`{ workflowId, runIds[] }` → `{ workflowId, deleted, results[] }`) — the workflow definition is untouched; in-progress runs are not deletable. |
 | `workflow_event_types` | **(event authoring)** The event types BOS's kernel currently has handlers for — `[{ type, handlerCount, displayName }]`. Call this before setting `triggers`. |

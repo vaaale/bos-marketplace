@@ -159,35 +159,13 @@
         <div id="detail-graph" class="overflow-x-auto rounded-lg border border-white/10 bg-white/[0.02] p-2"></div>
       </div>
       <div>
-        <div class="mb-2 flex flex-wrap items-center gap-2">
-          <h3 class="text-xs font-semibold uppercase tracking-wide text-white/50">Historical runs</h3>
-          <span class="rounded bg-white/10 px-1 py-0.5 font-mono text-[9px] text-white/50">workflow_run_list</span>
-          <span class="rounded bg-white/10 px-1 py-0.5 font-mono text-[9px] text-white/50" title="Rows are sorted by datetime, most recent first">sorted: datetime ↓</span>
-          <div class="flex-1"></div>
-          <button id="runs-delete-btn" onclick="deleteSelectedRuns()" disabled class="flex items-center gap-1 rounded bg-red-400/20 px-2 py-1.5 text-xs font-medium text-red-200 hover:bg-red-400/30 opacity-40 cursor-not-allowed" title="Select at least one run to enable delete"><i data-lucide="trash-2" class="h-3.5 w-3.5"></i> Delete <span id="runs-delete-count" class="font-mono">(0)</span><span class="font-mono text-[9px] text-white/30">workflow_run_delete</span></button>
+        <h3 class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-white/50">Historical runs<span class="rounded bg-white/10 px-1 py-0.5 font-mono text-[9px] text-white/50">workflow_run_list</span></h3>
+        <div class="flex flex-wrap items-center gap-2">
+          <button id="run-select-6" onclick="openHistoryRun(6)" class="run-select-btn flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 hover:bg-white/10"><span class="font-mono font-medium text-white/80">#6</span><span class="font-mono text-[11px] text-white/40">16:20:04 · 2025-06-02</span><span class="flex items-center gap-1 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[10px] text-emerald-100"><i data-lucide="check-circle-2" class="h-2.5 w-2.5"></i> completed</span></button>
+          <button id="run-select-5" onclick="openHistoryRun(5)" class="run-select-btn flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 hover:bg-white/10"><span class="font-mono font-medium text-white/80">#5</span><span class="font-mono text-[11px] text-white/40">11:05:47 · 2025-06-01</span><span class="flex items-center gap-1 rounded-full border border-red-400/30 bg-red-400/10 px-1.5 py-0.5 text-[10px] text-red-100"><i data-lucide="alert-triangle" class="h-2.5 w-2.5"></i> failed</span></button>
+          <button id="run-select-4" onclick="openHistoryRun(4)" class="run-select-btn flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 hover:bg-white/10"><span class="font-mono font-medium text-white/80">#4</span><span class="font-mono text-[11px] text-white/40">09:12:33 · 2025-05-30</span><span class="flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-100"><i data-lucide="ban" class="h-2.5 w-2.5"></i> cancelled</span></button>
+          <button id="run-select-3" onclick="openHistoryRun(3)" class="run-select-btn flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 hover:bg-white/10"><span class="font-mono font-medium text-white/80">#3</span><span class="font-mono text-[11px] text-white/40">18:02:19 · 2025-05-29</span><span class="flex items-center gap-1 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[10px] text-emerald-100"><i data-lucide="check-circle-2" class="h-2.5 w-2.5"></i> completed</span></button>
         </div>
-        <div class="mb-2 flex items-start gap-1.5 rounded-md border border-dashed border-violet-400/25 bg-violet-400/[0.04] px-2.5 py-1.5 text-[10px] leading-4 text-violet-100/70">
-          <i data-lucide="info" class="mt-0.5 h-3 w-3 shrink-0"></i>
-          <span><b class="text-violet-100/90">Mockup note</b> — the header box is a <b class="text-violet-100/90">select-all toggle</b>. Each row's <b class="text-violet-100/90">checkbox = select to delete</b> (drives the Delete count). <b class="text-violet-100/90">Clicking the row (or its eye) = Inspect</b> — opens that run's replay (graph + node trajectory panel), which is <b class="text-violet-100/90">independent</b> of the delete selection. The violet-tinted row is the run whose replay is currently open. With nothing selected, Delete is dimmed/disabled.</span>
-        </div>
-        <div class="overflow-hidden rounded-lg border border-white/10 bg-white/[0.02]">
-          <table class="w-full border-collapse text-xs">
-            <thead>
-              <tr class="bg-white/[0.04] text-left text-[10px] uppercase tracking-wide text-white/40">
-                <th class="w-8 px-2 py-1.5">
-                  <input type="checkbox" id="run-selectall" onchange="toggleSelectAll()" class="h-3.5 w-3.5 cursor-pointer accent-violet-500 align-middle" title="Select / deselect all runs">
-                </th>
-                <th class="px-2 py-1.5 font-semibold">Datetime</th>
-                <th class="px-2 py-1.5 font-semibold">Run</th>
-                <th class="px-2 py-1.5 font-semibold">Final state</th>
-                <th class="px-2 py-1.5 font-semibold">Duration</th>
-                <th class="w-16 px-2 py-1.5 text-right font-semibold">Inspect</th>
-              </tr>
-            </thead>
-            <tbody id="runs-tbody"></tbody>
-          </table>
-        </div>
-        <div id="runs-delete-note" class="hidden mt-1.5 flex items-center gap-1.5 rounded-md border border-emerald-400/20 bg-emerald-400/[0.06] px-2.5 py-1.5 text-[11px] text-emerald-100"></div>
       </div>
     </div>
 
@@ -256,7 +234,6 @@
         <button id="hsel-5" onclick="openHistoryRun(5)" class="h-select-btn flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 hover:bg-white/10"><span class="font-mono font-medium text-white/80">#5</span><span class="rounded-full border border-red-400/30 bg-red-400/10 px-1.5 py-0.5 text-[10px] text-red-100">failed</span></button>
         <button id="hsel-4" onclick="openHistoryRun(4)" class="h-select-btn flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 hover:bg-white/10"><span class="font-mono font-medium text-white/80">#4</span><span class="rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-100">cancelled</span></button>
         <button id="hsel-3" onclick="openHistoryRun(3)" class="h-select-btn flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 hover:bg-white/10"><span class="font-mono font-medium text-white/80">#3</span><span class="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[10px] text-emerald-100">completed</span></button>
-        <button id="hsel-2" onclick="openHistoryRun(2)" class="h-select-btn flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 hover:bg-white/10"><span class="font-mono font-medium text-white/80">#2</span><span class="rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-100">completed_with_warnings</span></button>
       </div>
 
       <div class="flex min-h-0 flex-1 items-stretch gap-0">
@@ -494,33 +471,6 @@
           agent:{ prompt:'Compose a monthly summary email to ops@acme.co from the analytics data.', thinking:'Total $2.41M, top region West.',
                   toolCalls:[{name:'send_email', args:'{ to: "ops@acme.co" }', result:'delivered', ok:true }], response:'summary.eml → ops@acme.co' },
           output:'<div class="font-mono text-[11px] text-white/70">summary.eml <span class="text-white/40">→ ops@acme.co</span></div>' }
-      } },
-    2: { badge:'run #2', status:{ingest:'completed',clean:'completed',transform:'completed',load:'completed',validate:'completed',report:'completed'},
-      nodes:{
-        ingest:{events:[{k:'start',t:'12:44:09',label:'step.start'},{k:'complete',t:'12:44:10',label:'step.complete',meta:'1.0s'}],
-          agent:{ prompt:'Fetch the sales CSV export from the warehouse and return its raw content.', thinking:null,
-                  toolCalls:[{name:'fetch_csv', args:'{ path: "/warehouse/sales_2026_08.csv" }', result:'12,480 rows · 1.9 MB', ok:true }], response:'raw.csv (12,480 rows)' },
-          output:'<div class="font-mono text-[11px] text-white/70">raw.csv <span class="text-white/40">(12,480 rows)</span></div>' },
-        clean:{events:[{k:'start',t:'12:44:10',label:'step.start'},{k:'complete',t:'12:44:13',label:'step.complete',meta:'3.0s'}],
-          agent:{ prompt:'Deduplicate and normalise the raw sales CSV; return the cleaned CSV.', thinking:'Dropped 2 duplicate invoice ids.',
-                  toolCalls:[{name:'dedupe', args:'{ by: "invoice_id" }', result:'2 duplicates dropped', ok:true }], response:'cleaned.csv (12,478 rows)' },
-          output:'<div class="font-mono text-[11px] text-white/70">cleaned.csv <span class="text-white/40">(12,478 rows)</span></div>' },
-        transform:{events:[{k:'start',t:'12:44:13',label:'step.start'},{k:'complete',t:'12:44:20',label:'step.complete',meta:'7.0s'}],
-          agent:{ prompt:'Map each row to the analytics schema; every record MUST contain date, amount, region, sku.', thinking:'Mapped all rows; blank amounts defaulted to 0.',
-                  toolCalls:[{name:'map_rows', args:'{ schema: "analytics.v2", fill: { amount: 0 } }', result:'12,478 records', ok:true }], response:'mapped.json (12,478 records)' },
-          output:'<div class="font-mono text-[11px] text-white/70">mapped.json <span class="text-white/40">(12,478 records)</span></div>' },
-        load:{events:[{k:'start',t:'12:44:20',label:'step.start'},{k:'complete',t:'12:44:21',label:'step.complete',meta:'0.8s'}],
-          agent:{ prompt:'Load the mapped JSON into analytics.sales_month.', thinking:null,
-                  toolCalls:[{name:'db_insert', args:'{ table: "analytics.sales_month", rows: 12478 }', result:'12,478 rows loaded', ok:true }], response:'db.loaded 12,478 rows' },
-          output:'<div class="font-mono text-[11px] text-white/70">db.loaded <span class="text-white/40">12,478 rows</span></div>' },
-        validate:{events:[{k:'start',t:'12:44:21',label:'step.start'},{k:'complete',t:'12:44:22',label:'step.complete',meta:'1.1s'}],
-          agent:{ prompt:'Validate the loaded records against analytics.v2. Report violations and non-blocking warnings.', thinking:'Schema valid, but 3 rows are future-dated and 1 region code is unknown — non-blocking warnings.',
-                  toolCalls:[{name:'schema_check', args:'{ schema: "analytics.v2" }', result:'0 errors · 3 warnings', ok:true }], response:'✓ 0 errors, 3 warnings (non-blocking)' },
-          output:'<div class="font-mono text-[11px] text-amber-200/90">3 warnings: future-dated timestamps (×3) · unknown region code (×1)</div>' },
-        report:{events:[{k:'start',t:'12:44:22',label:'step.start'},{k:'complete',t:'12:44:25',label:'step.complete',meta:'2.7s'}],
-          agent:{ prompt:'Compose the monthly summary email to ops@acme.co from the analytics data.', thinking:'Total $2.41M, top region West. Added the 3 data-quality warnings to the email footer.',
-                  toolCalls:[{name:'send_email', args:'{ to: "ops@acme.co" }', result:'delivered', ok:true }], response:'summary.eml → ops@acme.co' },
-          output:'<div class="font-mono text-[11px] text-white/70">summary.eml <span class="text-white/40">→ ops@acme.co</span></div>' }
       } }
   };
 
@@ -665,8 +615,7 @@
     6:{label:'#6',time:'16:20:04',date:'2025-06-02',state:'completed',stateChip:'border-emerald-400/30 bg-emerald-400/10 text-emerald-100',icon:'check-circle-2'},
     5:{label:'#5',time:'11:05:47',date:'2025-06-01',state:'failed',stateChip:'border-red-400/30 bg-red-400/10 text-red-100',icon:'alert-triangle'},
     4:{label:'#4',time:'09:12:33',date:'2025-05-30',state:'cancelled',stateChip:'border-amber-400/30 bg-amber-400/10 text-amber-100',icon:'ban'},
-    3:{label:'#3',time:'18:02:19',date:'2025-05-29',state:'completed',stateChip:'border-emerald-400/30 bg-emerald-400/10 text-emerald-100',icon:'check-circle-2'},
-    2:{label:'#2',time:'12:44:08',date:'2025-05-27',state:'completed_with_warnings',stateChip:'border-amber-400/30 bg-amber-400/10 text-amber-100',icon:'alert-triangle'}
+    3:{label:'#3',time:'18:02:19',date:'2025-05-29',state:'completed',stateChip:'border-emerald-400/30 bg-emerald-400/10 text-emerald-100',icon:'check-circle-2'}
   };
   function openHistoryRun(id) {
     currentHistory = id;
@@ -680,12 +629,11 @@
     chip.innerHTML=`<i data-lucide="${meta.icon}" class="h-2.5 w-2.5"></i> ${meta.state}`;
     document.getElementById('history-meta').innerHTML=`<span>run ${meta.label}</span><span>·</span><span>${meta.time} · ${meta.date}</span>`;
     document.getElementById('history-panel-badge').textContent=`run ${meta.label}`;
-    const preselect=(id===5)?'transform':(id===4?'clean':(id===2?'validate':'report'));
+    const preselect=(id===5)?'transform':(id===4?'clean':'report');
     renderTrajectoryBody('history-panel-body',id,preselect);
     document.getElementById('history-panel').classList.remove('hidden');
     renderGraph('history-graph',run.status,preselect,'selectHistNode');
     if(current!=='history'){ document.getElementById(views[current]).classList.add('hidden'); document.getElementById(views['history']).classList.remove('hidden'); current='history'; }
-    renderRunsTable();
     lucide.createIcons();
   }
 
@@ -725,87 +673,10 @@
   setupResize('run-resize','run-panel');
   setupResize('history-resize','history-panel');
 
-  /* ================= US19 / FR-052–055 — historical runs table (select-all + bulk delete + inspect) ================= */
-  let RUNS = [
-    { id:6, date:'2025-06-02', time:'16:20:04', state:'completed',               dur:'20s' },
-    { id:5, date:'2025-06-01', time:'11:05:47', state:'failed',                  dur:'14s' },
-    { id:4, date:'2025-05-30', time:'09:12:33', state:'cancelled',               dur:'8s'  },
-    { id:3, date:'2025-05-29', time:'18:02:19', state:'completed',               dur:'20s' },
-    { id:2, date:'2025-05-27', time:'12:44:08', state:'completed_with_warnings', dur:'17s' }
-  ];
-  const RUN_STATE = {
-    completed:               { label:'completed',               cls:'border-emerald-400/30 bg-emerald-400/10 text-emerald-100', icon:'check-circle-2' },
-    completed_with_warnings: { label:'completed_with_warnings', cls:'border-amber-400/30 bg-amber-400/10 text-amber-100',     icon:'alert-triangle' },
-    failed:                  { label:'failed',                  cls:'border-red-400/30 bg-red-400/10 text-red-100',         icon:'x-circle' },
-    cancelled:               { label:'cancelled',               cls:'border-amber-400/30 bg-amber-400/10 text-amber-100',   icon:'ban' }
-  };
-  let runsSelected = new Set();
-  function runStateChip(state){
-    const s = RUN_STATE[state] || RUN_STATE.completed;
-    return `<span class="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] ${s.cls}"><i data-lucide="${s.icon}" class="h-2.5 w-2.5"></i> ${s.label}</span>`;
-  }
-  function updateSelectAll(){
-    const sa = document.getElementById('run-selectall'); if(!sa) return;
-    const total = RUNS.length;
-    sa.checked = total>0 && runsSelected.size===total;
-    sa.indeterminate = runsSelected.size>0 && runsSelected.size<total;
-  }
-  function updateDeleteBtn(){
-    const btn = document.getElementById('runs-delete-btn'); if(!btn) return;
-    const n = runsSelected.size, disabled = n===0;
-    const label = document.getElementById('runs-delete-count'); if(label) label.textContent = '('+n+')';
-    btn.classList.toggle('opacity-40', disabled);
-    btn.classList.toggle('cursor-not-allowed', disabled);
-    btn.disabled = disabled;
-    btn.title = disabled ? 'Select at least one run to enable delete' : 'Delete '+n+' selected run'+(n>1?'s':'')+' (run logs only — workflow definition untouched)';
-  }
-  function showDeleteFlash(n){
-    const note = document.getElementById('runs-delete-note'); if(!note) return;
-    note.classList.remove('hidden');
-    note.innerHTML = `<i data-lucide="check-circle-2" class="h-3 w-3"></i> Deleted ${n} run log${n>1?'s':''} from <span class="font-mono text-white/60">/Workflows/.runs/</span> — workflow definition untouched.`;
-    lucide.createIcons();
-    clearTimeout(window.__delNoteT); window.__delNoteT = setTimeout(()=>note.classList.add('hidden'), 3500);
-  }
-  function renderRunsTable(){
-    const tb = document.getElementById('runs-tbody'); if(!tb) return;
-    tb.innerHTML = RUNS.map(r=>{
-      const checked = runsSelected.has(r.id);
-      const inspected = (r.id === currentHistory);
-      return `<tr id="runrow-${r.id}" onclick="openHistoryRun(${r.id})" class="cursor-pointer border-t border-white/10 ${inspected?'bg-violet-400/[0.08]':''} hover:bg-white/[0.04]">
-        <td class="w-8 px-2 py-1.5" onclick="event.stopPropagation()">
-          <input type="checkbox" ${checked?'checked':''} onchange="toggleRun(${r.id})" class="h-3.5 w-3.5 cursor-pointer accent-violet-500 align-middle" title="Select to delete">
-        </td>
-        <td class="whitespace-nowrap px-2 py-1.5 font-mono text-[11px] text-white/70">${r.time} · ${r.date}</td>
-        <td class="px-2 py-1.5"><span class="font-mono font-medium text-white/80">#${r.id}</span></td>
-        <td class="px-2 py-1.5">${runStateChip(r.state)}</td>
-        <td class="px-2 py-1.5 font-mono text-[11px] text-white/50">${r.dur}</td>
-        <td class="w-16 px-2 py-1.5 text-right" onclick="event.stopPropagation()">
-          <button onclick="openHistoryRun(${r.id})" class="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="Inspect run — opens the replay (graph + trajectory), independent of delete selection"><i data-lucide="eye" class="h-3.5 w-3.5"></i></button>
-        </td>
-      </tr>`;
-    }).join('');
-    updateSelectAll(); updateDeleteBtn();
-    lucide.createIcons();
-  }
-  function toggleRun(id){ runsSelected.has(id) ? runsSelected.delete(id) : runsSelected.add(id); renderRunsTable(); }
-  function toggleSelectAll(){ if(runsSelected.size===RUNS.length) runsSelected.clear(); else RUNS.forEach(r=>runsSelected.add(r.id)); renderRunsTable(); }
-  function deleteSelectedRuns(){
-    if(runsSelected.size===0) return;
-    const n = runsSelected.size;
-    const deletedOpen = runsSelected.has(currentHistory);
-    RUNS = RUNS.filter(r=>!runsSelected.has(r.id));
-    runsSelected.clear();
-    if(deletedOpen){ currentHistory = null; if(current==='history') go('detail'); }
-    renderRunsTable();
-    showDeleteFlash(n);
-  }
-
-  /* ================= init ================= */
   renderGraph('detail-graph',{ingest:'pending',clean:'pending',transform:'pending',load:'pending',validate:'pending',report:'pending'},null,null);
   renderGraph('run-graph',TRAJ.run7.status,'transform','selectRunNode'); runSelected='transform'; renderTrajectoryBody('run-panel-body','run7','transform');
   currentHistory=5; renderGraph('history-graph',TRAJ[5].status,'transform','selectHistNode'); histSelected='transform'; renderTrajectoryBody('history-panel-body',5,'transform');
   document.getElementById('history-panel-badge').textContent='run #5';
-  renderRunsTable();
   lucide.createIcons();
 </script>
 </body>

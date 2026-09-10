@@ -505,3 +505,120 @@ test("handlers.js — US16 event integration", async (t) => {
     for (const mod of MODS) delete require.cache[require.resolve(mod)];
   });
 });
+
+// ===========================================================================
+// Scope-add US19 — workflow_run_delete: individual run-log deletion with
+// per-run deleted/not_found/error outcomes, idempotency, the workflow-scope
+// guard, and the "workflow definition untouched" guarantee.
+// ===========================================================================
+test("handlers.js — US19 workflow_run_delete", async (t) => {
+  async function untilReady(fn, { timeoutMs = 4000, intervalMs = 10 } = {}) {
+    const start = Date.now();
+    for (;;) {
+      const result = await fn();
+      if (result) return result;
+      if (Date.now() - start > timeoutMs) throw new Error("untilReady: timed out");
+      await new Promise((res) => setTimeout(res, intervalMs));
+    }
+  }
+
+  const bos = await startFakeBos({
+    delegate: (body) => [{ type: "done", result: { output: `handled: ${body.task}` } }],
+    // Any path containing "run-io-fails" 500s on delete — the error-path seam.
+    fsDelete: (path) => (path.includes("run-io-fails") ? { status: 500, body: { error: "disk on fire" } } : undefined),
+  });
+  pointVfsAt(bos);
+  const MODS = ["../vfs", "../engine/store", "../engine/executor", "../engine/scheduler", "../runs", "../handlers"];
+  for (const mod of MODS) delete require.cache[require.resolve(mod)];
+  const { makeHandlers } = require("../handlers");
+  const handlers = makeHandlers({ log: () => {}, defaultMaxConcurrentSteps: 5 });
+
+  const SIMPLE = { name: "Deletable", steps: [{ id: "a", outputType: "ag-ui", input: 1 }] };
+
+  /** Run to a persisted log: persistRun happens strictly AFTER the run settles
+   *  (and after the active entry clears), so once the file is on the fake VFS
+   *  the next sequential workflow_run cannot hit the single-active-run guard. */
+  async function runToCompletion(workflowId) {
+    const { runId } = await handlers.workflow_run({ workflowId });
+    await untilReady(() => (bos.files.has(`/Workflows/.runs/${workflowId}/${runId}.json`) ? true : null));
+    return runId;
+  }
+
+  let workflowId;
+
+  await t.test("deletes exactly the named run logs; the workflow definition and every other run are untouched", async () => {
+    const created = await handlers.workflow_create({ workflow: SIMPLE });
+    workflowId = created.workflow_id;
+    const defPath = `/Workflows/${workflowId}-workflow.json`;
+    const defBefore = bos.files.get(defPath);
+    const run1 = await runToCompletion(workflowId);
+    const run2 = await runToCompletion(workflowId);
+    const run3 = await runToCompletion(workflowId);
+
+    const result = await handlers.workflow_run_delete({ workflowId, runIds: [run1, run2] });
+    assert.equal(result.workflowId, workflowId);
+    assert.equal(result.deleted, 2);
+    assert.deepEqual(result.results, [
+      { runId: run1, status: "deleted" },
+      { runId: run2, status: "deleted" },
+    ]);
+    assert.equal(bos.files.has(`/Workflows/.runs/${workflowId}/${run1}.json`), false);
+    assert.equal(bos.files.has(`/Workflows/.runs/${workflowId}/${run2}.json`), false);
+    assert.equal(bos.files.has(`/Workflows/.runs/${workflowId}/${run3}.json`), true, "the un-named run survives");
+    assert.equal(bos.files.get(defPath), defBefore, "the <id>-workflow.json definition is byte-identical");
+
+    // Gone from workflow_run_list too — which exercises runs.forgetRun(): a
+    // settled run stays in the in-memory LIVE map, and listRuns() merges LIVE
+    // with disk, so without the forget the deleted runs would resurrect here.
+    const list = await handlers.workflow_run_list({ workflowId });
+    assert.deepEqual(list.map((r) => r.runId), [run3]);
+  });
+
+  await t.test("idempotent: re-deleting an already-deleted run is not_found, not an abort; duplicate ids count once", async () => {
+    const run = await runToCompletion(workflowId);
+    const first = await handlers.workflow_run_delete({ workflowId, runIds: [run, run] });
+    assert.equal(first.deleted, 1, "a duplicated id is deleted (and counted) exactly once");
+    assert.deepEqual(first.results, [{ runId: run, status: "deleted" }]);
+
+    const again = await handlers.workflow_run_delete({ workflowId, runIds: [run] });
+    assert.equal(again.deleted, 0);
+    assert.deepEqual(again.results, [{ runId: run, status: "not_found" }]);
+  });
+
+  await t.test("a mixed batch reports per-run outcomes and still deletes what it can", async () => {
+    const runA = await runToCompletion(workflowId);
+    // Plant a log whose /api/fs delete fails (the fake BOS 500s this path).
+    const errPath = `/Workflows/.runs/${workflowId}/run-io-fails.json`;
+    bos.files.set(errPath, JSON.stringify({ runId: "run-io-fails" }));
+
+    const result = await handlers.workflow_run_delete({ workflowId, runIds: [runA, "run-io-fails", "run-never-existed"] });
+    assert.equal(result.deleted, 1);
+    assert.deepEqual(result.results[0], { runId: runA, status: "deleted" });
+    assert.equal(result.results[1].runId, "run-io-fails");
+    assert.equal(result.results[1].status, "error");
+    assert.match(result.results[1].error, /disk on fire/);
+    assert.deepEqual(result.results[2], { runId: "run-never-existed", status: "not_found" });
+    assert.equal(bos.files.has(errPath), true, "a failed delete leaves the log in place");
+    bos.files.delete(errPath);
+  });
+
+  await t.test("workflow-scope guard: a run id living under a DIFFERENT workflow's dir is not reached", async () => {
+    const other = await handlers.workflow_create({ workflow: { name: "Other", steps: [{ id: "a", outputType: "ag-ui", input: 1 }] } });
+    const otherRun = await runToCompletion(other.workflow_id);
+
+    // The path is built from the CALLER's workflowId, so the other workflow's
+    // run resolves to a non-existent path — not_found, never a cross-delete.
+    const result = await handlers.workflow_run_delete({ workflowId, runIds: [otherRun] });
+    assert.deepEqual(result.results, [{ runId: otherRun, status: "not_found" }]);
+    assert.equal(bos.files.has(`/Workflows/.runs/${other.workflow_id}/${otherRun}.json`), true, "the other workflow's log is untouched");
+  });
+
+  await t.test("defensive arg validation: missing workflowId, non-array / empty / non-string runIds are all rejected", async () => {
+    await assert.rejects(() => handlers.workflow_run_delete({ runIds: ["x"] }), /workflowId is required/);
+    await assert.rejects(() => handlers.workflow_run_delete({ workflowId, runIds: "run-1" }), /non-empty array/);
+    await assert.rejects(() => handlers.workflow_run_delete({ workflowId, runIds: [] }), /non-empty array/);
+    await assert.rejects(() => handlers.workflow_run_delete({ workflowId, runIds: ["ok", ""] }), /non-empty strings/);
+  });
+
+  await bos.close();
+});

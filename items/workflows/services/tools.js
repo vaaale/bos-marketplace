@@ -1,4 +1,5 @@
-// tools.js — the 13 workflow_* tool declarations (FR-002/014/016/024/044), the
+// tools.js — the 14 workflow_* tool declarations (FR-002/014/016/024/044 +
+// US19's workflow_run_delete), the
 // 039-compliant native-tool surface replacing the retired BOS-source
 // `workflowTools()`. Declarations only — see handlers.js for the
 // implementations `index.js` wires each `name` to via tool_call dispatch.
@@ -101,10 +102,25 @@ const DECLARATIONS = [
       "Returns the list of event types currently registered in the BOS event system, for use when authoring workflow triggers. Each entry includes the type string, the count of registered handlers, and a display name.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   }),
+  // US19 — a writer (mutates persisted run logs), so NOT parallelSafe.
+  {
+    name: "workflow_run_delete",
+    description:
+      "Delete one or more historical workflow runs by id. Removes the persisted run logs from the real VFS. The workflow definition itself is unchanged. In-progress runs are not deletable (they have no persisted run log yet).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string", minLength: 1 },
+        runIds: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1, uniqueItems: true },
+      },
+      required: ["workflowId", "runIds"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 /**
- * The structured branch-selection signal (FR-029). This is NOT one of the 12
+ * The structured branch-selection signal (FR-029). This is NOT one of the 14
  * workflow_* tools the service declares to the assistant — it is injected
  * into a ROUTING node's own ephemeral agent spec by executor.js, so the node's
  * agent has a machine-readable way to name the candidate(s) it chose and

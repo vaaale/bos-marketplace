@@ -1,6 +1,6 @@
 // http-bridge.js — a small loopback REST server the Workflow Manager APP
 // talks to directly (list/read/create/modify/run/status/cancel/delete/
-// export/validate/run_list/run_get/event_types), bound on the service's own configurable
+// export/validate/run_list/run_get/run_delete/event_types), bound on the service's own configurable
 // port (config/workflows.json's `port`, default 0). This is separate from
 // the 039 tool_call/worker-IPC path the assistant uses — the app is not the
 // assistant, so it needs an ordinary HTTP surface, mirroring the
@@ -114,6 +114,17 @@ function createRequestHandler({ handlers, getRuntime }) {
         if (action === "validate" && req.method === "POST") return send(res, 200, await handlers.workflow_validate({ workflowId }));
         if (action === "runs" && req.method === "GET") return send(res, 200, await handlers.workflow_run_list({ workflowId }));
         return send(res, 404, { error: `no such route: ${req.method} ${url.pathname}` });
+      }
+
+      // POST /workflows/<id>/runs/delete { runIds: [...] } — US19's bulk run-log
+      // delete, the app's face of `workflow_run_delete` (the same handlers.js
+      // function the assistant's tool_call reaches — one delete implementation,
+      // two entry points). This is what the app calls via window.__bos.services
+      // .call under `services:read`; the app never holds fs:write.
+      if (parts.length === 4 && parts[0] === "workflows" && parts[2] === "runs" && parts[3] === "delete" && req.method === "POST") {
+        const workflowId = decodeURIComponent(parts[1]);
+        const body = await readBody(req);
+        return send(res, 200, await handlers.workflow_run_delete({ workflowId, runIds: body.runIds }));
       }
 
       if (parts.length === 4 && parts[0] === "workflows" && parts[2] === "runs" && req.method === "GET") {

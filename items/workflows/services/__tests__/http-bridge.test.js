@@ -40,6 +40,21 @@ function getJson(url) {
   });
 }
 
+function postJson(url, bodyObj) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(bodyObj);
+    const req = http.request(url, { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } }, (res) => {
+      let raw = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => (raw += c));
+      res.on("end", () => resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : null }));
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 test("http-bridge.js", async (t) => {
   const state = createRunState({ runId: "run-bridge-1", workflowId: "wf-bridge", workflowName: "Bridge" }).seedSteps([{ id: "a" }, { id: "b" }]);
   registerRunState(state);
@@ -97,6 +112,22 @@ test("http-bridge.js", async (t) => {
     assert.equal(status, 200);
     assert.equal(eventTypesCalls, 1);
     assert.deepEqual(body, [{ type: "com.bos.files.created", handlerCount: 2, displayName: "File created" }]);
+  });
+
+  // US19 — the app's face of workflow_run_delete: same handler, REST transport.
+  await t.test("POST /workflows/<id>/runs/delete forwards { workflowId, runIds } to workflow_run_delete", async () => {
+    const calls = [];
+    const deleting = await startBridge({
+      workflow_run_delete: async (args) => {
+        calls.push(args);
+        return { workflowId: args.workflowId, deleted: 1, results: [{ runId: args.runIds[0], status: "deleted" }] };
+      },
+    });
+    const { status, body } = await postJson(`${deleting.base}/workflows/wf-bridge/runs/delete`, { runIds: ["run-1"] });
+    assert.equal(status, 200);
+    assert.deepEqual(calls, [{ workflowId: "wf-bridge", runIds: ["run-1"] }]);
+    assert.deepEqual(body, { workflowId: "wf-bridge", deleted: 1, results: [{ runId: "run-1", status: "deleted" }] });
+    await deleting.close();
   });
 
   await t.test("an event-types handler failure surfaces as a 400 with its message", async () => {

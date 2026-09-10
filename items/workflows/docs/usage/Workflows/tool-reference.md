@@ -1,6 +1,6 @@
 # Workflow Manager — Tool Reference
 
-The service declares 13 tools at startup via `tool_declare` (039-compliant —
+The service declares 14 tools at startup via `tool_declare` (039-compliant —
 `deploymentMode: "tools"` in `services/service.json`). They are gated exactly
 like built-in tools (allowlist/deferred approval) and disappear from the
 registry the instant the service stops or is uninstalled.
@@ -9,7 +9,7 @@ All handlers live in `services/handlers.js`; schemas in `services/tools.js`.
 
 ## Tool group
 
-All 13 tools appear under the **Workflows** group, declared in
+All 14 tools appear under the **Workflows** group, declared in
 `services/service.json`'s `toolGroups` (bos-spec 041). The group's name and
 description are what the assistant sees in its system prompt, and an agent that
 has these tools deferred reaches them with `find_tools(group: "workflows")`.
@@ -126,6 +126,10 @@ Delete a workflow and all of its run logs. Cannot be undone.
 
 - Input: `{ workflowId }`
 - Output: `{ workflowId, deleted: true }`
+- This is the whole-workflow destructor: the definition, its trigger
+  subscriptions, and **every** run log go with it. To prune individual run
+  logs while keeping the workflow, use `workflow_run_delete` instead — the two
+  have very different blast radii.
 
 ## `workflow_export`
 
@@ -183,6 +187,32 @@ its completion), `agent.response`, `agent.sub_agent`, alongside `step.start` /
 `step.retry` / `step.running` / `step.complete` / `step.fail` / `step.skip` and
 the run-level `workflow.start` / `workflow.complete` / `workflow.fail` /
 `workflow.cancel` / `workflow.branch.skipped`.
+
+## `workflow_run_delete`
+
+Delete one or more historical runs' persisted logs (US19). **The workflow
+definition itself is unchanged** — this removes only
+`/Workflows/.runs/<workflowId>/<runId>.json` files, a path tree fully disjoint
+from the definition's `/Workflows/<id>-workflow.json`. Writer — NOT
+`parallelSafe`.
+
+- Input: `{ workflowId, runIds: string[] }` — `runIds` must be a non-empty,
+  duplicate-free array of run ids under that one workflow.
+- Output: `{ workflowId, deleted, results: [{ runId, status, error? }] }` —
+  per-run `status` is:
+  - `"deleted"` — the log existed and was removed (only these count toward
+    `deleted`);
+  - `"not_found"` — no persisted log at that path: already deleted (the tool is
+    idempotent — re-deleting never aborts), still in progress (an in-progress
+    run has no persisted log yet; `workflow_cancel` it first), or a run id
+    belonging to a different workflow (the path is always built from THIS
+    call's `workflowId`, so it can never reach across workflows);
+  - `"error"` — the log exists but the delete itself failed; `error` carries
+    the reason. The rest of the batch still proceeds.
+
+The app's detail view exposes the same operation as the historical-runs
+table's **Delete (n)** button (`POST /workflows/<id>/runs/delete` on the
+service's REST bridge — the same handler).
 
 ## `workflow_event_types`
 

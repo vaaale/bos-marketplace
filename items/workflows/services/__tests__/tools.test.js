@@ -1,6 +1,6 @@
-// tools.test.js — the 13 workflow_* tool declarations (FR-002/014/016/024,
+// tools.test.js — the 14 workflow_* tool declarations (FR-002/014/016/024,
 // plus workflow_event_types — US17/FR-044; its handler behavior lives in
-// event-types-tool.test.js)
+// event-types-tool.test.js — and workflow_run_delete — US19)
 // and their gating opt-in (parallelSafe on read-only tools, US2/039 FR-005 —
 // the actual allowlist/deferred enforcement lives in BOS's service-tool-bridge
 // and is out of scope for a marketplace item's own unit tests; what this item
@@ -24,6 +24,7 @@ const EXPECTED_NAMES = [
   "workflow_run_list",
   "workflow_run_get",
   "workflow_event_types",
+  "workflow_run_delete",
 ];
 
 const READ_ONLY_NAMES = new Set([
@@ -36,11 +37,11 @@ const READ_ONLY_NAMES = new Set([
   "workflow_run_get",
   "workflow_event_types",
 ]);
-const WRITER_NAMES = new Set(["workflow_create", "workflow_modify", "workflow_run", "workflow_cancel", "workflow_delete"]);
+const WRITER_NAMES = new Set(["workflow_create", "workflow_modify", "workflow_run", "workflow_cancel", "workflow_delete", "workflow_run_delete"]);
 
 test("tools.js", async (t) => {
-  await t.test("declares exactly the 13 required tools (FR-002/FR-044)", () => {
-    assert.equal(DECLARATIONS.length, 13);
+  await t.test("declares exactly the 14 required tools (FR-002/FR-044 + US19)", () => {
+    assert.equal(DECLARATIONS.length, 14);
     assert.deepEqual(DECLARATIONS.map((d) => d.name).sort(), [...EXPECTED_NAMES].sort());
   });
 
@@ -121,5 +122,38 @@ test("tools.js", async (t) => {
     const multi = selectBranchTool(["a", "b", "c"], true);
     assert.equal(multi.inputSchema.properties.selected.maxItems, undefined);
     assert.equal(multi.inputSchema.properties.selected.minItems, 1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Scope-add US19: workflow_run_delete — a writer over persisted run logs.
+  // The declared JSON Schema is what BOS's gate validates calls against, so
+  // these assert the schema ENCODES each rejection (a missing workflowId, an
+  // empty or non-array runIds, and any extra property are all inexpressible);
+  // the handler's own defensive arg validation is covered in handlers.test.js.
+  // ---------------------------------------------------------------------------
+
+  await t.test("workflow_run_delete requires both workflowId and runIds (missing workflowId is rejected by the schema)", () => {
+    const d = DECLARATIONS.find((x) => x.name === "workflow_run_delete");
+    assert.ok(d, "workflow_run_delete is declared");
+    assert.deepEqual([...d.inputSchema.required].sort(), ["runIds", "workflowId"]);
+    assert.equal(d.inputSchema.properties.workflowId.type, "string");
+    assert.equal(d.inputSchema.properties.workflowId.minLength, 1);
+  });
+
+  await t.test("workflow_run_delete's runIds must be a non-empty, unique array of non-empty strings", () => {
+    const d = DECLARATIONS.find((x) => x.name === "workflow_run_delete");
+    const runIds = d.inputSchema.properties.runIds;
+    assert.equal(runIds.type, "array", "a non-array runIds is rejected");
+    assert.equal(runIds.minItems, 1, "an empty runIds is rejected");
+    assert.equal(runIds.uniqueItems, true);
+    assert.deepEqual(runIds.items, { type: "string", minLength: 1 });
+  });
+
+  await t.test("workflow_run_delete enforces additionalProperties:false and is NOT parallelSafe (it is a writer)", () => {
+    const d = DECLARATIONS.find((x) => x.name === "workflow_run_delete");
+    assert.equal(d.inputSchema.additionalProperties, false);
+    assert.equal(d.parallelSafe, undefined);
+    assert.match(d.description, /workflow definition itself is unchanged/i);
+    assert.match(d.description, /in-progress runs are not deletable/i);
   });
 });

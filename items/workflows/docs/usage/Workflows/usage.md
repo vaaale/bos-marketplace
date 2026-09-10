@@ -130,14 +130,35 @@ Opens a single workflow: its graph (nodes = steps, edges = dependencies),
 its full step list with each step's agent-source/output-type label (e.g.
 `tool · fetch:csv`, `research · 3 agent(s)`, `delegate · db`), and action
 buttons for every workflow lifecycle operation — Run, Edit, Export, Validate,
-Delete. A **historical runs** strip lists every past run of this workflow;
-clicking one that has finished opens a **replay panel** showing exactly what
+Delete. A **historical runs table** lists every finished run of this workflow,
+newest first — each row shows when it ran (both "2h ago" and the absolute
+date/time), the run id, a colored final-state chip (completed / failed /
+cancelled / completed · warnings), and the run's duration. Clicking a row (or
+its 👁 Inspect affordance) opens a **replay panel** showing exactly what
 happened on that run — each step's final outcome (completed, failed,
 cancelled, "skipped" if a routing choice passed it over, or "neutral" if it
 never ran at all) and the full event log, replayed from the persisted run
 record rather than from the live engine. Clicking a node in that replayed
 graph opens the same **node trajectory panel** described below, with the
 agent's prompt, tool calls, and response from that historical run.
+
+**Deleting old runs.** Every row has a checkbox, and the checkbox in the table
+header selects or deselects all rows at once (it shows a mixed state when only
+some are selected — clicking a checkbox never opens the run). The **Delete (n)**
+button shows how many runs are selected and is disabled until at least one is;
+clicking it removes the selected run logs **immediately — there is no
+confirmation dialog** — and then flashes what happened: "Deleted N run log(s)
+from /Workflows/.runs/ — workflow definition untouched." Deleting runs only
+prunes history: **the workflow itself, its triggers, and its future runs are
+completely unaffected** (that's the difference from the toolbar's Delete
+button, which removes the whole workflow and everything about it). If the run
+you were inspecting is among the deleted, its replay panel closes. A workflow
+with no finished runs shows the table with a "No runs yet" note.
+
+A run that is **still in progress is not listed in the table** and cannot be
+deleted — it has no persisted log yet. It appears as a live chip above the
+table (click to watch it); cancel it first if you want it gone, and it then
+lands in the table as a deletable `cancelled` run.
 
 **Edit** opens the graph editor in place: click a node in the graph (or its
 row in the step list) to select it, edit its fields in the panel below

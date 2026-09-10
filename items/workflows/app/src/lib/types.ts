@@ -204,3 +204,20 @@ export interface ValidationResult {
   errors: string[];
   warnings: string[];
 }
+
+/** US19 — one per-run outcome of `workflow_run_delete` / POST runs/delete. */
+export type RunDeleteStatus = "deleted" | "not_found" | "error";
+
+export interface RunDeleteEntry {
+  runId: string;
+  status: RunDeleteStatus;
+  error?: string;
+}
+
+/** US19 — the result shape of the service's bulk run-log delete. */
+export interface RunDeleteResult {
+  workflowId: string;
+  /** Count of entries whose status is "deleted" (not_found is not counted). */
+  deleted: number;
+  results: RunDeleteEntry[];
+}
