@@ -188,14 +188,14 @@ The markdown renderer in preview mode correctly renders GitHub-Flavored-Markdown
 
 The markdown renderer supports pandoc `fenced_div` syntax — `::: {custom-style="Name"} … :::` (and the equivalent class form `::: {.Name} … :::`) — rendering the enclosed block as a styled container. The appearance is defined by a **style registry** that maps a style name to a CSS definition: a built-in set of named styles ships with the Editor, and the user can add/edit named styles in Settings. Nested fenced divs are supported.
 
-**Why this priority**: The user's explicit "custom styles" ask — it lets documents carry semantic, consistently-styled callouts/boxes (the `RuleBox` example: a thin-outline, light-blue background) without per-document CSS.
+**Why this priority**: The user's explicit "custom styles" ask — it lets documents carry semantic, consistently-styled callouts/boxes (e.g. `Note`, `Info`, `Warning`, `Tip`) without per-document CSS.
 
 **Independent Test**: Open a `.md` file containing `::: {custom-style="Note"} This text … :::` → preview → the block renders as a styled callout box (per the built-in Note definition). Then define a new style `PinkBox` in Settings (name + CSS) → add `::: {custom-style="PinkBox"} … :::` → it renders with the user's CSS. Use a name that is neither built-in nor user-defined (e.g. a document's `RuleBox`) → the block still renders in a neutral container.
 
 **Acceptance Scenarios**:
 
 1. **Given** a fenced div `::: {custom-style="Note"} … :::` and "Note" in the built-in style registry, **When** it renders in preview, **Then** the block is wrapped in a container styled by the "Note" CSS definition (one of the shipped built-in callout styles).
-2. **Given** a fenced div in the class form `::: {.RuleBox} … :::`, **When** it renders, **Then** it applies the same "RuleBox" style as the `custom-style="RuleBox"` form.
+2. **Given** a fenced div in the class form `::: {.Note} … :::`, **When** it renders, **Then** it applies the same "Note" style as the `custom-style="Note"` form.
 3. **Given** a fenced div whose style name is **not** in the registry (typo, or a document authored elsewhere), **When** it renders, **Then** the block still renders as a neutral generic styled container — the content is never dropped and no error is thrown.
 4. **Given** nested fenced divs (an outer `::: {custom-style="A"} … :::` containing an inner `::: {custom-style="B"} … :::`), **When** they render, **Then** both the outer and inner containers render with their respective styles.
 5. **Given** the user creates a named style (e.g. "Note2") with specific CSS in the Settings "Custom Styles" section, **When** a document uses `::: {custom-style="Note2"} … :::` and is rendered, **Then** the block renders per the user's CSS, and the definition persists across app restarts.
