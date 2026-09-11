@@ -1,10 +1,10 @@
-# Tasks: Agentic Text Editor — v2 (Agent & Conversation Management + Full Tool-Call Visibility)
+# Tasks: Agentic Text Editor — v3 (File Handlers · GFM Tables · Pandoc Fenced-Div Custom Styles)
 
-**Input**: Design documents from `item-agentic-text-editor/`
+**Input**: spec.md (v3 scope), plan.md, design.md, mockup.html (UI contract)
 
-**Prerequisites**: spec.md (v2 scope), plan.md, design.md, ui-mockup.html (UI contract)
+**Prerequisites**: v2 code (T053–T092) is installed and working. Tasks below are the **v3 delta only**, numbered T093+.
 
-**Tests**: Full Playwright e2e tests in `e2e/agentic-text-editor.spec.ts` (extended for v2). Unit-style tests for `tool-chip.ts` prefix rule and `run-projector.ts` dedup logic.
+**Tests**: Full Playwright e2e in `e2e/agentic-text-editor.spec.ts` (extended for v3). The e2e tests mock the broker (`window.__bos.*`) and use pre-seeded document content — no real LLM runs.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -12,138 +12,166 @@
 - **[Story]**: Which user story this task belongs to
 - Include exact file paths in descriptions
 
-> **Baseline**: v1 (T001–T052 in the original tasks.md) is complete and installed. Tasks below are the **v2 delta only**, numbered T053+.
+---
+
+## Phase 93: v3 Setup (Shared Infrastructure)
+
+**Purpose**: Types and the style-registry module — the foundation US11 depends on. US9 (file handlers) and US10 (tables) have no dependency on this phase and can start immediately.
+
+- [ ] T093 [P] Add v3 types to `app/src/types.ts`: `NamedStyle { name: string, css: string, builtin: boolean }`, `CustomStylesPersistence { version: 1, user: Record<string, string>, overrides: Record<string, string> }`
+- [ ] T094 [P] Create `app/src/config/custom-styles.ts` — the style registry module. Exports: `BUILTIN_STYLES` (Note/Info/Warning/Tip, each `{ name, css, builtin: true }`), `NEUTRAL_STYLE` (`{ name: "__neutral__", css: "…", builtin: false }`), `STYLE_KEY = "agentic-text-editor.custom-styles"`, `loadCustomStyles(): CustomStylesPersistence` (reads KV store via `window.__bos.storage.get`, merges with built-ins, caches module-level), `saveCustomStyles(next: CustomStylesPersistence): void` (writes KV store, updates cache), `effectiveCss(name: string): string` (resolution order: built-in override → built-in default → user style → neutral). Also exports `getBuiltinNames(): string[]` and `getUserStyles(): Record<string,string>` for the Settings UI. Mirrors the structure of `app/src/config/editor-config.ts`.
+
+**Checkpoint**: Style registry available — US11 can proceed
 
 ---
 
-## Phase 53: v2 Setup (Shared Infrastructure)
+## Phase 94: User Story 9 — File Handler Registration (Priority: P1)
 
-**Purpose**: Types, broker client wrapper, and capability manifest — the foundation all v2 stories depend on
+**Goal**: The Editor is the double-click (selected) handler for `text/markdown` and `text/plain`. "Open with Editor" appears for `.md`/`.txt`/`.html`.
 
-- [x] T053 [P] Add v2 types to `app/types.ts`: `AgentInfo { id, name, description }`, `AppConversation { id, title, agentId, createdAt, lastActiveAt }`, `ChatPersistence { conversations: AppConversation[], activeConversationId: string|null, selectedAgentId: string }`, `ToolChip { variant: 'editor'|'other', label: string, icon?: string }`
-- [x] T054 Create `app/src/assistant/client.ts` — thin typed wrapper over `window.__bos.assistant` (methods: `listAgents()`, `startRun({conversationId, agentId, message, surfaceTools, attachments?})`, `onRunEvent(runId, callback)`, `postToolResult(runId, callId, result)`, `getActiveRun(conversationId)`, `cancelRun(runId)`) + `readTranscript(conversationId)` via `window.__bos.fs.read('/Documents/Chats/<id>.json')` returning parsed `ChatMessage[]`. Centralizes the broker contract; no other module touches `window.__bos` directly.
-- [x] T055 [P] Update `app/app.json` — add `"capabilities": ["assistant", "storage", "fs:read"]` to the manifest
+**Independent Test**: In the Files app, double-click a `.md` file → Editor opens in Preview mode; double-click a `.txt` file → Editor opens in Edit mode; right-click any of the three → "Open with Editor" is present.
 
-**Checkpoint**: Foundation ready — types defined, broker client available, capabilities declared
+### Tests for User Story 9 ⚠️
 
----
+- [ ] T095 [P] [US9] E2E test: "double-click .md opens Editor in preview mode" — seed a `.md` file in the VFS, simulate double-click in the Files app, assert the Editor iframe launches with `bosFilePath` param set, and the document opens in Preview mode (not Edit)
+- [ ] T096 [P] [US9] E2E test: "double-click .txt opens Editor in edit mode" — seed a `.txt` file, simulate double-click, assert the Editor launches and the document opens in Edit mode
+- [ ] T097 [P] [US9] E2E test: "Open with Editor appears in right-click context menu" — right-click a `.md` file, assert the context menu contains an "Open with Editor" entry; right-click a `.txt` file, assert same; right-click an `.html` file, assert same
+- [ ] T098 [P] [US9] E2E test: "Editor is the selected (default) handler for text/markdown" — call `GET /api/file-handlers?mime=text/markdown` (or assert via the Files app state), assert `selected === "agentic-text-editor"`
+- [ ] T099 [P] [US9] E2E test: "Editor is the selected (default) handler for text/plain" — same assertion for `text/plain`
 
-## Phase 54: User Story 6 - Agent Selector (Priority: P1)
+### Implementation for User Story 9
 
-**Goal**: User can pick which registered agent drives the chat from a dropdown in the chat header. Selection persists across restarts.
+- [ ] T100 [US9] Modify `app/app.json` — add two entries to the `fileHandlers` array: `{ "type": "text/markdown", "capabilities": ["render", "edit"], "label": "Editor", "default": true }` and `{ "type": "text/plain", "capabilities": ["render", "edit"], "label": "Editor", "default": true }`. The existing `text/html` entry is left unchanged. No `paramShape` (iframe apps don't receive a URL from the OS).
 
-**Independent Test**: Open app → open agent dropdown → confirm registered agents listed with active marked → select different agent → send message → confirm routed to that agent.
-
-### Tests for User Story 6 ⚠️
-
-- [x] T056 [P] [US6] E2E test in `e2e/agentic-text-editor.spec.ts`: "agent selector lists registered agents" — open app, click agent dropdown, assert menu shows "Main Assistant" with active mark; assert at least one other agent visible (or menu shows only Main Assistant if no user-defined agents exist)
-- [x] T057 [P] [US6] E2E test: "selecting an agent updates the header label" — open dropdown, select a non-default agent, assert header label updates to the selected agent name
-- [x] T058 [P] [US6] E2E test: "agent selection persists across app restart" — select agent B, close and reopen app, assert agent B is still selected in the header
-
-### Implementation for User Story 6
-
-- [x] T059 [US6] Create `app/src/components/chat/agent-selector.tsx` — dropdown component: trigger button (violet `sparkles` icon + agent name label + `chevron-down`), menu (labeled "Agents", one item per agent with icon + name, active item marked with `check` icon + violet highlight). Props: `agents: AgentInfo[]`, `selectedAgentId: string`, `onSelect(agentId)`. Styling per mockup `.selector` + `.dropdown-menu.agent-menu`.
-- [x] T060 [US6] Create `app/src/assistant/chat-store.ts` — Zustand store: state `{ conversations, activeConversationId, selectedAgentId, agents, transcripts, activeRunId, streamingMessage, liveToolStatus }`; actions: `loadAgents()`, `selectAgent(agentId)`, `loadConversations()`, `createConversation()`, `selectConversation(id)`, `loadTranscript(id)`, `startRun(message)`, `attachRun(runId)`, `postToolResult(runId, callId, result)`, `clearLiveState()`. Persists `ChatPersistence` shape to `window.__bos.storage.set('chat-state', ...)` on every mutation. Hydrates from storage on init.
-- [x] T061 [US6] Modify `app/src/components/chat/chat-header.tsx` — replace the static "Chat with Agent" title with: `[status-dot] [agent-selector] [flex-spacer] [new-conv-btn] [conversation-selector]`. The agent-selector is wired to `chat-store.selectedAgentId` + `selectAgent()`.
-
-**Checkpoint**: Agent selector functional — user can switch agents, selection persists
+**Checkpoint**: File handler registration complete — US9 independently testable
 
 ---
 
-## Phase 55: User Story 7 - Conversation Management (Priority: P1)
+## Phase 95: User Story 10 — GFM Table Rendering (Priority: P1)
 
-**Goal**: User can start a new conversation and switch among existing ones. Each keeps its transcript + agent binding. App-scoped list. Persists across restarts.
+**Goal**: GFM pipe tables render as proper `<table>`/`<thead>`/`<tbody>` with alignment, escaped pipes, inline markdown in cells, and list nesting. Edit mode shows raw source unmodified.
 
-**Independent Test**: Open app → send message → click "New conversation" → empty state → send another message → open conversation dropdown → both listed → select first → transcript + agent restored.
+**Independent Test**: Open a `.md` file containing: a basic table, an aligned table, a table with an escaped pipe, a table with inline markdown in cells, a table nested in a list → preview → verify each renders correctly.
 
-### Tests for User Story 7 ⚠️
+### Tests for User Story 10 ⚠️
 
-- [x] T062 [P] [US7] E2E test: "new conversation shows empty state" — click new-conversation button, assert empty-state visible ("No messages yet"), assert conversation dropdown no longer marks the previous conversation as active
-- [x] T063 [P] [US7] E2E test: "conversation dropdown lists existing conversations most-recent-first" — seed two conversations (via storage mock or two sends), open dropdown, assert order is most-recent-first, assert active one is marked
-- [x] T064 [P] [US7] E2E test: "selecting a conversation restores its transcript" — switch to conversation B, send a unique message, switch back to A, assert A's transcript is shown (not B's), assert B's message is not visible
-- [x] T065 [P] [US7] E2E test: "conversation + agent persist across app restart" — send message in conversation A with agent B, close and reopen app, assert conversation A is active with agent B selected in the header and A's transcript visible
-- [x] T066 [P] [US7] E2E test: "chat is global across tabs" — open two document tabs, switch to tab 2, assert the same active conversation is shown in the chat pane (transcript unchanged by tab switch)
-- [x] T067 [P] [US7] E2E test: "new conversation inherits the currently selected agent" — select agent B, click new conversation, assert the new conversation's agent is B (verify by the agent selector showing B)
+- [ ] T101 [P] [US10] E2E test: "basic GFM table renders as table element" — seed a `.md` file with a 3-column, 2-row table (header + 2 body rows), open in preview, assert a `<table>` element exists with a `<thead>` containing 3 `<th>` cells and a `<tbody>` containing 2 `<tr>` rows of `<td>` cells, and assert the cell text matches the source
+- [ ] T102 [P] [US10] E2E test: "aligned table cells have text-align styles" — seed a table with delimiter row `| :--- | :---: | ---: |`, assert the first column cells have `style="text-align:left"`, second column `text-align:center`, third `text-align:right`
+- [ ] T103 [P] [US10] E2E test: "escaped pipe renders as literal pipe" — seed a table cell containing `a \| b`, assert the rendered cell text is `a | b` (not split into two cells)
+- [ ] T104 [P] [US10] E2E test: "inline markdown in table cell renders" — seed a table cell containing `**bold** and \`code\` and [link](url)`, assert the rendered cell contains `<strong>bold</strong>`, `<code>code</code>`, and `<a href="url">link</a>`
+- [ ] T105 [P] [US10] E2E test: "table nested in list item renders inside the li" — seed a markdown document with a list item containing an indented table, assert the `<table>` is a child of the `<li>` element (not a sibling)
+- [ ] T106 [P] [US10] E2E test: "table adjacent to paragraph renders correctly" — seed a paragraph immediately followed by a table (no blank line between), assert both the paragraph and the table render as separate elements
+- [ ] T107 [P] [US10] E2E test: "edit mode shows raw table source" — open a document with a table in Edit mode, assert the textarea contains the literal pipe characters (not rendered HTML)
+- [ ] T108 [P] [US10] E2E test: "pipe characters inside a fenced code block are literal" — seed a fenced code block containing `| a | b |`, assert the code block renders as `<pre><code>| a | b |</code></pre>` (not as a table)
 
-### Implementation for User Story 7
+### Implementation for User Story 10
 
-- [x] T068 [US7] Create `app/src/components/chat/conversation-selector.tsx` — dropdown: trigger button (muted `messages-square` icon + conversation title label + `chevron-down`), menu (labeled "Conversations", most-recent-first, each item shows `message-square` icon + title + sub-line `<agentName> · <relativeTime>`, active marked with `check`). Props: `conversations: AppConversation[]`, `activeId: string|null`, `agents: AgentInfo[]` (for sub-line), `onSelect(id)`. Styling per mockup `.dropdown-menu.conv-menu`.
-- [x] T069 [US7] Modify `app/src/components/chat/chat-header.tsx` — add: new-conversation icon button (`plus` icon, tooltip "New conversation", wired to `chat-store.createConversation()`) + `conversation-selector` (wired to `chat-store.conversations` + `selectConversation()`), anchored right after the flex spacer.
-- [x] T070 [US7] Modify `app/src/components/chat/chat-messages.tsx` — render the **active conversation's** transcript from `chat-store.transcripts[activeConversationId]`. When the active conversation has no messages, show the empty-state (mockup: `message-square` icon, "No messages yet", helper text). When switching conversations, re-read the transcript via `chat-store.loadTranscript(id)` (which calls `client.readTranscript(id)`).
-- [x] T071 [US7] Modify `app/src/components/chat/chat-input.tsx` — on send: call `chat-store.startRun(message)` which invokes `client.startRun({ conversationId: activeConversationId, agentId: selectedAgentId, message, surfaceTools: editorToolDeclarations })`. If `startRun` returns an `activeRunId` (409 — run already active), re-attach via `attachRun` instead.
-- [x] T072 [US7] Implement conversation lifecycle in `chat-store.ts` actions: `createConversation()` — mint id `ate-<Date.now()>-<rand4>`, create `{ id, title: "New conversation", agentId: selectedAgentId, createdAt, lastActiveAt }`, push to `conversations[]`, set `activeConversationId`, persist. `selectConversation(id)` — set `activeConversationId`, set `selectedAgentId` = that conversation's `agentId`, load transcript, persist. `loadConversations()` — hydrate from `window.__bos.storage.get('chat-state')` on app mount.
+- [ ] T109 [US10] Add GFM table recognizer to `app/src/services/formats/markdown.ts` — in the `renderMarkdown` line-loop, after the existing fenced-code check (which must remain first), add a table detection block: (1) a line containing an unescaped `|` is a table header candidate; (2) the next line must match the delimiter pattern (`/^\|?\s*:?-+(:?\s*\|)*\s*:?-+\s*\|?\s*$/` with alignment colons); (3) if both match, consume the header row, the delimiter row (parsing per-column alignment: `:---` left, `:---:` center, `---:` right), and subsequent body rows until a non-pipe or blank line; (4) emit `<table><thead><tr><th>` for header cells and `<tbody><tr><td>` for body cells, applying `style="text-align:…"` per column alignment; (5) split cells on unescaped pipes only (`\|` → literal `|`, does not split); (6) run each cell's text through `renderInline` for inline markdown; (7) for tables inside an open list, emit inside the current `<li>` rather than starting a new one (the non-trivial sub-case — see design.md §7 risk #1); (8) flush any open paragraph/list/quote before a standalone table (the existing `flushAll`).
+- [ ] T110 [P] [US10] Add table styles to `app/src/styles.css` — `.ate-preview table` (full-width, border-collapse, margin), `.ate-preview th` (background, border, padding, font-weight), `.ate-preview td` (border, padding), `.ate-preview thead tr` (top/bottom border accent)
 
-**Checkpoint**: Conversation management fully functional — new/switch/persist, global across tabs, per-conversation agent binding
-
----
-
-## Phase 56: User Story 8 - Full Tool-Call Visibility (Priority: P2)
-
-**Goal**: Every tool call the agent makes is rendered in the reply's tool row. `agentic_editor_*` chips keep their existing violet styling; all other tools render in neutral gray.
-
-**Independent Test**: Ask agent something that triggers a non-editor tool (e.g. "search the web for…") → assert the reply's tool row shows that tool in gray, alongside any editor tools in violet.
-
-### Tests for User Story 8 ⚠️
-
-- [x] T073 [P] [US8] E2E test: "editor tool chips render in violet" — mock a reply with `toolCalls: [{function: {name: "agentic_editor_add_content"}}]`, assert the chip has class `tool-chip editor` (violet styling)
-- [x] T074 [P] [US8] E2E test: "non-editor tool chips render in gray" — mock a reply with `toolCalls: [{function: {name: "web_search"}}]`, assert the chip has class `tool-chip other` (neutral gray styling)
-- [x] T075 [P] [US8] E2E test: "mixed tool row shows both colors" — mock a reply with `toolCalls: [{name: "agentic_editor_modify_content"}, {name: "read_file"}, {name: "memory_search"}]`, assert 1 editor chip + 2 other chips in the same `.tool-row`
-- [x] T076 [P] [US8] E2E test: "tool row renders on conversation replay (load from transcript)" — seed a transcript file via `fs.write` mock with an assistant message carrying `toolCalls[]`, open that conversation, assert the tool row renders with correct colors (no live run needed)
-- [x] T077 [P] [US8] Unit test in `e2e/agentic-text-editor.spec.ts` (or co-located `app/src/assistant/__tests__/tool-chip.test.ts`): `tool-chip.ts` prefix rule — `getToolChip("agentic_editor_open_file")` returns `{variant: "editor"}`; `getToolChip("web_search")` returns `{variant: "other"}`; `getToolChip("read_file")` returns `{variant: "other"}`
-
-### Implementation for User Story 8
-
-- [x] T078 [US8] Create `app/src/assistant/tool-chip.ts` — `getToolChip(toolName: string): ToolChip`. Rule: `toolName.startsWith("agentic_editor_")` → `{ variant: "editor", label: prettified(toolName), icon: "pencil" }`. Otherwise → `{ variant: "other", label: prettified(toolName), icon: "wrench" }`. `prettified` converts `snake_case` to `lowercase words` (e.g. `agentic_editor_add_content` → "add content", `web_search` → "web search"). This is the **single source of truth** for the dual-color rule.
-- [x] T079 [US8] Create `app/src/components/chat/tool-row.tsx` — `<ToolRow toolCalls: ToolCallRef[] />` component. Maps each `toolCall.function.name` through `getToolChip()` and renders a `<span className={\`tool-chip ${chip.variant}\`}>` with the chip's icon + label. Layout: `display: flex; flex-wrap: wrap; gap: 5px;` (matching mockup `.tool-row`).
-- [x] T080 [US8] Modify `app/src/components/chat/message-bubble.tsx` — for agent messages that have `toolCalls[]` (length > 0), render `<ToolRow toolCalls={message.toolCalls} />` between the message bubble and the timestamp. This **replaces** the v1 editor-only chip row. Styling must match the mockup: `.tool-chip.editor` (violet: `background: rgba(139,92,246,0.16); border: 1px solid rgba(139,92,246,0.35); color: #c4b5fd`) and `.tool-chip.other` (gray: `background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16); color: rgba(255,255,255,0.55)`).
-- [x] T081 [US8] Create `app/src/assistant/run-projector.ts` — folds a run's `onRunEvent` events into the live render model consumed by `chat-store.ts`. Handles: `text_delta` (append to `streamingMessage`), `tool_call` (add to `liveToolStatus` map keyed by `callId`), `tool_result` (mark `liveToolStatus[callId].status = "done"`), `message` (finalize: replace `streamingMessage` with the settled message, clear `liveToolStatus`, dedupe by `message.id` against existing transcript). Exposes: `project(events, state) → newState` or a class with `feed(event)`.
-- [x] T082 [US8] Wire live tool row in `chat-messages.tsx` — while a run is active (`chat-store.activeRunId` is set), render a live agent bubble with `streamingMessage` text + a `<ToolRow>` fed from `liveToolStatus` (only entries with `status !== "pending"`). When the `message` event finalizes, the live bubble transitions to the settled message (with its full `toolCalls[]` via T080's `<ToolRow>`).
-
-**Checkpoint**: Full tool-call visibility — dual-color chips render for all tools, both live and on replay
+**Checkpoint**: GFM tables render correctly — US10 independently testable
 
 ---
 
-## Phase 57: Error States & Graceful Degradation
+## Phase 96: User Story 11 — Fenced-Div Custom Styles: Renderer (Priority: P1)
 
-**Purpose**: The app must not throw when capabilities are missing or reads fail
+**Goal**: `::: {custom-style="Name"} … :::` and `::: {.Name} … :::` render as styled containers from the style registry. Nested fenced divs work. Unknown names → neutral container. `:::` inside code blocks is literal.
 
-- [x] T083 [P] Implement "Assistant unavailable" state: if `listAgents()` rejects (capability not granted or network error), show a clear message in the chat pane replacing the input area. Editor pane unaffected. No crash.
-- [x] T084 [P] Implement "Conversation not found" state: if `readTranscript(id)` fails (file deleted/corrupt), show "Conversation not found" in the message area, remove the stale entry from `conversations[]`, and auto-activate the next most-recent conversation (or show empty state if none remain).
-- [x] T085 [P] Implement `startRun` 409 handling: if the response includes an `activeRunId`, call `attachRun(activeRunId)` instead of treating it as an error. (Covers: user opens a conversation while a run is still in-flight.)
+**Independent Test**: Open a `.md` file containing `::: {custom-style="Note"} text :::` → preview shows a styled box. `::: {custom-style="RuleBox"} text :::` (unknown) → neutral box. `::: {custom-style="A"} ::: {.B} text ::: :::` → nested boxes.
+
+### Tests for User Story 11 (renderer) ⚠️
+
+- [ ] T111 [P] [US11] E2E test: "fenced div with built-in custom-style renders styled container" — seed `::: {custom-style="Note"} Hello :::\n:::`, open in preview, assert a `<div class="custom-style custom-style--Note" data-style="Note">` exists with non-empty inline `style` attribute, and the text "Hello" is inside it
+- [ ] T112 [P] [US11] E2E test: "fenced div with class form renders same style" — seed `::: {.Note} Hello :::`, assert the same `custom-style--Note` class and style as T111
+- [ ] T113 [P] [US11] E2E test: "unknown style name renders neutral container" — seed `::: {custom-style="RuleBox"} Content here :::`, assert a `<div class="custom-style custom-style--RuleBox" data-style="RuleBox">` exists, its inline style matches the neutral fallback CSS, and "Content here" is inside it
+- [ ] T114 [P] [US11] E2E test: "nested fenced divs render both containers" — seed `::: {custom-style="Note"} Outer ::: {.Warning} Inner ::: Outer tail :::` (properly nested), assert the outer div contains the inner div, both have their respective `custom-style--*` classes, and "Inner" is inside the inner div
+- [ ] T115 [P] [US11] E2E test: "user-defined style from registry renders" — seed the KV store with a user style `PinkBox: "background: #fce7f3; border: 1px solid #f9a8d4;"`, seed `::: {custom-style="PinkBox"} text :::` in the document, assert the rendered div's inline style contains `background: #fce7f3`
+- [ ] T116 [P] [US11] E2E test: "fenced div delimiter inside code block is literal" — seed a fenced code block containing `::: {custom-style="Note"} not a div :::` as code, assert the code block renders as `<pre><code>` with the literal `:::` text (not as a styled div)
+- [ ] T117 [P] [US11] E2E test: "edit mode shows raw fenced-div source" — open a document with `::: {custom-style="Note"} … :::` in Edit mode, assert the textarea shows the literal `:::` syntax
+- [ ] T118 [P] [US11] Unit test: `effectiveCss("Note")` returns the built-in Note CSS; `effectiveCss("RuleBox")` returns the neutral CSS; `effectiveCss("PinkBox")` (after seeding user styles) returns the user CSS; `effectiveCss("Note")` (after seeding an override) returns the override CSS
+
+### Implementation for User Story 11 (renderer)
+
+- [ ] T119 [US11] Add fenced_div recognizer to `app/src/services/formats/markdown.ts` — in the `renderMarkdown` line-loop, after the fenced-code check and the table check (order: code → table → fenced_div), add: (1) detect an opening line matching `/^:::\s*\{(.+)\}\s*$/` — parse the attribute list to extract the style name (from `custom-style="Name"` or `.Name` class; full pandoc attr lists are tolerated, unknown keys ignored); (2) collect inner lines until the matching closing `/^:::\s*$/` line; (3) recursively call `renderMarkdown(innerText)` to render the inner content (nesting is free); (4) resolve the style via `effectiveCss(name)` from `config/custom-styles.ts`; (5) emit `<div class="custom-style custom-style--<sanitizedName>" data-style="<rawName>" style="<escapedCss>"><innerHtml></div>`; (6) escape `"`/`&`/`<` in the CSS value before embedding it in the `style` attribute (ADR-3); (7) the name in the class attribute is sanitized to alphanumeric + `-`/`_`; `data-style` carries the raw name.
+- [ ] T120 [P] [US11] Add fenced_div container base styles to `app/src/styles.css` — `.custom-style` (margin, border-radius, overflow) and `.ate-preview .custom-style` (inherited typography)
+
+**Checkpoint**: Fenced-div rendering works — US11 renderer independently testable
 
 ---
 
-## Phase 58: E2E Test Suite — v2 Full Coverage
+## Phase 97: User Story 11 — Custom Styles Settings UI (Priority: P1)
 
-**Purpose**: The complete e2e test file covers all v2 user stories end-to-end, including the cross-cutting scenarios
+**Goal**: The Settings panel has a "Custom Styles" tab where the user can view, add, edit, remove, and override named styles. Live preview updates on keystroke. Built-in styles are not removable but CSS-overridable.
 
-- [x] T086 Create `e2e/v2.spec.ts` (dedicated v2 suite, 9 tests) covering:
-  1. **Shell integrity (regression)**: app renders two-pane layout, agent selector visible in header, conversation selector visible, new-conversation button visible
-  2. **US6 — Agent selector**: dropdown opens, lists agents, selection updates label, persists across reload
-  3. **US7 — Conversations**: new conversation creates empty state, dropdown lists conversations most-recent-first, switching restores transcript + agent, persists across reload, global across tabs
-  4. **US8 — Tool row**: mocked transcript with mixed `toolCalls[]` renders dual-color chips; editor prefix = violet, non-editor = gray; live tool row appears during a (mocked) run and transitions to finalized
-  5. **Cross-cutting**: agent switch + conversation switch interaction (select agent B in conv A → new conv → agent B is active); conversation with no messages shows empty state; capability-revoked state degrades gracefully
-  6. **Persistence round-trip**: seed `app-storage` with a `chat-state` containing 2 conversations → open app → both appear in dropdown → select first → transcript loads → agent matches
+**Independent Test**: Open Settings → Custom Styles tab → see built-in group (Note/Info/Warning/Tip with lock icons) and user group → click "Add style" → enter name + CSS → live preview updates → Done → style appears in user group → edit it → persists across restart.
+
+### Tests for User Story 11 (settings UI) ⚠️
+
+- [ ] T121 [P] [US11] E2E test: "Settings opens with Appearance and Custom Styles tabs" — open Settings, assert two tabs are visible: "Appearance" and "Custom Styles"; assert Appearance is the default active tab
+- [ ] T122 [P] [US11] E2E test: "Appearance tab shows existing settings unchanged" — click Appearance tab, assert font family/size/colour fields are present (regression check)
+- [ ] T123 [P] [US11] E2E test: "Custom Styles tab shows built-in group" — click Custom Styles tab, assert a "Built-in styles" section header is visible, and four rows are present (Note, Info, Warning, Tip), each with a lock icon (no trash icon)
+- [ ] T124 [P] [US11] E2E test: "Custom Styles tab shows user group" — assert a "Your styles" section header is visible below the built-in group; if no user styles exist, a dashed empty-state is shown
+- [ ] T125 [P] [US11] E2E test: "Add style creates a new user style" — click "Add style", enter name "PinkBox" and CSS "background: #fce7f3;", click Done, assert "PinkBox" appears in the Your styles group with a swatch and "user" pill
+- [ ] T126 [P] [US11] E2E test: "Editing a user style's CSS updates the live preview" — open a user style for editing, type new CSS into the textarea, assert the live preview box in the editor view updates its appearance on each keystroke (or on debounce)
+- [ ] T127 [P] [US11] E2E test: "Overriding a built-in style shows modified pill" — open built-in "Note" for editing, change its CSS, click Done, assert the Note row now shows a "modified" pill (not "built-in")
+- [ ] T128 [P] [US11] E2E test: "Reset to default removes the override" — open a modified built-in style, click "Reset to default", assert the style's CSS reverts to the built-in default and the pill changes back to "built-in"
+- [ ] T129 [P] [US11] E2E test: "Removing a user style removes it from the list" — open a user style, click Remove, confirm the inline confirm-strip, assert the style is gone from the list
+- [ ] T130 [P] [US11] E2E test: "User styles persist across app restart" — add a user style, close and reopen the app, open Settings → Custom Styles, assert the user style is still present with its CSS
+- [ ] T131 [P] [US11] E2E test: "Saving a style in Settings re-renders an open preview immediately" — open a `.md` file with `::: {custom-style="PinkBox"} text :::` in preview, open Settings → Custom Styles, edit PinkBox's CSS, assert the preview's PinkBox box updates its appearance without reloading the document
+
+### Implementation for User Story 11 (settings UI)
+
+- [ ] T132 [US11] Modify `app/src/components/settings-panel.tsx` — convert the single-scroll dialog into a two-tab layout: **Appearance** (existing Typography + Colours content, moved verbatim) and **Custom Styles** (renders `<CustomStylesPanel />`). Tab styling per mockup (pill-shaped, violet active indicator). The "Reset to defaults" button in Appearance stays. No behavior change to existing settings.
+- [ ] T133 [US11] Create `app/src/components/settings/custom-styles-panel.tsx` — the Custom Styles tab content. Manages two views: **list view** (default) and **editor view** (when editing a style). Props: `onEditStyle(name: string)`, `onCreateStyle()`. Renders `<StyleList />` in list view; `<StyleEditor />` + `<StylePreview />` in editor view. The "Add style" button in the list-view header triggers `onCreateStyle()` (creates an in-memory draft, switches to editor view).
+- [ ] T134 [US11] Create `app/src/components/settings/style-list.tsx` — renders two groups: **Built-in styles** (from `getBuiltinNames()`, each row with lock icon, no remove) and **Your styles** (from `getUserStyles()`, each row with remove; dashed empty-state when none). Each row is a `<StyleRow />`.
+- [ ] T135 [US11] Create `app/src/components/settings/style-row.tsx` — one style row: a swatch (a small `<div>` styled with `effectiveCss(name)` via the `boxStyle` pattern — neutral base prepended, user CSS appended, padding stripped for the 56×34 box), the style name, a pill (`built-in` / `modified` / `user` — "modified" when `overrides[name] != null`), and action buttons (pencil/edit for all; trash/remove for user styles only, with an inline confirm-strip; lock icon for built-ins). Props: `name`, `css`, `builtin`, `modified`, `onEdit`, `onRemove?`.
+- [ ] T136 [US11] Create `app/src/components/settings/style-editor.tsx` — the editor view form: a **name** input (disabled/readonly for built-ins, editable for user styles and new styles), a **CSS** textarea (placeholder: "background: #dbeafe; border: 1px solid #93c5fd; padding: 10px 14px; border-radius: 6px;", helper text "Declaration block — no surrounding braces"), and form actions: **Remove style** (user only), **Reset to default** (built-in only, enabled only when modified), **Done** (saves + returns to list view). Props: `name`, `css`, `builtin`, `modified`, `onSave(name, css)`, `onRemove(name)`, `onReset(name)`, `onDone()`.
+- [ ] T137 [US11] Create `app/src/components/settings/style-preview.tsx` — the live-preview column beside the editor: shows the fenced-div source code (`::: {custom-style="<Name>"} Sample text :::`) in a monospace block, then a preview box styled with the **current** CSS (updated on every keystroke from the textarea via the parent's state), then a divider, then a permanent **neutral fallback** box (labelled "Unknown style name → neutral container"). The preview box uses the `boxStyle` pattern (neutral base + current CSS). Props: `name`, `css`.
+- [ ] T138 [US11] Add Custom Styles UI styles to `app/src/styles.css` — the `ate-*` classes for: tab bar, style groups (headers + dividers), style rows (swatch, name, pill, actions), the inline confirm-strip, the editor form (name input, CSS textarea, action buttons), the live preview column, and the neutral fallback box. Translated from the mockup's `.style-row`/`.cs-*`/`.boxStyle`/`swatchStyle` CSS.
+- [ ] T139 [US11] Modify `app/src/state/document-store.ts` — in `hydrate()`, call `loadCustomStyles()` from `config/custom-styles.ts` and store the result. Add CRUD actions: `addStyle(name, css)`, `updateStyle(name, css)`, `removeStyle(name)`, `overrideBuiltIn(name, css)`, `resetBuiltIn(name)`. Each action calls `saveCustomStyles()` to persist and bumps a `customStylesVersion` counter (a `number` in the store state, incremented by 1 on each call).
+- [ ] T140 [US11] Wire `customStylesVersion` into `PreviewView` — in `app/src/components/editor/preview-view.tsx`, read `customStylesVersion` from the document store and include it in the render `useMemo` dependency array, so saving a style in Settings triggers a re-render of any open preview (FR-029 "immediately on save").
+
+**Checkpoint**: Custom Styles settings UI complete — US11 fully testable
+
+---
+
+## Phase 98: E2E Test Suite — v3 Full Coverage
+
+**Purpose**: The complete e2e test file covers all v3 user stories end-to-end, including cross-cutting scenarios and regression checks.
+
+- [ ] T141 Create `e2e/v3.spec.ts` (dedicated v3 suite) covering:
+  1. **Shell integrity (regression)**: app renders two-pane layout, chat header intact (agent selector + conversation selector), Settings opens
+  2. **US9 — File handlers**: `.md` → Editor Preview; `.txt` → Editor Edit; context menu "Open with Editor" for all three types; default handler assertion
+  3. **US10 — GFM tables**: basic table, aligned table, escaped pipe, inline markdown in cell, table-in-list, table-adjacent-to-paragraph, edit-mode raw source, pipe-in-code-block literal
+  4. **US11 — Fenced divs**: built-in custom-style, class form, unknown → neutral, nested, user-defined, `:::` in code block literal, edit-mode raw source
+  5. **US11 — Settings UI**: tabs, built-in group, user group, add/edit/remove/override/reset, live preview, persistence across restart, preview reactivity
+  6. **Cross-cutting**: file handler + table + fenced-div combined (a `.md` file with both a table and a fenced div, opened via double-click, renders both correctly in preview)
+  7. **Storage-revoked degradation**: with `storage` capability revoked, built-in styles still render; user styles don't persist (no crash)
 
   **Test strategy** (deterministic, no real LLM):
-  - Use BOS's Playwright fixture to open the app window
-  - Mock `window.__bos.assistant.listAgents` to return a fixed agent catalog
-  - Mock `window.__bos.assistant.startRun` to return a fixed `runId` and emit scripted `onRunEvent` sequences (text_delta → tool_call → tool_result → message)
-  - Mock `window.__bos.fs.read` to return pre-seeded transcript JSON
-  - Mock `window.__bos.storage.get/set` for persistence assertions
-  - Assert on DOM (classes, text content, element presence) per the mockup's CSS structure
+  - Seed document files via `window.__bos.fs.write` mock
+  - Seed style registry via `window.__bos.storage.set` mock
+  - Assert on rendered DOM (classes, text content, element structure, inline styles)
+  - For file-handler tests: call `GET /api/file-handlers?mime=…` or assert via the Files app DOM
 
-- [x] T087 [P] Add **v2 quickstart.md** section: manual validation steps for US6/US7/US8 (agent switch, conversation new/switch, tool-row dual-color) + the e2e run command. Extend the existing quickstart's "Known limitations" if any v2 limitation applies.
+- [ ] T142 [P] Update `item-agentic-text-editor/quickstart.md` — add a v3 section with manual validation steps for US9/US10/US11 (file-handler double-click, table rendering, custom styles authoring + preview) and the e2e run command
+
+**Checkpoint**: Full v3 e2e suite complete
 
 ---
 
-## Phase 59: Polish & Verification
+## Phase 99: Docs & Polish
 
-- [x] T088 [P] Run `npx tsc --noEmit --strict --jsx react-jsx --target ES2020 --module esnext --moduleResolution bundler --skipLibCheck --lib dom,dom.iterable,esnext --types node,react,react-dom data/user-apps/items/agentic-text-editor/app/src/main.tsx` — fix all type errors
-- [x] T089 [P] Run `npm run lint` — fix all lint errors
-- [x] T090 [P] Verify the app renders correctly at small (800px) and large (1920px) window sizes with the new header controls (no overflow, ellipsis works)
-- [x] T091 [P] Verify conversation switch is instant with no layout shift (transcript loads synchronously from in-memory cache after first read)
-- [x] T092 [P] Verify the agent dropdown and conversation dropdown menus close on outside click and Escape key
+**Purpose**: The item's documentation reflects the v3 changes. Type safety and linting pass.
+
+- [ ] T143 [P] Update `docs/usage/Editor/editor.md` — (a) extend the "Opening files from the Files app" section to cover `.md` (opens in Preview) and `.txt` (opens in Edit) in addition to `.html`; (b) add a new "Custom styles" section: how to author `::: {custom-style="Name"} … :::` in a document, how to manage styles in Settings → Custom Styles, the built-in styles (Note/Info/Warning/Tip), user-defined styles, the neutral fallback for unknown names, nesting, and the fact that edit mode shows raw source
+- [ ] T144 [P] Update `docs/dev/Editor/file-handling.md` — update the `fileHandlers` manifest example to include `text/markdown` and `text/plain` entries (`default:true`, no `paramShape`); rewrite the paragraph that says "this item deliberately claims only HTML" → now claims specific base types (`text/html`, `text/markdown`, `text/plain`) and still not the whole `text/` family
+- [ ] T145 [P] Create `docs/dev/Editor/markdown-rendering.md` — the v3 renderer architecture: the GFM-table algorithm (recognition, cell splitting, alignment, list nesting), the fenced_div parse (attribute extraction, recursion for nesting, `effectiveCss` resolution, inline style emission, fence-first ordering that keeps code-block delimiters literal), the style-registry architecture (built-ins in code, KV persistence shape, `effectiveCss` three-way resolution, `customStylesVersion` reactivity), and the design decision to extend the hand-rolled parser rather than introduce remark/unified (ADR-1). This supersedes the "swap this module for a richer renderer" note in `markdown.ts`.
+- [ ] T146 [P] Run typecheck: `npx tsc --noEmit --strict --jsx react-jsx --target ES2020 --module esnext --moduleResolution bundler --skipLibCheck --lib dom,dom.iterable,esnext --types node,react,react-dom data/user-apps/items/agentic-text-editor/app/src/main.tsx` — fix all type errors
+- [ ] T147 [P] Run lint: `npm run lint` in the item's staging directory — fix all lint errors
+- [ ] T148 [P] Verify the app renders correctly at small (800px) and large (1920px) window sizes with the new Settings tabs and Custom Styles panel (no overflow, scroll works)
+
+**Checkpoint**: v3 complete — docs updated, type-safe, lint-clean
 
 ---
 
@@ -151,29 +179,36 @@
 
 ### Phase Dependencies
 
-- **Phase 53 (Setup)**: No dependencies — can start immediately
-- **Phase 54 (US6 Agent Selector)**: Depends on Phase 53 — BLOCKS US7 (chat-store is shared)
-- **Phase 55 (US7 Conversations)**: Depends on Phase 54 (chat-store, header layout)
-- **Phase 56 (US8 Tool Row)**: Depends on Phase 53 (types, client) — can run **in parallel with Phase 55** if different files
-- **Phase 57 (Error States)**: Depends on Phases 54+55 (needs chat-store + client wired)
-- **Phase 58 (E2E Tests)**: Depends on Phases 54+55+56 (tests the integrated behavior)
-- **Phase 59 (Polish)**: Depends on all prior phases
-
-### Within Each Phase
-
-- Tests are written FIRST (TDD) — they should fail before implementation
-- `chat-store.ts` (T060) is the shared dependency for US6 + US7 — implement it in Phase 54, extend in Phase 55
-- `tool-chip.ts` (T078) and `tool-row.tsx` (T079) are independent of the agent/conversation work — Phase 56 can proceed in parallel with Phase 55
+- **Phase 93 (Setup)**: No dependencies — can start immediately. T093 and T094 are [P] (different files).
+- **Phase 94 (US9 File Handlers)**: **No dependency on Phase 93** — the manifest edit is independent. Can start immediately. T100 is the only implementation task; T095–T099 are all [P] (tests).
+- **Phase 95 (US10 Tables)**: **No dependency on Phase 93** — the table recognizer is independent of the style registry. Can start immediately. T109 and T110 are sequential (T110 styles depend on T109's class structure). T101–T108 are all [P] (tests).
+- **Phase 96 (US11 Renderer)**: **Depends on Phase 93** (T119 calls `effectiveCss` from `config/custom-styles.ts`). T119 and T120 are sequential (T120 styles depend on T119's class structure). T111–T118 are all [P] (tests).
+- **Phase 97 (US11 Settings UI)**: **Depends on Phase 93** (the settings components call `effectiveCss`, `getBuiltinNames`, `getUserStyles`) and **Phase 96** (the settings UI manages the same registry the renderer reads). T132 must precede T133 (the tab container must exist before the tab content). T133–T138 are largely [P] among themselves (different component files) but all depend on T132. T139 depends on T094 (calls `loadCustomStyles`/`saveCustomStyles`). T140 depends on T139 (reads `customStylesVersion`).
+- **Phase 98 (E2E Suite)**: Depends on Phases 94+95+96+97 (tests the integrated behavior).
+- **Phase 99 (Docs & Polish)**: Depends on all prior phases.
 
 ### Parallel Opportunities
 
-- T053, T055 are [P] (different files)
-- T056, T057, T058 are [P] (all e2e tests, same file but different test cases — can be written together)
-- T062–T067 are [P] (e2e tests)
-- T073–T077 are [P] (e2e/unit tests)
-- Phase 56 (T078–T082) can run in parallel with Phase 55 (T068–T072) — different files, no shared state until integration
-- T083–T085 are [P] (independent error-state implementations)
-- T088–T092 are [P] (polish checks)
+- **Phase 94, 95, and 93** can all start **simultaneously** (different files, no shared state)
+- T095–T099 are [P] (all e2e tests)
+- T101–T108 are [P] (all e2e tests)
+- T111–T118 are [P] (all e2e/unit tests)
+- T121–T131 are [P] (all e2e tests)
+- T133–T138 are [P] among themselves (different component files, all under `settings/`)
+- T143–T145 are [P] (different doc files)
+- T146, T147, T148 are [P] (independent checks)
+
+### Critical Path
+
+```
+Phase 93 (T093, T094)
+    └──→ Phase 96 (T119, T120)
+            └──→ Phase 97 (T132 → T133–T140)
+                    └──→ Phase 98 (T141)
+                            └──→ Phase 99 (T143–T148)
+```
+
+Phase 94 (US9) and Phase 95 (US10) are **off the critical path** — they can run in parallel with the above.
 
 ---
 
@@ -181,19 +216,19 @@
 
 ### Recommended Order (single developer)
 
-1. Phase 53 (Setup) → types + client + capabilities
-2. Phase 54 (US6) → agent selector + chat-store + header
-3. Phase 55 (US7) → conversation selector + lifecycle + messages
-4. Phase 56 (US8) → tool-chip + tool-row + message-bubble + run-projector
-5. Phase 57 (Error states)
-6. Phase 58 (Full e2e suite)
-7. Phase 59 (Polish + verify)
+1. **Phase 94** (US9) — the manifest edit is trivial; do it first to unblock file-handler e2e tests
+2. **Phase 93** (Setup) — types + style registry
+3. **Phase 95** (US10) — table recognizer + styles
+4. **Phase 96** (US11 renderer) — fenced_div recognizer + container styles
+5. **Phase 97** (US11 settings UI) — tabs + Custom Styles surface
+6. **Phase 98** (E2E suite) — full v3 coverage
+7. **Phase 99** (Docs & polish)
 
 ### Parallel Team Strategy
 
-- **Developer A**: Phase 53 → 54 → 55 (agent + conversations, sequential — shared chat-store)
-- **Developer B**: Phase 53 → 56 (tool row — independent files)
-- **Integration**: Phase 57 → 58 → 59 (both developers)
+- **Developer A**: Phase 94 → 95 (file handlers + tables — independent of the style registry)
+- **Developer B**: Phase 93 → 96 → 97 (style registry → fenced_div renderer → settings UI — the critical path)
+- **Integration**: Phase 98 → 99 (both developers)
 
 ---
 
@@ -201,7 +236,9 @@
 
 - [P] tasks = different files, no dependencies
 - [Story] label maps task to specific user story for traceability
-- The e2e tests mock the broker (`window.__bos.assistant.*`) and VFS (`window.__bos.fs.read`) — they do NOT drive a real LLM run (per the v1 quickstart's established pattern)
-- `tool-chip.ts` is the single source of truth for the dual-color rule — no other module decides editor vs. other
-- `chat-store.ts` is the single source of truth for the app-scoped conversation index — transcripts are read on demand, never persisted by the item
-- The `ate-` conversation id prefix is intentional (ADR-2) — makes editor conversations identifiable in the global `/Documents/Chats/` listing
+- The e2e tests mock the broker (`window.__bos.*`) and seed document content — they do NOT drive a real LLM run
+- `config/custom-styles.ts` is the single source of truth for the style registry — no other module resolves name→CSS
+- `formats/markdown.ts` is the single source of truth for the preview renderer — its two new block passes (table, fenced_div) are the only rendering changes
+- The fence-first ordering in `renderMarkdown` (code → table → fenced_div) is what makes "a `:::` inside a ``` fence is literal" hold by construction
+- `customStylesVersion` is the single reactivity mechanism that makes Settings style edits propagate to open previews
+- The `data-style` attribute on fenced-div containers carries the raw style name (for e2e assertions); the CSS class uses a sanitized name
