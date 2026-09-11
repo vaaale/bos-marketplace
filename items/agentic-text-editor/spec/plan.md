@@ -1,70 +1,78 @@
-# Implementation Plan: Agentic Text Editor — v2 (Agent & Conversation Management + Full Tool-Call Visibility)
+# Implementation Plan: Agentic Text Editor — v3 (File Handlers · GFM Tables · Pandoc Fenced-Div Custom Styles)
 
-**Branch**: `agentic-text-editor` | **Date**: 2026-08-27 | **Spec**: `item-agentic-text-editor/spec.md` | **Design**: `item-agentic-text-editor/design.md`
+**Branch**: `bos/editor-md-handlers-custom` | **Date**: 2026-09-11 | **Spec**: `item-agentic-text-editor/spec.md` | **Design**: `item-agentic-text-editor/design.md` (v3)
 
-**Input**: Feature specification (v2 scope-add) + reviewed `design.md` (verdict: Ready for plan).
+**Input**: Feature specification (v3 scope: FR-026 → FR-029 / US9 → US11 / SC-011 → SC-013) + the reviewed v3 `design.md`.
 
-> **Baseline note**: v1 (document tabs, embedded chat, `agentic_editor_*` surface tools, single global conversation) is already installed and working. This plan covers **only the v2 delta** (FR-023 / FR-024 / FR-025 → US6 / US7 / US8). The v1 file tree, services, and editor components are unchanged unless noted here.
+> **Baseline note**: v1 (document tabs, embedded chat, `agentic_editor_*` surface tools) and v2 (agent/conversation management, full tool-call visibility) are installed and working. This plan covers **only the v3 delta**. The v1 file tree, format registry, `file-service`, v2's `assistant/` + chat components, and `services/launch.ts` / `main.tsx` launch effect are **unchanged** unless explicitly listed.
 
 ## Summary
 
-v2 adds three features to the installed Agentic Text Editor marketplace app:
+v3 adds three orthogonal capabilities to the installed Agentic Text Editor marketplace app:
 
-1. **Agent selector (FR-023 / US6)** — a dropdown in the chat header listing the registered BOS assistant agents (Main Assistant + user-defined), routing messages to the selected one, persisting across restarts.
-2. **Conversation management (FR-024 / US7, rewritten FR-009)** — a "New conversation" control and a dropdown to select among existing conversations. Each conversation keeps its own transcript and is bound to the agent that ran it. The list is app-scoped (only conversations this app started).
-3. **Full tool-call visibility (FR-025 / US8)** — the reply's tool row now renders **every** tool call the agent made that turn: `agentic_editor_*` chips keep their existing violet styling, all other tools render in neutral gray (same pill shape).
+1. **File-handler registration (FR-026 / US9)** — the Editor declares `text/markdown` and `text/plain` in its `app.json` `fileHandlers` (with `default: true`), so double-clicking a `.md`/`.txt` file in the Files app opens the Editor directly, and "Open with Editor" appears for `.md`/`.txt`/`.html`. Pure manifest edit — no launch-code change (the existing `launch.ts` + `main.tsx` effect already handles `{path, action}`).
 
-**Key architectural property**: all v2 work stays inside the item's sandboxed-iframe IIFE. The chat is driven through the existing `window.__bos.assistant` broker (feature 040) + `window.__bos.fs.read` for transcripts + `window.__bos.storage` for the app-scoped index. **No BOS source change, no new route, no new broker method, no service facet.**
+2. **GFM table rendering (FR-027 / US10)** — a table recognizer is added to the hand-rolled `formats/markdown.ts` string builder (after the existing fenced-code check). GFM pipe tables render as `<table>`/`<thead>`/`<tbody>` with alignment, escaped pipes, inline markdown in cells, and list nesting.
+
+3. **Pandoc fenced-div custom styles (FR-028 / FR-029 / US11)** — a `fenced_div` recognizer in `markdown.ts` + a **style registry** (`config/custom-styles.ts`: built-in Note/Info/Warning/Tip in code, user styles + built-in overrides persisted to the app KV store, `effectiveCss(name)` resolution, unknown → neutral fallback). The Settings panel gains a **Custom Styles** tab (mockup.html is the binding UI contract).
+
+**Key architectural property** (from design.md §0/ADR-1): the renderer is a hand-rolled, dependency-free CommonMark-subset string builder — **not** `react-markdown`/`remark`/`unified`. v3 extends that parser with two bounded block passes rather than introducing new dependencies. No BOS source change, no new capability, no new service facet.
 
 ## Technical Context
 
 **Language/Version**: TypeScript 5.x, React 18 (marketplace app IIFE bundle)
 
 **Primary Dependencies**:
-- `window.__bos.assistant` broker — `listAgents`, `startRun`, `onRunEvent`, `postToolResult`, `getActiveRun`, `cancelRun` (feature 040, `src/components/apps/assistant-broker.ts`)
-- `window.__bos.fs.read` — read `/Documents/Chats/<id>.json` transcripts
-- `window.__bos.storage.get/set` — app-scoped KV store (`data/app-storage/agentic-text-editor.json`)
-- zustand (state), lucide-react (icons) — same as v1
+- `window.__bos.storage.get/set` — app-scoped KV store (`data/app-storage/agentic-text-editor.json`) — now also holds the style registry
+- `window.__bos.fs.read` — read document files (v1, unchanged)
+- `window.__bos.assistant` broker (v2, unchanged)
+- zustand (state), lucide-react (icons) — same as v1/v2
+- **No new npm packages** — v3 extends the existing hand-rolled parser; no `remark-gfm`/`remark-directive`/`unified`
 
 **Storage**:
-- App-scoped conversation index (ids, agentId, active flag, timestamps) → app KV store
-- Transcripts → server-owned at `/Documents/Chats/<id>.json` (item reads, never writes)
-- Editor settings → app KV store (v1, unchanged)
+- Style registry (user styles + built-in CSS overrides) → app KV store, key `agentic-text-editor.custom-styles`
+- Editor appearance settings → app KV store (v1, unchanged)
+- Conversation index → app KV store (v2, unchanged)
 - Document buffers → in-memory (v1, unchanged)
 
-**Testing**: Extend `e2e/agentic-text-editor.spec.ts` with v2 scenarios (agent switch, conversation new/switch, tool-row dual-color). Unit-style checks for `tool-chip.ts` prefix rule and `run-projector.ts` dedup.
+**Testing**: Extend `e2e/agentic-text-editor.spec.ts` with v3 scenarios:
+- US9: double-click `.md` → Editor opens in Preview; double-click `.txt` → Editor opens in Edit; "Open with Editor" appears for `.md`/`.txt`/`.html`
+- US10: GFM table with header/body; aligned table (`:---`/`:---:`/`---:`); escaped pipe (`\|`); inline markdown in cell; table nested in list item (the hardest sub-case)
+- US11: `::: {custom-style="Note"}` renders built-in Note style; `::: {.Note}` class form; `::: {custom-style="RuleBox"}` (unknown) → neutral container, content preserved; nested fenced divs; user-defined style from Settings renders + persists; `:::` inside a fenced code block is literal
 
-**Target Platform**: BrowserOS marketplace app — sandboxed-iframe IIFE (separate JS context; no `@/` imports, no `registerAppSurfaceTools`, no `AssistantChatV2` module access)
+**Target Platform**: BrowserOS marketplace app — sandboxed-iframe IIFE (separate JS context; no `@/` imports)
 
 **Project Type**: Marketplace app (not built-in)
 
 **Performance Goals**:
-- Agent dropdown renders instantly (local catalog from `listAgents`)
-- Conversation switch < 500ms (transcript `fs.read`)
-- Live tool chips appear as the run progresses (driven by `onRunEvent` stream)
-- Agent switch is synchronous (no network round-trip beyond the next `startRun`)
+- File-handler registration is boot-time (BOS registry) — no runtime cost in the item
+- Table + fenced_div recognition is O(n) over document lines (same as the existing parser)
+- Style registry load is a single KV-store read at `hydrate()`; `effectiveCss` is an O(1) map lookup per fenced div
+- Settings Custom Styles live preview updates on keystroke (in-memory, no network)
 
 **Constraints**:
-- IIFE bundle: no `@/` BOS module imports; all BOS interaction via `window.__bos`
-- BOS dark-only opacity palette, inline Tailwind, lucide-react icons
-- No external UI libraries
-- `agentic_editor_*` surface tools unchanged — they ride `startRun.surfaceTools` as before
-- The item renders its own chat from the broker event/message model (does not mount the BOS chat component) — required for FR-025's custom dual-color chips
+- IIFE bundle: no `@/` BOS module imports; no new npm packages
+- BOS dark-only opacity palette, `ate-*` CSS classes
+- `renderMarkdown` output is always escaped HTML safe to inject (existing invariant, preserved)
+- `FormatHandler.render(): string` contract unchanged
+- `storage` capability already declared — no capability change needed
+- Built-in style names (Note/Info/Warning/Tip) are not removable; CSS is overridable
 
-**Scale/Scope**: Single app window. Unlimited tabs. 1–5 typical conversations per session. Agent catalog is small (Main Assistant + user-defined).
+**Scale/Scope**: Single app window. Unlimited tabs. Style registry is small (4 built-ins + user styles). Document sizes are typical user files (not 100MB).
 
 ## Constitution Check
 
 *GATE: Must pass before implementation. Re-check after implementation.*
 
-- **Dark-only theme**: All new UI (dropdowns, chips, header controls) uses the BOS opacity palette. Violet accent for agent/active states, neutral gray for non-editor tool chips. No light mode. ✓
-- **Marketplace app anatomy**: New files live under `app/src/`. `app.json` is the only manifest change (adding `capabilities`). No `services/` facet. ✓
-- **No external UI libraries**: Dropdowns are hand-rolled (consistent with v1's approach). Only lucide-react for icons. ✓
+- **Dark-only theme**: All new UI (Custom Styles tab, swatch rows, style editor, live preview) uses the BOS opacity palette. Violet accent for active/selected states. No light mode. ✓
+- **Marketplace app anatomy**: New files live under `app/src/`. `app.json` is the only manifest change (adding two `fileHandlers` entries). No `services/` facet. ✓
+- **No external UI libraries**: Custom Styles UI is hand-rolled (consistent with v1/v2). Only lucide-react for icons. ✓
 - **SSR/hydration**: New components are `"use client"`. No client-only initial state that would break hydration. ✓
-- **OS state via selectors**: App-scoped conversation index uses `window.__bos.storage` (the sanctioned per-app KV channel), not a direct VFS write. ✓
-- **Tool registration**: `agentic_editor_*` surface tools unchanged (ride `startRun.surfaceTools`). No new tools added in v2. ✓
-- **Config namespace**: Editor settings unchanged (v1). Agent selection and active conversation are app-scoped state, not global config — correctly stored in the app KV store, not the config namespace. ✓
-- **No BOS source change**: The design's central property. All required BOS primitives (broker methods, `fs.read`, `storage`, agent catalog endpoint, `toolCalls[]` on persisted messages) already exist. ✓
+- **OS state via selectors**: Style registry uses `window.__bos.storage` (the sanctioned per-app KV channel). ✓
+- **Tool registration**: No new `agentic_editor_*` tools in v3. ✓
+- **Config namespace**: Style registry is app-scoped (KV store), not a global config namespace. ✓
+- **No BOS source change**: All required mechanisms (036 registry, `withFileParams`, storage broker, format-registry contract) already exist. ✓
+- **Dependency-free IIFE**: v3 adds no new npm packages (ADR-1). ✓
 
 **No violations. No Complexity Tracking entry required.**
 
@@ -74,127 +82,89 @@ v2 adds three features to the installed Agentic Text Editor marketplace app:
 
 ```text
 item-agentic-text-editor/
-├── spec.md              # Feature specification (v2 scope added)
-├── plan.md              # This file (v2 plan)
-├── design.md            # Architecture design (v2, reviewed)
-├── tasks.md             # Task list (v2 delta — generated next)
-├── ui-mockup.html       # Interactive HTML mockup (v2, updated in place)
-└── quickstart.md        # Validation guide (v1 + v2)
+├── spec.md              # Feature specification (v3 scope added)
+├── plan.md              # This file (v3 plan)
+├── design.md            # Architecture design (v3)
+├── tasks.md             # Task list (v3 delta — generated next)
+├── mockup.html          # Interactive HTML mockup (v3 Custom Styles UI + document proof)
+├── ui-mockup.html       # Interactive HTML mockup (v2 two-pane editor + chat — unchanged)
+├── quickstart.md        # Validation guide (v1 + v2 + v3)
+└── test-results.md      # e2e results
 ```
 
-### Source Code — v2 delta (marketplace item)
+### Source Code — v3 delta (marketplace item)
 
-All paths are under the item root (`data/user-apps/items/agentic-text-editor/`). The `app/` facet is the esbuild IIFE project. V1 files are unchanged unless marked.
+All paths are under the item root (`data/user-apps/items/agentic-text-editor/`). The `app/` facet is the esbuild IIFE project.
 
 ```text
 app/
-├── app.json                              # MODIFY — add "capabilities": ["assistant", "storage", "fs:read"]
-├── types.ts                              # MODIFY — add AgentInfo, AppConversation, ChatPersistence, ToolChip types
-└── src/
-    ├── main.tsx                          # unchanged (v1)
-    ├── assistant/                        # NEW — v2 assistant client + chat state
-    │   ├── client.ts                     # NEW — typed wrapper over window.__bos.assistant + fs.read
-    │   ├── run-projector.ts              # NEW — folds run events into render model (settled + live + tool status)
-    │   ├── chat-store.ts                 # NEW — zustand store: conversations[], activeId, selectedAgentId, catalog
-    │   └── tool-chip.ts                  # NEW — toolName → {variant, icon, label} (prefix rule + dual-color)
-    └── components/
-        ├── chat/
-        │   ├── chat-header.tsx           # MODIFY — compose: status dot + agent-selector (left) · spacer · new-conv btn + conversation-selector (right)
-        │   ├── agent-selector.tsx        # NEW — FR-023 agent dropdown
-        │   ├── conversation-selector.tsx # NEW — FR-024 conversation dropdown (app-scoped, most-recent first)
-        │   ├── tool-row.tsx              # NEW — FR-025 renders a reply's full toolCalls[] as dual-color chips
-        │   ├── chat-messages.tsx         # MODIFY — render the ACTIVE conversation's transcript; empty-state toggle
-        │   ├── message-bubble.tsx        # MODIFY — render <ToolRow> (all toolCalls, dual-color) under agent replies
-        │   └── chat-input.tsx            # MODIFY — send through client.startRun({conversationId: active, agentId: selectedAgentId, surfaceTools})
-        └── editor/                       # unchanged (v1)
+├── app.json                              # MODIFY — add text/markdown + text/plain fileHandlers (default:true)
+├── src/
+│   ├── config/
+│   │   └── custom-styles.ts             # NEW — BUILTIN_STYLES, NEUTRAL_STYLE, STYLE_KEY,
+│   │                                    #       load/save, effectiveCss(name), module-level cache
+│   ├── services/formats/
+│   │   └── markdown.ts                  # MODIFY — GFM-table block + fenced_div block in renderMarkdown
+│   ├── state/
+│   │   └── document-store.ts            # MODIFY — load registry in hydrate(); CRUD actions;
+│   │                                    #       customStylesVersion for preview reactivity
+│   ├── components/
+│   │   ├── settings-panel.tsx           # MODIFY — single-scroll dialog → Appearance / Custom Styles tabs
+│   │   └── settings/                    # NEW — Custom Styles surface (mockup.html is the contract)
+│   │       ├── custom-styles-panel.tsx  #   list-view ↔ editor-view swap
+│   │       ├── style-list.tsx           #   built-in group + user group
+│   │       ├── style-row.tsx            #   swatch + name + pill + actions
+│   │       ├── style-editor.tsx         #   name input + CSS textarea + form actions
+│   │       └── style-preview.tsx        #   live-preview box + neutral fallback box
+│   ├── styles.css                       # MODIFY — table / callout / custom-styles UI (ate-* classes)
+│   └── types.ts                         # MODIFY — NamedStyle + CustomStylesPersistence
+└── docs/
+    ├── usage/Editor/editor.md           # MODIFY — .md/.txt opening + custom styles usage section
+    └── dev/Editor/
+        ├── file-handling.md             # MODIFY — manifest example now lists md/txt; fix HTML-only prose
+        └── markdown-rendering.md        # NEW — table + fenced_div parsing + style-registry architecture
 ```
 
-**Structure Decision**: All v2 code is additive or a targeted modification of existing chat components. The new `app/src/assistant/` module encapsulates the broker contract so no component touches `window.__bos` directly. `tool-chip.ts` is the single source of truth for the dual-color rule. `chat-store.ts` is the single source of truth for the app-scoped conversation index.
+**Structure Decision**: All v3 code is additive or a targeted modification of existing modules. `config/custom-styles.ts` is the single source of truth for the style registry (mirrors `config/editor-config.ts`). `formats/markdown.ts` is the single source of truth for the preview renderer (its two new block passes are the only rendering change). The `settings/` subdirectory encapsulates the Custom Styles surface so `settings-panel.tsx` stays a thin tab container.
 
 ## Design Notes
 
 > Full architectural detail, ADRs, integration points, and risk analysis live in `design.md`. The notes below capture the decisions that drive task breakdown.
 
-### ADR-1 — Drive the assistant through the `window.__bos` broker, not main-bundle modules
+### ADR-1 — Extend the hand-rolled parser; do NOT introduce remark/unified
 
-A marketplace app is a sandboxed-iframe IIFE in a separate JS context. It cannot import or share `registerAppSurfaceTools` / `AssistantChatV2` / `run-client` (all main-bundle module scope). The only channel into the assistant is the `window.__bos.assistant` broker (feature 040). This is origin-independent (works for `local` and `marketplace` origins alike) and requires zero BOS changes.
+The spec's mechanism assumption (remark-gfm + remark-directive) was explicitly flagged "confirm against the actual stack." The design confirmed the renderer is a dependency-free string builder, so v3 extends it with two bounded block passes (GFM table + fenced_div). The `render(): string` contract and the "output is always safe to inject" invariant are preserved. A future swap to a real `react-markdown` pipeline remains a one-module change.
 
-**Implication for tasks**: All assistant interaction goes through `client.ts` (a thin typed wrapper). No component or store accesses `window.__bos.assistant` directly.
+**Implication for tasks**: The two new recognizers are the core implementation work. All other v3 changes (manifest, registry, settings UI) are independent of which parser is used.
 
-### ADR-2 — App-scoped conversation index, keyed by app-minted ids (RESOLVED A2)
+### ADR-2 — Style registry: built-ins in code + user styles & overrides in KV store
 
-The item mints conversation ids (e.g. `ate-<timestamp><rand>`) and persists `{ conversations[], activeConversationId, selectedAgentId }` to the app KV store. The real transcript for each id lives server-owned at `/Documents/Chats/<id>.json`. The item never enumerates the chats directory — so the dropdown shows only app-started conversations by construction.
+Two maps — `user` (freely add/remove/rename) and `overrides` (built-in name→css, CSS-only) — persisted under `STYLE_KEY` as `{ version, user, overrides }`, merged over the code-shipped `BUILTIN_STYLES`. `effectiveCss(name)`: built-in → `overrides[name] ?? BUILTIN_STYLES[name].css`; else → `user[name]`; else → `NEUTRAL`. The mockup's every affordance (modified pill, Reset to default, neutral fallback) falls out directly from this one function.
 
-**Known side effect (accepted)**: App-minted ids physically live in the shared `/Documents/Chats/` directory and **will appear in the global BOS chat list** under the chosen agent. This is acceptable per A2 (the app's own dropdown is app-scoped; the global list is a separate surface). The `ate-` prefix makes editor conversations identifiable in the global list.
+### ADR-3 — Inline `style` attribute on the fenced-div container
 
-### ADR-3 — The agent dropdown re-binds the active conversation's agent (RESOLVED A1)
+The renderer produces an HTML string; CSS reaches the container via an inline `style="…"` attribute (the mockup's `boxStyle` pattern: neutral base prepended, user declarations appended so they win). Dependency-free, per-node, trivially correct for nesting. User CSS is escaped (`"`/`&`/`<`) when embedded — CSS is not HTML, so no markup-injection surface.
 
-`selectedAgentId` **is** the active conversation's `agentId`, kept in sync. Selecting an agent updates the active conversation's `agentId` (mirroring BOS's own `setConversationAgent` in `AgentSelector.tsx`). Switching conversations updates the dropdown to that conversation's agent. "New conversation" copies the current `selectedAgentId` into the fresh conversation. The transcript is unaffected by a re-bind (it is server-owned and keyed by `conversationId`, which is stable).
+### ADR-4 — Settings becomes two tabs (Appearance / Custom Styles)
 
-### ADR-4 — Surface tools are visible to any selected agent (no per-agent config needed)
+The v3 mockup is a tabbed modal. The existing single-scroll Appearance content moves verbatim into the Appearance tab (no behavior change). The Custom Styles tab is the new surface. This is the only change to the existing settings surface.
 
-`agentic_editor_*` are non-registry (surface) tools. The agent's tool allowlist/gate (`gate.registryIds`) only filters **registry** tools. Surface tools are pushed unconditionally in `visibleTools()`. So **any** selected agent can call `agentic_editor_*` without adding them to the agent's allowlist. No per-agent configuration is needed.
+### ADR-5 — `default:true` for `text/markdown` + `text/plain`; no `paramShape`
 
-**Caveat (noted in design.md risk #3)**: a locked-down agent's system prompt won't *encourage* editor edits, but the tools remain callable.
+The only other installed app declaring `fileHandlers` is the built-in `html-viewer` (claims `text/html` only). With `default:true` on the two new entries, the Editor becomes the uncontested double-click handler for both. No `paramShape` — an iframe app's `src` is always its own `manifest.url`; the OS never supplies a `url`. The existing `text/html` entry is left as-is.
 
-### ADR-5 — Declare `[assistant, storage, fs:read]` in `app.json`
+### File-handler launch path (FR-026) — already built, reused as-is
 
-Broker methods and `fs.read` require capability grants. On install, `resolveCapabilities` seeds the grant from the manifest's declared `capabilities`. Declaring all three in `app.json` makes the item work out of the box. If a user revokes `assistant` (or `storage`) in Settings → Apps, the item must **degrade gracefully** (show the "assistant unavailable" empty state, skip persistence) rather than throw.
+`IframeApp.withFileParams` appends `bosFilePath`/`bosFileAction` to the iframe URL → `services/launch.ts` parses `{path, action}` at import time → `main.tsx`'s launch effect (gated on hydration) reads the file via `fs.read` and sets view mode: **Preview** for previewable formats (`.md` → markdown, `supportsPreview: true`), **Edit** otherwise (`.txt` → plaintext, `supportsPreview: false`). No launch code changes needed.
 
-**Note (S4)**: `storage` is absent from the Settings `VALID_CAPS` list (documented drift) — it is seeded at install from the manifest but not user-toggleable. The design does not rely on a user-facing `storage` toggle.
+### Style registry reactivity (FR-029)
 
-### ADR-6 — Render tool chips from the persisted `message.toolCalls[]` (FR-025)
+`document-store.ts` loads the registry in `hydrate()` and bumps `customStylesVersion` on every style CRUD. `PreviewView` includes `customStylesVersion` in its render `useMemo` deps, so saving a style in Settings re-renders any open preview immediately.
 
-The assistant message carries `toolCalls[]` for **all** tools it invoked that turn (`ChatMessage.toolCalls: ToolCallRef[]` in `src/lib/assistant/messages.ts`), persisted by the agent loop before execution. The item renders **all** of them in the reply's tool row, coloring by name:
-- `name.startsWith("agentic_editor_")` → **editor variant** (violet chip, unchanged from v1)
-- anything else → **other variant** (neutral gray, same pill shape, per RESOLVED A3)
+### Graceful degradation
 
-The persisted `ToolCallRef` is `{ id, type: "function", function: { name, arguments } }` — there is **no `execution` field** in the transcript. So replay coloring **must** use name-prefix membership (`tool-chip.ts`), not a data field. The live stream does carry `execution: "frontend"` on `tool_call` events, but the single rule for both live and replay is: **`agentic_editor_*` prefix = editor variant**.
-
-### State model
-
-```ts
-// app/src/assistant/chat-store.ts (zustand)
-interface AppConversation {
-  id: string;              // app-minted, e.g. "ate-1719000000-a3f2"
-  title: string;           // derived from first user message, or "New conversation"
-  agentId: string;         // the agent this conversation is bound to (ADR-3)
-  createdAt: number;
-  lastActiveAt: number;
-}
-
-interface ChatState {
-  conversations: AppConversation[];   // app-scoped index only (ADR-2) — NO message bodies
-  activeConversationId: string | null;
-  selectedAgentId: string;           // = active conversation's agentId (ADR-3)
-  agents: AgentInfo[];               // catalog from listAgents()
-  // per-conversation transcript (loaded on demand, not persisted by the item)
-  transcripts: Record<string, ChatMessage[]>;
-  // live run state
-  activeRunId: string | null;
-  streamingMessage: ChatMessage | null;
-  liveToolStatus: Map<string, { name: string; status: 'running' | 'done' }>;
-}
-```
-
-Message **content is never persisted by the item** — it lives in the real conversation files and is re-read via `fs.read` on conversation open. The item's store is a thin index + live run projection.
-
-### Tool-row rendering: live vs. finalized (S1 + S2)
-
-- **Live**: `run-projector.ts` consumes `onRunEvent` events. `tool_call` events populate `liveToolStatus` (a `Map<callId, {name, status}>`). The tool row renders these chips as the agent works, colored by the prefix rule.
-- **Finalized**: when the `message` event lands (carrying the complete `toolCalls[]`), the projector replaces the live tool row with the authoritative row from the message. Dedup is by `callId` (message `toolCalls[].id` matches the `tool_call` event's `callId`).
-- **Replay** (conversation open): `fs.read` the transcript → render each assistant message's `toolCalls[]` directly. No live state.
-
-### Error / empty states
-
-| State | Trigger | Behavior |
-|-------|---------|----------|
-| No conversations yet | `conversations[]` is empty | Show empty-state (mockup: "No messages yet"). Agent selector still visible. |
-| Agent catalog load failure | `listAgents()` rejects (assistant not granted, network) | Show "Assistant unavailable" in the header; chat input disabled. |
-| `assistant` capability revoked | Broker call rejects with "Capability not granted" | Show "Assistant unavailable" state; editor pane unaffected. |
-| Transcript read failure | `fs.read` on a conversation file fails (corrupt, deleted) | Show "Conversation not found" in the message area; remove the stale entry from `conversations[]`. |
-| Live run 409 | `startRun` returns `{ activeRunId }` (a run is already active for this conversation) | Re-attach via `onRunEvent(activeRunId)` instead of starting a new run. |
+If `storage` is revoked, `services/bos.ts` `storageGet`/`storageSet` fall back to localStorage/no-op. Built-in styles are in code, so they always render; user styles simply don't persist across restarts. Nothing throws.
 
 ## Complexity Tracking
 
-No complexity violations. v2 is an additive delta to an existing single marketplace app — no new facets, no BOS source changes, no new subsystems.
+No complexity violations. v3 is an additive delta to an existing single marketplace app — no new facets, no BOS source changes, no new dependencies.
