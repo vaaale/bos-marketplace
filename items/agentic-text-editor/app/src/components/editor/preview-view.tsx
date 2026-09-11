@@ -22,9 +22,17 @@
 // user types or an agent tool rewrites the document.
 
 import { useMemo } from "react";
+import { useEditorStore } from "../../state/document-store";
 import type { FormatHandler } from "../../types";
 
 export function PreviewView({ content, format }: { content: string; format: FormatHandler }) {
+  // The markdown handler resolves fenced-div styles against the custom-style
+  // registry at render time (v3, FR-028). The registry is a module cache, not
+  // React state, so this version counter — bumped by every style CRUD in the
+  // store — is what makes saving a style in Settings re-render an open preview
+  // immediately (FR-029): it only needs to be in the memo's deps.
+  const customStylesVersion = useEditorStore((s) => s.customStylesVersion);
+
   // One decision, made once: what the handler asked for, degraded to the inline
   // path whenever the document path cannot actually be honoured (no
   // `renderDocument`, or one that throws or hands back something that is not a
@@ -40,7 +48,10 @@ export function PreviewView({ content, format }: { content: string; format: Form
       }
     }
     return { html: format.render(content), isDocument: false };
-  }, [content, format]);
+    // customStylesVersion is a deliberate cache-buster, not a read value:
+    // render() resolves styles from a module cache the linter cannot see.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, format, customStylesVersion]);
 
   if (!content.trim()) {
     return (

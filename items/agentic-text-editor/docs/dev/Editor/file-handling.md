@@ -25,29 +25,53 @@ app/
 
 ## 1. Registering as a file-type handler
 
-Handler registration is a **manifest declaration**, not code. `app/app.json`:
+Handler registration is a **manifest declaration**, not code. `app/app.json`
+(as of v3):
 
 ```json
 "fileHandlers": [
   {
     "type": "text/html",
     "capabilities": ["render", "edit"],
-    "label": "Editor"
+    "label": "Editor",
+    "paramShape": { "title": "basename" }
+  },
+  {
+    "type": "text/markdown",
+    "capabilities": ["render", "edit"],
+    "label": "Editor",
+    "default": true
+  },
+  {
+    "type": "text/plain",
+    "capabilities": ["render", "edit"],
+    "label": "Editor",
+    "default": true
   }
 ]
 ```
 
 - `type` — the base MIME type handled. BOS maps extensions to MIME types
-  (`.html`/`.htm` → `text/html`) and compares base types only, so a declaration
-  without parameters still matches `text/html; charset=utf-8`. A trailing slash
-  would claim a whole family (`"text/"`); this item deliberately claims only
-  HTML, because Markdown and plain text already open through the app's own
-  *Open* dialog and claiming `text/` would put Editor in the menu for every text
-  file.
+  (`.html`/`.htm` → `text/html`, `.md` → `text/markdown`, `.txt` →
+  `text/plain`) and compares base types only, so a declaration without
+  parameters still matches `text/html; charset=utf-8`. A trailing slash would
+  claim a whole family (`"text/"`); this item claims **specific base types** —
+  HTML, Markdown and plain text, the three formats it actually renders — and
+  still not the whole `text/` family, which would put Editor in the menu for
+  every text-ish file it has no business claiming.
 - `capabilities` — `render` means "can display it", `edit` means "can modify
-  it". Both are true here. Only a **render**-capable handler may become the
-  *selected* (double-click) handler for a type, which is why declaring `render`
-  is what puts Editor in line to become HTML's default app.
+  it". Both are true for all three. Only a **render**-capable handler may
+  become the *selected* (double-click) handler for a type, which is why
+  declaring `render` is what puts Editor in line to be a type's default app.
+- `default` — set on `text/markdown` and `text/plain` (v3, FR-026): when the
+  user has never picked a handler for a type, the registry's `resolveSelected`
+  falls back to the `default: true` render-capable candidate, so
+  double-clicking a `.md` or `.txt` file opens Editor with no manual "Open
+  with" step. Nothing else installed declares those types, so the claim is
+  uncontested; a per-type user selection (the "Open with" always-use
+  behaviour, spec 036) still overrides it. The `text/html` entry deliberately
+  does NOT set `default` — the built-in Web View keeps HTML until the user
+  chooses otherwise.
 - `label` — the text in the menu row: *Open with Editor*. Defaults to the
   manifest `name`, which is already "Editor"; it is stated explicitly so a
   later rename of the app cannot silently reword the menu.
@@ -58,18 +82,24 @@ query, so the item appears in the Files context menu as soon as it is installed
 and disappears when it is uninstalled — no registration call, no cache to
 invalidate.
 
-What the user sees: Files' right-click menu grows an *Open with* section listing
-every handler for the type — **Open with Web View** (the built-in
-`html-viewer`, which declares `default: true`) and **Open with Editor**. This
-item does **not** declare `default`, so Web View keeps the checkmark until the
-user picks Editor; picking a render-capable handler also persists it as the
-type's selection, so double-click follows it from then on.
+What the user sees: Files' right-click menu grows an *Open with* section
+listing every handler for the type. For HTML that is **Open with Web View**
+(the built-in `html-viewer`, which declares `default: true` for `text/html`)
+and **Open with Editor** — Web View keeps the checkmark until the user picks
+Editor. For Markdown and plain text, Editor is the only declared handler and
+carries `default: true`, so it holds the checkmark from install: double-click
+opens Editor directly. Picking a render-capable handler in the menu persists it
+as the type's selection, so double-click follows the user's choice from then
+on, for any of the three types.
 
-`paramShape` is intentionally absent. It is how a handler asks for extra
-contract fields, and its two options do not help here: `url: "raw"` applies to
-built-in component handlers only (an iframe app's `src` is always its own
-`manifest.url`), and `title: "basename"` would hand over a filename this app
-already derives from the path.
+`paramShape` is absent on the Markdown and plain-text entries, on purpose. It
+is how a handler asks for extra contract fields, and neither option helps here:
+`url: "raw"` applies to built-in component handlers only (an iframe app's `src`
+is always its own `manifest.url`), and `title: "basename"` would hand over a
+filename this app already derives from the path. The `text/html` entry does
+carry `paramShape: { "title": "basename" }` — redundant for the same reason,
+but present since v3 of the entry shipped; it is left as-is rather than churned
+(the basename is derived from `bosFilePath` regardless, see below).
 
 ## 2. The open-file launch contract
 

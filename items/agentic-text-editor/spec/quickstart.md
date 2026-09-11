@@ -144,6 +144,53 @@ the Preview toggle uses its renderer, and the assistant's
 
 ---
 
+## v3 — file handlers, tables, custom styles (US9/US10/US11)
+
+### File handlers (US9 → SC-011)
+
+1. In **Files**, double-click a `.md` file → it opens in **Editor**, in
+   **Preview** mode, with the markdown rendered.
+2. Double-click a `.txt` file → it opens in Editor, in **Edit** mode.
+3. Right-click a `.md`, `.txt` or `.html` file → *Open with* lists **Open with
+   Editor** for all three. For HTML, **Open with Web View** keeps the checkmark
+   until you pick Editor; for md/txt, Editor has it from install
+   (`default: true` in `app/app.json`).
+4. API check: `GET /api/file-handlers?mime=text/markdown` (and `text/plain`) →
+   `selected: "agentic-text-editor"`.
+
+### GFM tables (US10 → SC-012)
+
+Open a `.md` file containing each of these, then flip to Preview:
+
+1. A basic pipe table → a real `<table>` with `<thead>`/`<tbody>`.
+2. A delimiter row `| :--- | :---: | ---: |` → left/center/right-aligned columns.
+3. A cell with `a \| b` → renders as the literal `a | b`, one cell.
+4. A cell with `**bold**`, `` `code` `` and a `[link](…)` → all render inline.
+5. A table indented under a list item → renders **inside** that item.
+6. `| a | b |` inside a fenced ``` code block → stays literal code.
+7. Flip to Edit → the raw pipe source is unmodified.
+
+### Custom styles (US11 → SC-013)
+
+1. Open a `.md` file with `::: {custom-style="Note"} text :::` → Preview shows
+   a violet callout box (the built-in Note style). `::: {.Note}` renders the
+   same.
+2. `::: {custom-style="RuleBox"} text :::` (unknown name) → a neutral box;
+   content is never dropped.
+3. Nest a `{.Warning}` div inside a `Note` div → both containers render, each
+   with its own style.
+4. **Settings (gear) → Custom Styles**: the Built-in group lists
+   Note/Info/Warning/Tip with lock icons (no remove); the Your-styles group is
+   empty (dashed placeholder) until you add one.
+5. **Add style** → name `PinkBox`, CSS `background:#fce7f3;` → the live preview
+   box updates as you type → Done → the row appears with a `user` pill. A
+   document using `PinkBox` now renders it — and if that preview is already
+   open, it restyles the moment you hit Done, no reload.
+6. Edit built-in `Note`'s CSS → its row shows `modified`; open it again →
+   **Reset to default** restores the shipped CSS.
+7. Restart the app → your styles are still there (`storage`-backed). A `:::`
+   inside a fenced code block stays literal.
+
 ## 7. Automated checks
 
 ```bash
@@ -159,6 +206,8 @@ npm run lint
 
 # End-to-end (needs a running BOS; installs the item itself if it isn't yet)
 npx playwright test e2e/agentic-text-editor.spec.ts
+npx playwright test e2e/v2.spec.ts
+npx playwright test e2e/v3.spec.ts
 ```
 
 The e2e suite covers the shell layout, open/edit/preview/save, restart

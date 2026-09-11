@@ -176,6 +176,36 @@ export interface FormatHandler {
 
 export type ViewMode = "edit" | "preview";
 
+// ---------------------------------------------------------------- v3 styles
+//
+// The custom-style registry (FR-028/FR-029): named styles resolved by the
+// markdown handler's fenced_div pass and managed in Settings → Custom Styles.
+
+/** One named style — a CSS declaration block a fenced div can reference. */
+export interface NamedStyle {
+  /** The name documents use: `::: {custom-style="Name"}` / `::: {.Name}`. */
+  name: string;
+  /** A CSS declaration block (no surrounding braces). */
+  css: string;
+  /** True for the shipped set — the name is fixed, only the CSS overridable. */
+  builtin: boolean;
+}
+
+/**
+ * The style registry as persisted to the app's key/value store (ADR-2).
+ *
+ * Built-in styles are NOT here — they ship in code (`config/custom-styles.ts`),
+ * which is what makes their names structurally non-removable: `user` holds the
+ * user's own styles, `overrides` holds CSS-only overrides of built-in names.
+ */
+export interface CustomStylesPersistence {
+  version: 1;
+  /** User-owned styles: name → css. Added, renamed and removed freely. */
+  user: Record<string, string>;
+  /** Built-in name → css override. Deleting an entry is "Reset to default". */
+  overrides: Record<string, string>;
+}
+
 /** User-configurable appearance settings (US5), persisted via the config namespace. */
 export interface EditorSettings {
   fontFamily: string;

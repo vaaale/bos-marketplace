@@ -23,6 +23,13 @@ import {
 } from "../services/file-service";
 import { formatIdFor, getForFilename } from "../services/format-service";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "../config/editor-config";
+import {
+  builtinDefaultCss,
+  getCustomStyles,
+  isBuiltin,
+  loadCustomStyles,
+  saveCustomStyles,
+} from "../config/custom-styles";
 import { storageGet, storageSet } from "../services/bos";
 import type {
   CursorPosition,
@@ -52,6 +59,13 @@ export interface EditorState {
   lastAgentEdit: { documentId: string; at: number; summary: string } | null;
   /** False until the persisted snapshot has been merged in. */
   hydrated: boolean;
+  /**
+   * Bumped on every custom-style mutation (v3, FR-029). The style registry
+   * itself lives in `config/custom-styles.ts` (a module cache the renderer
+   * reads synchronously); this counter is the ONE reactive signal that a style
+   * changed, so the preview memo and the Settings list re-render on save.
+   */
+  customStylesVersion: number;
 
   // documents ------------------------------------------------------------
   createDocument(filename?: string): EditorDocument;
@@ -73,6 +87,13 @@ export interface EditorState {
   // settings -------------------------------------------------------------
   updateSettings(patch: Partial<EditorSettings>): void;
 
+  // custom styles (v3) -----------------------------------------------------
+  addStyle(name: string, css: string): void;
+  updateStyle(name: string, css: string): void;
+  removeStyle(name: string): void;
+  overrideBuiltIn(name: string, css: string): void;
+  resetBuiltIn(name: string): void;
+
   // lifecycle ------------------------------------------------------------
   hydrate(): Promise<void>;
 }
@@ -91,6 +112,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   settings: { ...DEFAULT_SETTINGS },
   lastAgentEdit: null,
   hydrated: false,
+  customStylesVersion: 0,
 
   // ---------------------------------------------------------------- documents
 
@@ -231,11 +253,64 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     void saveSettings(settings);
   },
 
+  // ---------------------------------------------------------------- custom styles (v3)
+  //
+  // Each action rewrites the persisted half of the registry (user styles +
+  // built-in overrides) through `saveCustomStyles` — which also updates the
+  // module cache the renderer reads — and bumps `customStylesVersion` so open
+  // previews and the Settings list re-render immediately (FR-029).
+
+  addStyle(name, css) {
+    if (!name.trim() || isBuiltin(name)) return;
+    const cur = getCustomStyles();
+    saveCustomStyles({ ...cur, user: { ...cur.user, [name]: css } });
+    set((s) => ({ customStylesVersion: s.customStylesVersion + 1 }));
+  },
+
+  updateStyle(name, css) {
+    const cur = getCustomStyles();
+    if (cur.user[name] == null) return;
+    saveCustomStyles({ ...cur, user: { ...cur.user, [name]: css } });
+    set((s) => ({ customStylesVersion: s.customStylesVersion + 1 }));
+  },
+
+  removeStyle(name) {
+    const cur = getCustomStyles();
+    if (cur.user[name] == null) return;
+    const user = { ...cur.user };
+    delete user[name];
+    saveCustomStyles({ ...cur, user });
+    set((s) => ({ customStylesVersion: s.customStylesVersion + 1 }));
+  },
+
+  overrideBuiltIn(name, css) {
+    if (!isBuiltin(name)) return;
+    const cur = getCustomStyles();
+    const overrides = { ...cur.overrides };
+    // CSS identical to the shipped default is no override at all — dropping it
+    // is what keeps the "modified" pill honest (mockup: modified ⇔ css differs).
+    if (css === builtinDefaultCss(name)) delete overrides[name];
+    else overrides[name] = css;
+    saveCustomStyles({ ...cur, overrides });
+    set((s) => ({ customStylesVersion: s.customStylesVersion + 1 }));
+  },
+
+  resetBuiltIn(name) {
+    const cur = getCustomStyles();
+    if (cur.overrides[name] == null) return;
+    const overrides = { ...cur.overrides };
+    delete overrides[name];
+    saveCustomStyles({ ...cur, overrides });
+    set((s) => ({ customStylesVersion: s.customStylesVersion + 1 }));
+  },
+
   // ---------------------------------------------------------------- lifecycle
 
   async hydrate() {
     if (get().hydrated) return;
-    const [raw, settings] = await Promise.all([storageGet(STATE_KEY), loadSettings()]);
+    // loadCustomStyles fills the registry cache the markdown handler reads, so
+    // it must land before the first preview render — i.e. before hydrated:true.
+    const [raw, settings] = await Promise.all([storageGet(STATE_KEY), loadSettings(), loadCustomStyles()]);
     // The KV store is the cross-profile source of truth, but its writes are
     // debounced — so the synchronous localStorage mirror can be newer (the
     // pagehide flush's KV call is routinely killed by the unload). Take

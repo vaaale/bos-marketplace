@@ -30,30 +30,37 @@ when you last closed it.
   where to put it first.
 - **Closing a tab** with unsaved changes always asks before discarding — including
   changes the agent made rather than you.
-- **Settings** (the gear) sets the font, the size, and the colours used for
-  headings, links and code blocks in both panes.
+- **Settings** (the gear) has two tabs: **Appearance** sets the font, the size,
+  and the colours used for headings, links and code blocks in both panes;
+  **Custom Styles** manages the named styles used by fenced divs in Markdown
+  previews (see below).
 
 Documents survive a restart: your open tabs, the split position and your
 appearance settings are all remembered, unsaved buffers included.
 
-## Opening an HTML file from Files: "Open with Editor"
+## Opening files from the Files app
 
-Editor registers itself as a handler for HTML files, so it shows up in the Files
-app next to the built-in previewer:
+Editor registers itself as a file handler for **Markdown** (`.md`), **plain
+text** (`.txt`) and **HTML** (`.html`/`.htm`), so the Files app knows about it:
 
-1. Open **Files** and find an `.html` or `.htm` file.
-2. **Right-click** it. Under *Open with* you will see both
-   **Open with Web View** (the built-in read-only previewer) and
-   **Open with Editor**.
-3. Pick **Open with Editor**. The file opens in a new Editor tab, in
-   **Preview** mode — flip to *Edit* whenever you want the source.
+- **Double-click a `.md` file** and it opens straight in Editor, in **Preview**
+  mode — the formatted document, tables and custom styles included. Flip to
+  *Edit* for the source.
+- **Double-click a `.txt` file** and it opens in Editor too, in **Edit** mode
+  (plain text has no richer preview than itself, so Editor doesn't pretend
+  otherwise).
+- **Right-click** any `.md`, `.txt`, `.html` or `.htm` file and pick **Open
+  with Editor** from the *Open with* section. For HTML you will also see
+  **Open with Web View** (the built-in read-only previewer) there; an HTML file
+  picked this way opens in **Preview** mode.
 
-Two things worth knowing about that menu:
+Things worth knowing about that menu:
 
-- The **checkmark** marks the app that HTML files open with when you just
-  **double-click** them. Choosing *Open with Editor* moves the checkmark to
-  Editor, so from then on double-clicking an HTML file opens it here. Choose
-  *Open with Web View* again to hand it back.
+- The **checkmark** marks the app a file type opens with when you just
+  **double-click**. Markdown and plain text point at Editor from the moment it
+  is installed; HTML stays with Web View until you choose otherwise. Picking a
+  different app in the menu moves the checkmark, and double-click follows it
+  from then on.
 - If the file is **already open in a tab**, Editor focuses that tab instead of
   opening the same file twice — so you never end up with two tabs quietly
   disagreeing about the same file.
@@ -61,6 +68,47 @@ Two things worth knowing about that menu:
 Editor asks BrowserOS for the file's contents itself, which means the usual
 rules apply: it can only read files you can read, and it writes nothing until
 you save.
+
+## Custom styles: named callout boxes in Markdown
+
+Markdown previews understand pandoc's *fenced div* syntax — a way to wrap a
+block of a document in a named, styled container:
+
+```markdown
+::: {custom-style="Note"}
+Action items were assigned to each team lead — see the tracker.
+:::
+```
+
+In **Preview**, that block renders as a styled callout box. The shorter class
+form does the same thing: `::: {.Note}`. In **Edit** mode you always see the
+raw `:::` source, unmodified — the syntax is plain markdown text.
+
+Where the appearance comes from:
+
+- **Built-in styles** — Editor ships four: `Note`, `Info`, `Warning` and
+  `Tip`. Their names are fixed, but you can override their CSS (and reset it
+  back) in Settings.
+- **Your styles** — open **Settings (the gear) → Custom Styles → Add style**,
+  give it a name (say `PinkBox`) and a CSS declaration block, and any document
+  using `::: {custom-style="PinkBox"}` renders with it. The live preview in the
+  editor updates as you type, your styles persist across restarts, and you can
+  rename, edit or remove them freely.
+- **Unknown names never lose content.** A fenced div whose name isn't in the
+  registry — a typo, or a document authored elsewhere — still renders, in a
+  neutral container. Nothing is dropped and nothing breaks.
+
+A few more behaviours:
+
+- Saving a style in Settings restyles any open preview **immediately** — no
+  reload, no save.
+- Fenced divs **nest**: a `Note` can contain a `Warning`, and each keeps its
+  own style.
+- A `:::` inside a fenced ``` code block is literal code, never a container
+  boundary — so documents *about* the syntax render correctly.
+- Tables render properly too: GitHub-style pipe tables get real headers, body
+  rows and per-column alignment (`:---`, `:---:`, `---:`) in the preview,
+  including inline markdown inside cells and escaped pipes (`\|`).
 
 ## How the HTML preview works
 

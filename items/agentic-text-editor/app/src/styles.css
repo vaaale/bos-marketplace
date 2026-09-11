@@ -1316,3 +1316,568 @@ button {
   flex-shrink: 0;
   margin-top: 1px;
 }
+
+/* ==========================================================================
+   v3 — GFM tables in the markdown preview (FR-027 / T110)
+   ========================================================================== */
+
+.ate-preview table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: var(--ate-font-size);
+}
+
+.ate-preview th {
+  background: rgba(139, 92, 246, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 7px 10px;
+  font-weight: 600;
+  color: #e6e6ec;
+  text-align: left;
+}
+
+.ate-preview td {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 6px 10px;
+  line-height: 1.6;
+}
+
+.ate-preview thead tr {
+  border-top: 2px solid rgba(139, 92, 246, 0.35);
+  border-bottom: 2px solid rgba(139, 92, 246, 0.35);
+}
+
+.ate-preview li table {
+  margin: 8px 0;
+}
+
+/* ==========================================================================
+   v3 — pandoc fenced-div containers (FR-028 / T120)
+
+   The style itself arrives as an inline style attribute (the registry's CSS,
+   base-prepended — see config/custom-styles.ts boxCss); this class carries
+   only what every container shares regardless of its named style.
+   ========================================================================== */
+
+.custom-style {
+  margin: 14px 0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ate-preview .custom-style > :last-child {
+  margin-bottom: 0;
+}
+
+.ate-preview .custom-style > :first-child {
+  margin-top: 0;
+}
+
+/* ==========================================================================
+   v3 — Settings tabs + the Custom Styles surface (FR-029 / T138)
+   Translated from the mockup's .sm-tabs / .style-row / .cs-* contract.
+   ========================================================================== */
+
+.ate-settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.ate-settings-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.5);
+  background: none;
+  border: none;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: color 0.16s;
+}
+
+.ate-settings-tab:hover {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.ate-settings-tab.ate-settings-tab-active {
+  color: #e0e0e0;
+}
+
+.ate-settings-tab.ate-settings-tab-active::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--ate-accent);
+  border-radius: 2px 2px 0 0;
+}
+
+/* ---- pills (built-in / modified / user / updates-as-you-type) ---- */
+
+.ate-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  line-height: 1.4;
+}
+
+.ate-pill-violet {
+  background: rgba(139, 92, 246, 0.16);
+  color: #c4b5fd;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+.ate-pill-amber {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.32);
+}
+
+.ate-pill-gray {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.ate-pill-green {
+  background: rgba(34, 197, 94, 0.15);
+  color: #86efac;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+/* ---- list view ---- */
+
+.ate-cs-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.ate-cs-head-text h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f0f0f2;
+  letter-spacing: -0.01em;
+}
+
+.ate-cs-head-text p {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.42);
+  margin-top: 4px;
+  line-height: 1.5;
+  max-width: 520px;
+}
+
+.ate-cs-head-text code {
+  font-family: var(--ate-font-family);
+  font-size: 10.5px;
+  background: rgba(139, 92, 246, 0.14);
+  border: 1px solid rgba(139, 92, 246, 0.24);
+  color: #c4b5fd;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.ate-cs-head > .ate-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.ate-cs-group {
+  margin-bottom: 18px;
+}
+
+.ate-cs-group-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.42);
+  margin: 0 0 8px 4px;
+}
+
+.ate-cs-group-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: rgba(255, 255, 255, 0.28);
+  margin-left: 4px;
+}
+
+.ate-cs-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ate-style-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+  transition: all 0.16s;
+}
+
+.ate-style-row:hover {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.ate-style-row.ate-style-row-confirming {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.06);
+  cursor: default;
+}
+
+.ate-swatch {
+  width: 56px;
+  height: 34px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+  padding: 2px 7px;
+}
+
+.ate-swatch span {
+  font-size: 8px;
+  line-height: 1.2;
+  opacity: 0.92;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.ate-sr-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #e6e6ec;
+}
+
+.ate-sr-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.ate-sr-desc {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.32);
+}
+
+.ate-sr-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.4;
+  transition: opacity 0.16s;
+}
+
+.ate-style-row:hover .ate-sr-actions,
+.ate-style-row:focus-within .ate-sr-actions {
+  opacity: 1;
+}
+
+.ate-sr-lock {
+  display: inline-flex;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.ate-btn-icon-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.14);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fca5a5;
+}
+
+.ate-confirm-strip {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #fca5a5;
+}
+
+.ate-cs-empty {
+  padding: 20px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.015);
+  line-height: 1.6;
+}
+
+.ate-cs-empty svg {
+  color: rgba(139, 92, 246, 0.6);
+  margin-bottom: 6px;
+}
+
+.ate-cs-empty b {
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 600;
+}
+
+/* ---- editor view ---- */
+
+.ate-cs-edit {
+  animation: ate-cs-fadein 0.18s ease;
+}
+
+@keyframes ate-cs-fadein {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ate-cs-edit-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.ate-cs-edit-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #f0f0f2;
+}
+
+.ate-cs-edit-title em {
+  font-style: normal;
+  color: #a78bfa;
+}
+
+.ate-cs-spacer {
+  flex: 1;
+}
+
+.ate-cs-edit-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .ate-cs-edit-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ate-cs-field {
+  margin-bottom: 14px;
+}
+
+.ate-cs-field label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 0 0 6px;
+}
+
+.ate-cs-field-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  color: rgba(255, 255, 255, 0.3);
+  font-weight: 400;
+}
+
+.ate-input-mono {
+  font-family: var(--ate-font-family);
+}
+
+.ate-input-error {
+  border-color: rgba(248, 113, 113, 0.6) !important;
+}
+
+.ate-cs-field-error {
+  font-size: 10.5px;
+  color: #fca5a5;
+  margin-top: 5px;
+}
+
+.ate-cs-area {
+  width: 100%;
+  font-family: var(--ate-font-family);
+  font-size: 12px;
+  line-height: 1.7;
+  min-height: 172px;
+  resize: vertical;
+  tab-size: 2;
+  color: #e0e0e0;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--ate-border);
+  border-radius: 8px;
+  padding: 8px 11px;
+  outline: none;
+}
+
+.ate-cs-area:focus {
+  border-color: rgba(139, 92, 246, 0.45);
+}
+
+.ate-cs-area::placeholder {
+  color: rgba(255, 255, 255, 0.22);
+}
+
+.ate-cs-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.ate-cs-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.35);
+  margin-top: 12px;
+}
+
+.ate-cs-note svg {
+  color: rgba(139, 92, 246, 0.6);
+  flex-shrink: 0;
+}
+
+.ate-cs-readonly-note {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  font-size: 10.5px;
+  color: rgba(245, 158, 11, 0.82);
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  border-radius: 8px;
+  padding: 8px 10px;
+  line-height: 1.45;
+  margin-bottom: 14px;
+}
+
+.ate-cs-readonly-note svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.ate-cs-readonly-note b {
+  font-weight: 600;
+}
+
+/* ---- live preview column ---- */
+
+.ate-cs-preview {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ate-cs-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #d0d0dc;
+}
+
+.ate-cs-preview-head svg {
+  color: #a78bfa;
+}
+
+.ate-cs-src {
+  font-family: var(--ate-font-family);
+  font-size: 11px;
+  line-height: 1.6;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #8b93a7;
+  white-space: pre-wrap;
+}
+
+.ate-cs-src-name {
+  color: #c4b5fd;
+}
+
+.ate-cs-src-delim {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.ate-cs-box {
+  min-height: 64px;
+  transition: all 0.12s;
+}
+
+.ate-cs-sample {
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ate-cs-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ate-cs-fallback-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.ate-cs-fallback-sub {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: rgba(255, 255, 255, 0.28);
+  margin-left: auto;
+}
