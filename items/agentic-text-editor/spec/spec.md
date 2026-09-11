@@ -6,7 +6,7 @@
 
 **Created**: 2026-05-21
 
-**Status**: Installed — incremental v2 in progress (agent & conversation management, full tool-call visibility)
+**Status**: Installed — incremental v3 in progress: (1) register the Editor as a file handler for markdown + text (in addition to HTML); (2) fix markdown table rendering in preview; (3) support pandoc fenced-div custom styles. Builds on v1 (document tabs + agentic chat) and v2 (agent/conversation management + tool-call visibility).
 
 **Input**: User description: "An app to edit text and markdown documents with an embedded AI chat. Left pane is a tabbed document list, right pane is the chat. The agent can write/edit/update document contents. Agent edits the internal buffer — content is not persisted until the user explicitly saves."
 
@@ -145,6 +145,72 @@ The chat already renders the wired-in editor tool calls as chips under each agen
 1. **Given** an agent reply invoked an editor tool, **When** the reply renders, **Then** the editor tool chip is shown in the existing style (unchanged).
 2. **Given** an agent reply invoked a non-editor tool, **When** the reply renders, **Then** that tool is also shown in the same tool row, in a distinct color that clearly separates it from the editor tools.
 3. **Given** an agent reply invoked both editor and non-editor tools, **When** the reply renders, **Then** both appear in the row — editor tools in the existing style, the others in the alternate color.
+
+---
+
+### User Story 9 - Open markdown and text files from the Files app (Priority: P1)
+
+The Editor registers itself as a file-type handler for markdown (`.md` → `text/markdown`) and plain text (`.txt` → `text/plain`) in addition to the HTML handling it already supports, so a user double-clicking such a file in the Files app — or choosing "Open with Editor" — opens it directly in the Editor.
+
+**Why this priority**: An editor that can't be reached by double-clicking the files it edits is one extra step for every document. HTML already routes to the Editor; markdown and text should too.
+
+**Independent Test**: In the Files app, double-click a `.md` file → it opens in the Editor in preview mode with correctly rendered markdown (tables per US10, custom styles per US11); double-click a `.txt` file → it opens as plain text; right-click a `.md`/`.txt`/`.html` file → "Open with Editor" is present and works.
+
+**Acceptance Scenarios**:
+
+1. **Given** the Editor is installed, **When** the user double-clicks a `.md` file in the Files app, **Then** it opens in the Editor (the Editor is the selected handler for `text/markdown`).
+2. **Given** the Editor is installed, **When** the user double-clicks a `.txt` file, **Then** it opens in the Editor (the Editor is the selected handler for `text/plain`).
+3. **Given** a `.md`, `.txt`, or `.html` file is right-clicked in the Files app, **When** the user opens the context menu, **Then** "Open with Editor" is present, and choosing it opens the file in the Editor.
+4. **Given** the Editor receives the open-file launch parameters (`{ path, action }`) for a markdown file with `action: "open"`, **When** it launches, **Then** the file opens in a tab and preview mode is shown (the same open-file launch contract it already uses for HTML).
+5. **Given** the Editor is the registered handler for `text/markdown` and `text/plain`, **When** it registers, **Then** it declares `render` and `edit` capabilities for both types (per the 036 `AppManifest.fileHandlers` mechanism).
+
+---
+
+### User Story 10 - Markdown tables render correctly in preview (Priority: P1)
+
+The markdown renderer in preview mode correctly renders GitHub-Flavored-Markdown tables. Today tables do not render correctly — this is the headline rendering defect. Enabling full GFM table rendering (the expected mechanism is the `remark-gfm` table support) fixes it.
+
+**Why this priority**: Broken tables make the editor unusable for real documents (specs, docs, and reports all use tables) — the user's explicit complaint.
+
+**Independent Test**: Open a `.md` file containing a basic table, an aligned table (`:---`/`:---:`/`---:`), a multi-line-cell table, a table with an escaped pipe (`\|`), and a table nested in a list → preview → verify each renders as a proper table with correct structure and alignment, and none falls back to literal pipe text.
+
+**Acceptance Scenarios**:
+
+1. **Given** a GFM table with a header row and body rows, **When** it renders in preview, **Then** it produces a `<table>` with a `<thead>` (header cells) and `<tbody>` (body cells) matching the source.
+2. **Given** a table whose delimiter row specifies alignment (`:---` left, `:---:` center, `---:` right), **When** it renders, **Then** the corresponding cells are left-, center-, or right-aligned.
+3. **Given** a table cell containing an escaped pipe (`\|`) or inline markdown (bold, inline code, a link), **When** it renders, **Then** the pipe is literal and the inline markdown is rendered.
+4. **Given** a table nested inside a list item, or immediately adjacent to a paragraph, **When** it renders, **Then** it is rendered as a table, not as literal pipe text.
+5. **Given** the same document in edit mode, **When** the user views it, **Then** the raw markdown source — including the pipe table — is shown unmodified.
+
+---
+
+### User Story 11 - Pandoc fenced-div custom styles render from a named style registry (Priority: P1)
+
+The markdown renderer supports pandoc `fenced_div` syntax — `::: {custom-style="Name"} … :::` (and the equivalent class form `::: {.Name} … :::`) — rendering the enclosed block as a styled container. The appearance is defined by a **style registry** that maps a style name to a CSS definition: a built-in set of named styles ships with the Editor, and the user can add/edit named styles in Settings. Nested fenced divs are supported.
+
+**Why this priority**: The user's explicit "custom styles" ask — it lets documents carry semantic, consistently-styled callouts/boxes (the `RuleBox` example: a thin-outline, light-blue background) without per-document CSS.
+
+**Independent Test**: Open a `.md` file containing `::: {custom-style="RuleBox"} This text … :::` → preview → the block renders as a thin-outline, light-blue-background box. Then define a new style `PinkBox` in Settings (name + CSS) → add `::: {custom-style="PinkBox"} … :::` → it renders with the user's CSS. Use an undefined name → the block still renders in a neutral container.
+
+**Acceptance Scenarios**:
+
+1. **Given** a fenced div `::: {custom-style="RuleBox"} … :::` and "RuleBox" in the style registry, **When** it renders in preview, **Then** the block is wrapped in a container styled by the "RuleBox" CSS definition (the built-in RuleBox is a thin outline with a light-blue background).
+2. **Given** a fenced div in the class form `::: {.RuleBox} … :::`, **When** it renders, **Then** it applies the same "RuleBox" style as the `custom-style="RuleBox"` form.
+3. **Given** a fenced div whose style name is **not** in the registry (typo, or a document authored elsewhere), **When** it renders, **Then** the block still renders as a neutral generic styled container — the content is never dropped and no error is thrown.
+4. **Given** nested fenced divs (an outer `::: {custom-style="A"} … :::` containing an inner `::: {custom-style="B"} … :::`), **When** they render, **Then** both the outer and inner containers render with their respective styles.
+5. **Given** the user creates a named style (e.g. "Note2") with specific CSS in the Settings "Custom Styles" section, **When** a document uses `::: {custom-style="Note2"} … :::` and is rendered, **Then** the block renders per the user's CSS, and the definition persists across app restarts.
+6. **Given** a fenced div in edit mode, **When** the user views the document, **Then** the raw `::: {custom-style="…"} … :::` text is shown unmodified — the syntax is plain markdown source, only preview renders it.
+
+**Investigation note (how the syntax works)**: `::: {custom-style="RuleBox"} … :::` is **pandoc's `fenced_div` extension**, not a standard markdown feature. In pandoc's HTML output the `custom-style` attribute is preserved on a `<div>` and styled with CSS `[custom-style="RuleBox"] { … }` (in `.docx` output it maps to a named Word paragraph style — its original primary purpose). In a React `react-markdown` pipeline, the idiomatic, generic mechanism is the **`remark-directive`** plugin (parses the `{#id .class key="value"}` attribute list into a `containerDirective` AST node) + `remark-directive-rehype` (converts it to a plain element) + a `components` override that renders the `containerDirective` as `<div class="custom-style custom-style--<Name>" data-style="<Name>">`. The style registry then supplies the CSS per name. This is the architecturally-correct, generic mechanism — it supports the full fenced-div attribute set (not a hard-coded `RuleBox` string match) and is how pandoc-authored documents intend to be styled.
+
+---
+
+### Edge Cases (v3 — file handlers, tables, custom styles)
+
+- **What happens when the Editor becomes the default (double-click) handler for `.md`/`.txt`, replacing the in-app generic text-editor fallback?** → The agentic Editor takes over double-click for those types (intended — it *is* the markdown/text editor). Other types (e.g. `.html`) are unaffected; the user can still change the selected handler per type via the existing "Open with" → always-use behavior (spec 036).
+- **What happens when a fenced div references a style name not in the registry (typo, or a document authored in another tool)?** → It renders as a neutral generic container; no content loss, no crash (US11.3).
+- **What happens when the `storage` capability is revoked (so user-defined styles can't persist)?** → Built-in styles still render; user style definitions are simply not persisted (consistent with ADR-5's graceful degradation for `storage`).
+- **What happens when a fenced-div delimiter (`:::`) appears inside a fenced code block?** → Code-block content is literal and is **not** treated as a directive delimiter (the parser must not confuse a `:::` inside a ``` fence with a fenced-div boundary).
 
 ---
 
@@ -336,6 +402,10 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - **FR-023**: The app MUST provide an agent selector (dropdown) in the chat header that lists the agents available in BrowserOS, and MUST route messages to the selected agent. The currently-active agent MUST be marked in the selector, and the selection MUST persist across app restarts.
 - **FR-024**: The app MUST support multiple conversations: a control to start a new conversation, and a dropdown to select among existing conversations. Each conversation MUST retain its own transcript and be associated with the agent that ran it. The conversation list, the active conversation, and the selected agent MUST all persist across app restarts.
 - **FR-025**: The chat MUST render every tool call invoked by the agent in the reply's tool row. Editor tools (`agentic_editor_*`) MUST keep their existing rendering; all other tool calls MUST be rendered in a visually distinct style (different color) so they are clearly separable from the editor tools.
+- **FR-026**: The Editor MUST register itself as a file-type handler for `text/markdown` (`.md`) and `text/plain` (`.txt`) — in addition to `text/html` — via the 036 `AppManifest.fileHandlers` mechanism declared in its `app.json`, with both `render` and `edit` capabilities for each. The Editor MUST be the selected (double-click) handler for `text/markdown` and `text/plain`, and MUST appear as an "Open with Editor" option for `text/markdown`, `text/plain`, and `text/html`. When launched via the open-file launch contract (`{ path, action }`), it MUST open the file in a tab and, for `action: "open"`, display preview mode — the same contract it already uses for HTML.
+- **FR-027**: The markdown renderer (preview mode) MUST correctly render GitHub-Flavored-Markdown tables: `<thead>`/`<tbody>` header and body rows, the `:---` / `:---:` / `---:` alignment delimiter row (left/center/right), multi-line cells, escaped pipes (`\|`) rendered literally, inline markdown within cells, and tables nested in lists or adjacent to paragraphs. Edit mode MUST show the raw table source unmodified. A `:::` or other directive sequence appearing inside a fenced code block MUST be treated as literal code, not as a fenced-div delimiter.
+- **FR-028**: The markdown renderer (preview mode) MUST support pandoc `fenced_div` syntax (`::: {attrs} … :::`). A fenced div's `custom-style="Name"` attribute (and the equivalent `.Name` class) MUST map to a **named style** from a style registry, where a named style is a CSS definition. The registry MUST contain a built-in set of named styles and MUST allow the user to create/edit named styles. Fenced divs MUST support nesting. A fenced div referencing a name not in the registry MUST still render the enclosed content (as a neutral generic container) without dropping content or throwing.
+- **FR-029**: The Settings panel MUST expose a "Custom Styles" section where the user can add, edit, and remove named styles, each defined as a name plus a CSS declaration block. User-defined styles MUST take effect in the preview immediately on save and MUST persist across app restarts (via the app's storage). Built-in named styles MUST remain present (the user may override their CSS but not remove the built-in names).
 
 ### Key Entities
 
@@ -345,6 +415,8 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - **DocumentFormatHandler**: Pluggable format handler for rendering and editing different document types. Attributes: id, name, extensions, renderer (for preview), editor (for edit mode).
 - **EditorSettings**: User-configurable appearance settings. Attributes: fontFamily, fontSize, headingColors, codeBlockBackground, codeBlockForeground, linkColor, etc.
 - **Conversation**: A distinct chat thread. Attributes: id, agentId (the agent it runs on), messages[], createdAt, lastActiveAt, isActive. The app stores a list of conversations; exactly one is active at a time. The chat surface displays the active conversation only.
+- **NamedStyle (StyleDefinition)**: A named custom style from the style registry. Attributes: name (unique, e.g. "RuleBox"), css (a CSS declaration block), builtin (true for shipped styles, false for user-defined). The registry is the map of name → NamedStyle; built-in entries ship with the item, user-defined entries persist in the app's storage.
+- **fileHandlers (manifest)**: The Editor's `AppManifest.fileHandlers` declarations for `text/html`, `text/markdown`, and `text/plain` (each with `render` + `edit`), consumed by the 036 file-handler registry at boot.
 
 ## Success Criteria *(mandatory)*
 
@@ -360,6 +432,9 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - **SC-008**: The user can switch the active agent from the dropdown and have subsequent messages processed by that agent; the selection persists across restarts.
 - **SC-009**: The user can start new conversations and switch between existing ones; each retains its transcript and agent, all restored after restart, with the chat remaining global across tabs.
 - **SC-010**: Every tool call the agent makes is visible in the reply's tool row — editor tools in the existing style, all others in a distinct, separable style.
+- **SC-011**: Double-clicking a `.md` or `.txt` file in the Files app opens it in the Editor with no manual "Open with" step; "Open with Editor" also appears for `.md`, `.txt`, and `.html`.
+- **SC-012**: A markdown document containing GFM tables (aligned, multi-line, escaped pipes, nested in lists) renders as correct tables in preview — 0 such tables render as literal pipe text.
+- **SC-013**: A document containing `::: {custom-style="RuleBox"} … :::` renders the RuleBox style (thin outline, light-blue background); a user-defined style created in Settings renders per its CSS and persists across restarts; a fenced div with an unknown style name still renders its content in a neutral container (never dropped, no crash).
 
 ## Assumptions
 
@@ -381,3 +456,7 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - **Conversation persistence scope (RESOLVED — A2):** App-scoped — the conversation list shows only conversations this app started. (They are still real BOS assistant conversations under the hood, but the dropdown does not enumerate conversations started elsewhere.)
 - **Non-editor tool color (RESOLVED — A3):** Neutral gray with the same chip shape; only the accent color differs from the violet editor chips.
 - **Agent list scope (RESOLVED — A4):** Registered assistant agents only (Main Assistant + any user-defined agents). Window-scoped surface agents are not listed.
+- **v3 — default handler for `.md`/`.txt` ([NEEDS CLARIFICATION — Q1, recommended: YES]):** Should the Editor be the selected (double-click) handler for `text/markdown` and `text/plain` (so double-click opens the Editor directly), or only an "Open with" option leaving the current in-app text-editor fallback as the default? Recommended: **YES — make the Editor the default** (it is the markdown/text editor; "register itself to open" most naturally means double-click opens it).
+- **v3 — style registry scope ([NEEDS CLARIFICATION — Q2, recommended: built-in + user-extensible]):** The style registry should be (a) a built-in starter set + user-extensible via Settings, (b) user-defined only, or (c) a fixed built-in set only? Recommended: **(a) built-in starter set + user-extensible**, consistent with the existing appearance Settings (FR-018/FR-019).
+- **v3 — built-in style names (RESOLVED by default — Q3):** The shipped built-in set seeds `RuleBox` (thin outline, light-blue background — the user's named example) plus `Note`, `Info`, `Warning`, `Tip`. Names are overridable in CSS but not removable (FR-029). Low-stakes; the exact seed is not a blocking decision.
+- **v3 — markdown rendering mechanism (ASSUMPTION for design):** The table + fenced-div fixes are expected to come from enabling the full GFM/directive pipeline in the Editor's markdown renderer (`remark-gfm` for tables; `remark-directive` + `remark-directive-rehype` for fenced divs). The spec pins the *behavior* (FR-027/FR-028); the design step confirms the exact plugins against the Editor's current rendering stack (the v1 `format-service`). If the current renderer is not `react-markdown`-based, the equivalent is a small pre-transform that parses `::: {custom-style="X"} … :::` into a styled block — same behavior, different plumbing.
