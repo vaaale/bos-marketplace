@@ -284,7 +284,7 @@
       score += LINE_SCORES[cleared];
       totalLines += cleared;
       level = Math.floor(totalLines / 10) + 1;
-      fallMs = Math.max(80, 800 - (level - 1) * 60);
+      fallMs = 120 + (800 - 120) * Math.pow(0.82, level - 1);
     }
     acc = 0;
     cur = null;
