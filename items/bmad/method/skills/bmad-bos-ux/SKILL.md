@@ -56,6 +56,33 @@ Most features are not A2UI. Default to a self-contained HTML mockup matching the
 style guide, and reach for A2UI only when the shipped feature genuinely renders
 through it.
 
+## Where the mockup file goes
+
+`mockup.html`, in the unit's OWN directory — the one already holding
+`product-brief.md`, `prd.md` and the `ux.md` you are writing. Not the VFS.
+
+| Shape | Path | Written with |
+|---|---|---|
+| `marketplace-item` | `item-<id>/mockup.html` | `app_spec_write`, then `app_spec_edit`/`app_spec_patch` |
+| `bos-core`, `builtin-app` | `<spec-dir>/mockup.html` under `/Specs/…` | `file_write`, then `file_edit`/`file_patch` |
+
+Never `/mockups/…`, `/workspace/…` or `/Documents/…`. Those are the user's own
+sandbox: a mockup there does not ride the feature branch, does not promote or
+discard with the feature, and nobody who opens the item afterwards finds it. A
+real session produced a finished mockup at `/mockups/<app>.html` and it was
+simply not part of the app it was designed for.
+
+An item's spec directory is reachable ONLY through the `app_spec_*` tools —
+`file_write` cannot see `data/user-apps` at all. If a write is refused for want
+of an active feature branch, call `dev_branch_request`, let the user confirm the
+name, and retry the SAME write; do not relocate the file to get past the error.
+
+`web_view` previews `/Specs` paths only, so an `item-<id>/mockup.html` cannot be
+previewed live. Write it there regardless and point the user at it.
+
+`ux.md` states the mockup's path, so the architect and whoever builds the screen
+can open the thing itself rather than your description of it.
+
 ## What `ux.md` must contain
 
 The surface and the constraints its shape imposes; every screen and state the
