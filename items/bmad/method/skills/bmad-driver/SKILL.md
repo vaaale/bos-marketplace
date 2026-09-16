@@ -1,7 +1,7 @@
 ---
 name: BMAD Driver
 description: Route work through BMAD — pick the smallest path that fits (trivial, epic-sized or project-sized) and run the right one of its 30 skills. NOT a pipeline to march through. This is BMAD's driver; a store bound to another method has its own.
-when_to_use: When the store or project in play is bound to BMAD and you are authoring or advancing a feature through its phases. Load it because `workflow_list` named it as the method's driverSkill.
+when_to_use: When the store or project in play is bound to BMAD and you are authoring or advancing a feature through its phases. Load it because `methods_list` named it as the method's driverSkill.
 created_by: seed
 pinned: false
 ---
@@ -156,7 +156,7 @@ a phase machine: it re-discovers the available skills on every request and
 refuses to answer from a stale scan.
 
 BOS's equivalent of that routing lives in the Build Studio agent's prompt
-(`workflow_list` → load the method's driver), so this skill does not repeat it.
+(`methods_list` → load the method's driver), so this skill does not repeat it.
 What this skill adds is the part BOS needs and upstream leaves implicit: a
 declared phase list, so a unit can report where it stands.
 
@@ -165,4 +165,4 @@ declared phase list, so a unit can report where it stands.
 `item-bmad`'s spec describes how this pack was BUILT for BOS. It is not usage
 documentation, and reconstructing the pipeline from it produces a plausible
 answer that drifts from the descriptor. The phase order above comes from
-`method.json`; if you need it at runtime, `workflow_list` reports it.
+`method.json`; if you need it at runtime, `methods_list` reports it.
