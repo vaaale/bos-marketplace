@@ -1,0 +1,418 @@
+{
+  "schemaVersion": 1,
+  "id": "bmad",
+  "label": "BMAD Method",
+  "version": "2.0.0",
+  "sections": [
+    {
+      "rel": "",
+      "kind": "active",
+      "leafMarker": "product-brief.md",
+      "numbering": "nnn-slug"
+    }
+  ],
+  "constitution": "docs/principles.md",
+  "constitutionRoot": "own",
+  "discrepancies": {
+    "rel": "discrepancies.md",
+    "roots": [
+      "own"
+    ]
+  },
+  "artifacts": [
+    {
+      "id": "docs/principles.md",
+      "generates": "principles",
+      "scope": "store"
+    },
+    {
+      "id": "product-brief.md",
+      "generates": "brief"
+    },
+    {
+      "id": "prd.md",
+      "generates": "prd",
+      "requires": [
+        "product-brief.md"
+      ]
+    },
+    {
+      "id": "ux.md",
+      "generates": "ux"
+    },
+    {
+      "id": "architecture.md",
+      "generates": "architecture",
+      "requires": [
+        "prd.md"
+      ]
+    },
+    {
+      "id": "epics.md",
+      "generates": "epics",
+      "requires": [
+        "prd.md"
+      ]
+    },
+    {
+      "id": "spec.md",
+      "generates": "spec",
+      "requires": [],
+      "scope": "unit"
+    },
+    {
+      "id": "retrospective.md",
+      "generates": "retrospective",
+      "requires": [],
+      "scope": "unit"
+    }
+  ],
+  "artifactOrder": [
+    "product-brief.md",
+    "prd.md",
+    "ux.md",
+    "architecture.md",
+    "epics.md"
+  ],
+  "phases": [
+    {
+      "id": "principles",
+      "label": "Principles",
+      "requires": [],
+      "rules": [
+        {
+          "when": {
+            "kind": "all",
+            "of": [
+              {
+                "kind": "nonEmpty",
+                "file": {
+                  "rel": "docs/principles.md",
+                  "scope": "store",
+                  "roots": [
+                    "own"
+                  ]
+                }
+              },
+              {
+                "kind": "notContains",
+                "file": {
+                  "rel": "docs/principles.md",
+                  "scope": "store",
+                  "roots": [
+                    "own"
+                  ]
+                },
+                "text": "[PRINCIPLES]"
+              }
+            ]
+          },
+          "then": "done"
+        }
+      ],
+      "else": "pending",
+      "optional": true,
+      "skills": [
+        "bmad-project-context"
+      ]
+    },
+    {
+      "id": "brief",
+      "label": "Brief",
+      "requires": [],
+      "rules": [
+        {
+          "when": {
+            "kind": "exists",
+            "file": {
+              "rel": "product-brief.md"
+            }
+          },
+          "then": "done"
+        }
+      ],
+      "else": "pending",
+      "optional": true,
+      "skills": [
+        "bmad-product-brief",
+        "bmad-prfaq"
+      ]
+    },
+    {
+      "id": "prd",
+      "label": "PRD",
+      "requires": [],
+      "rules": [
+        {
+          "when": {
+            "kind": "exists",
+            "file": {
+              "rel": "prd.md"
+            }
+          },
+          "then": "done"
+        },
+        {
+          "when": {
+            "kind": "exists",
+            "file": {
+              "rel": "product-brief.md"
+            }
+          },
+          "then": "pending"
+        }
+      ],
+      "else": "na",
+      "optional": true,
+      "skills": [
+        "bmad-prd"
+      ]
+    },
+    {
+      "id": "ux",
+      "label": "UX",
+      "requires": [],
+      "rules": [
+        {
+          "when": {
+            "kind": "exists",
+            "file": {
+              "rel": "ux.md"
+            }
+          },
+          "then": "done"
+        }
+      ],
+      "else": "na",
+      "optional": true,
+      "skills": [
+        "bmad-ux",
+        "bmad-bos-ux"
+      ]
+    },
+    {
+      "id": "architecture",
+      "label": "Architecture",
+      "requires": [],
+      "rules": [
+        {
+          "when": {
+            "kind": "exists",
+            "file": {
+              "rel": "architecture.md"
+            }
+          },
+          "then": "done"
+        },
+        {
+          "when": {
+            "kind": "exists",
+            "file": {
+              "rel": "prd.md"
+            }
+          },
+          "then": "pending"
+        }
+      ],
+      "else": "na",
+      "optional": true,
+      "skills": [
+        "bmad-architecture",
+        "bmad-bos-architecture"
+      ]
+    },
+    {
+      "id": "epics",
+      "label": "Epics",
+      "requires": [],
+      "rules": [
+        {
+          "when": {
+            "kind": "exists",
+            "file": {
+              "rel": "epics.md"
+            }
+          },
+          "then": "done"
+        },
+        {
+          "when": {
+            "kind": "exists",
+            "file": {
+              "rel": "architecture.md"
+            }
+          },
+          "then": "pending"
+        }
+      ],
+      "else": "na",
+      "optional": true,
+      "skills": [
+        "bmad-create-epics-and-stories",
+        "bmad-bos-stories"
+      ]
+    },
+    {
+      "id": "spec",
+      "label": "Spec",
+      "requires": [],
+      "optional": true,
+      "rules": [
+        {
+          "when": {
+            "kind": "exists",
+            "file": {
+              "rel": "spec.md"
+            }
+          },
+          "then": "done"
+        }
+      ],
+      "else": "na",
+      "skills": [
+        "bmad-spec"
+      ]
+    },
+    {
+      "id": "stories",
+      "label": "Stories",
+      "requires": [],
+      "rules": [
+        {
+          "when": {
+            "kind": "set",
+            "glob": "stories/*.md",
+            "quantifier": "all",
+            "of": {
+              "kind": "checklist",
+              "file": {
+                "rel": ""
+              },
+              "quantifier": "all"
+            }
+          },
+          "then": "done"
+        },
+        {
+          "when": {
+            "kind": "set",
+            "glob": "stories/*.md",
+            "quantifier": "any",
+            "of": {
+              "kind": "checklist",
+              "file": {
+                "rel": ""
+              },
+              "quantifier": "any"
+            }
+          },
+          "then": "pending"
+        },
+        {
+          "when": {
+            "kind": "count",
+            "glob": "stories/*.md",
+            "min": 1
+          },
+          "then": "pending"
+        }
+      ],
+      "else": "na",
+      "skills": [
+        "bmad-build",
+        "bmad-build-auto"
+      ]
+    },
+    {
+      "id": "review",
+      "label": "Review",
+      "requires": [],
+      "rules": [
+        {
+          "when": {
+            "kind": "contains",
+            "file": {
+              "rel": "review.md"
+            },
+            "text": "**Status**: APPROVED"
+          },
+          "then": "done"
+        },
+        {
+          "when": {
+            "kind": "nonEmpty",
+            "file": {
+              "rel": "review.md"
+            }
+          },
+          "then": "pending"
+        }
+      ],
+      "else": "na",
+      "optional": true,
+      "skills": [
+        "bmad-code-review"
+      ]
+    },
+    {
+      "id": "retrospective",
+      "label": "Retrospective",
+      "requires": [],
+      "optional": true,
+      "rules": [
+        {
+          "when": {
+            "kind": "nonEmpty",
+            "file": {
+              "rel": "retrospective.md"
+            }
+          },
+          "then": "done"
+        }
+      ],
+      "else": "na",
+      "skills": [
+        "bmad-retrospective"
+      ]
+    }
+  ],
+  "stateLabels": {
+    "done": "Done",
+    "pending": "In progress",
+    "blocked": "Blocked",
+    "na": "N/A"
+  },
+  "agentsDir": "agents",
+  "modules": [
+    {
+      "id": "bmm",
+      "label": "BMad Method",
+      "default": true,
+      "requiresConfig": true,
+      "agentsDir": "modules/bmm/agents",
+      "visibility": "delegate-only"
+    }
+  ],
+  "storeRoot": "docs",
+  "driverSkill": "bmad-driver",
+  "agents": [],
+  "roles": {
+    "implementer": "developer",
+    "analyst": "mary",
+    "pm": "john",
+    "ui-designer": "sally",
+    "architect": "winston",
+    "dev": "amelia"
+  },
+  "projectRuntime": {
+    "dir": "_bmad",
+    "from": "runtime",
+    "preserve": [
+      "custom"
+    ]
+  },
+  "builders": [
+    "bmad-agent-builder",
+    "bmad-workflow-builder"
+  ]
+}

@@ -5,86 +5,6 @@
   "description": "The official BrowserOS marketplace: sandboxed apps and adoptable specs.",
   "items": [
     {
-      "id": "lunar-lander",
-      "name": "Lunar Lander the classic game",
-      "description": "Land a lunar lander on the moon",
-      "tags": [
-        "game"
-      ],
-      "app": {
-        "entrypoint": "items/lunar-lander/app/dist",
-        "runtime": "iframe",
-        "version": "0.1.0",
-        "icon": "rocket"
-      }
-    },
-    {
-      "id": "terminal",
-      "name": "Terminal Service",
-      "description": "WebSocket-based shell daemon — the reference/example service for user-specs/002-service-daemons, bundled with its own Terminal app under app/.",
-      "app": {
-        "entrypoint": "items/terminal/app",
-        "runtime": "iframe",
-        "version": "1.0.0"
-      },
-      "services": {
-        "entrypoint": "items/terminal",
-        "version": "1.0.0"
-      }
-    },
-    {
-      "id": "workflows",
-      "name": "Workflow Manager",
-      "description": "Service-owned workflow engine: node model (agent source x output type), structured branch routing with Option A selection propagation, parallel scheduling with per-step/per-run timeouts, a live per-step run state (status/attempt/current action/per-sub-agent fan-out/agent trace) served to both the tools and the app, dry-run fixtures, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get).",
-      "app": {
-        "entrypoint": "items/workflows/app",
-        "runtime": "iframe",
-        "version": "2.1.0",
-        "icon": "Workflow"
-      },
-      "spec": {
-        "path": "items/workflows/spec",
-        "version": "2.1.0"
-      },
-      "services": {
-        "entrypoint": "items/workflows",
-        "version": "2.1.0"
-      }
-    },
-    {
-      "id": "knowledge-base",
-      "name": "Knowledge Base",
-      "description": "Create and manage knowledge bases (uploaded documents, Google Drive folders, websites); ingests content into a Graphiti knowledge graph and exposes kb_search/kb_retrieve tools to agents over MCP.",
-      "services": {
-        "entrypoint": "items/knowledge-base",
-        "version": "1.0.0"
-      }
-    },
-    {
-      "id": "okf-knowledge-base",
-      "name": "OKF Knowledge Base",
-      "description": "Durable, human-readable knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Exposes okf_* tools natively to the BOS assistant and a REST bridge for its config UI.",
-      "services": {
-        "entrypoint": "items/okf-knowledge-base",
-        "version": "1.0.0"
-      }
-    },
-    {
-      "id": "live-avatar",
-      "name": "Live Avatar",
-      "description": "Lip-synced talking avatar (AVTR-1) — a voice engine with a face. Streams TTS audio to an avatar rendering server; BOS shows the result in the presence window. Not a separate app.",
-      "tags": [
-        "voice",
-        "avatar",
-        "ai"
-      ],
-      "voiceEngine": {
-        "entrypoint": "items/live-avatar/plugin",
-        "version": "0.1.0",
-        "engineId": "live-avatar"
-      }
-    },
-    {
       "id": "agentic-text-editor",
       "name": "Editor",
       "description": "A text editor with integrated AI agent for content manipulation",
@@ -102,18 +22,40 @@
       }
     },
     {
-      "id": "webdav-vfs-mount",
-      "name": "WebDAV VFS Mount",
-      "description": "Expose your BrowserOS VFS over WebDAV for native mount support (Windows, macOS Finder, Linux davfs2).",
+      "id": "bmad",
+      "name": "BMAD Method",
+      "description": "BMAD's agile method as a spec-method pack: five personas (Mary, John, Sally, Winston, Amelia), a PRD-to-stories pipeline, and BOS-grounded architecture/UX/story workflows. Adapted from upstream 6.13.x.",
       "tags": [
-        "vfs",
-        "webdav",
-        "filesystem",
-        "service"
+        "spec-method",
+        "bmad",
+        "agile"
       ],
-      "services": {
-        "entrypoint": "items/webdav-vfs-mount",
-        "version": "1.0.0"
+      "integration": {
+        "entrypoint": "items/bmad/plugin",
+        "version": "6.13.0-next"
+      },
+      "method": {
+        "id": "bmad",
+        "version": "6.13.0-next",
+        "schemaVersion": 1,
+        "modules": [
+          {
+            "id": "bmm",
+            "label": "BMad Method",
+            "default": true,
+            "requiresConfig": true
+          },
+          {
+            "id": "bmb",
+            "label": "BMad Builder",
+            "default": false
+          },
+          {
+            "id": "cis",
+            "label": "Creative Intelligence Suite",
+            "default": false
+          }
+        ]
       }
     },
     {
@@ -303,6 +245,68 @@
       }
     },
     {
+      "id": "knowledge-base",
+      "name": "Knowledge Base",
+      "description": "Create and manage knowledge bases (uploaded documents, Google Drive folders, websites); ingests content into a Graphiti knowledge graph and exposes kb_search/kb_retrieve tools to agents over MCP.",
+      "services": {
+        "entrypoint": "items/knowledge-base",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "id": "live-avatar",
+      "name": "Live Avatar",
+      "description": "Lip-synced talking avatar (AVTR-1) — a voice engine with a face. Streams TTS audio to an avatar rendering server; BOS shows the result in the presence window. Not a separate app.",
+      "tags": [
+        "voice",
+        "avatar",
+        "ai"
+      ],
+      "voiceEngine": {
+        "entrypoint": "items/live-avatar/plugin",
+        "version": "0.1.0",
+        "engineId": "live-avatar"
+      }
+    },
+    {
+      "id": "lunar-lander",
+      "name": "Lunar Lander the classic game",
+      "description": "Land a lunar lander on the moon",
+      "tags": [
+        "game"
+      ],
+      "app": {
+        "entrypoint": "items/lunar-lander/app/dist",
+        "runtime": "iframe",
+        "version": "0.1.0",
+        "icon": "rocket"
+      }
+    },
+    {
+      "id": "okf-knowledge-base",
+      "name": "OKF Knowledge Base",
+      "description": "Durable, human-readable knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Exposes okf_* tools natively to the BOS assistant and a REST bridge for its config UI.",
+      "services": {
+        "entrypoint": "items/okf-knowledge-base",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "id": "openspec",
+      "name": "OpenSpec",
+      "description": "OpenSpec as a BOS method pack — the lightweight, brownfield-first alternative to spec-kit. Named changes, a specs tree that grows by archiving, and artifacts whose dependencies are enablers, not gates.",
+      "tags": [
+        "spec-method",
+        "bmad",
+        "agile"
+      ],
+      "method": {
+        "id": "openspec",
+        "version": "1.13.0",
+        "schemaVersion": 1
+      }
+    },
+    {
       "id": "recipe-save-email-attachments",
       "name": "recipe-save-email-attachments",
       "description": "Find Gmail messages with attachments and save them to a Google Drive folder.",
@@ -318,6 +322,54 @@
       "skill": {
         "path": "skills/recipe-save-email-to-doc",
         "version": "0.22.5"
+      }
+    },
+    {
+      "id": "terminal",
+      "name": "Terminal Service",
+      "description": "WebSocket-based shell daemon — the reference/example service for user-specs/002-service-daemons, bundled with its own Terminal app under app/.",
+      "app": {
+        "entrypoint": "items/terminal/app",
+        "runtime": "iframe",
+        "version": "1.0.0"
+      },
+      "services": {
+        "entrypoint": "items/terminal",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "id": "webdav-vfs-mount",
+      "name": "WebDAV VFS Mount",
+      "description": "Expose your BrowserOS VFS over WebDAV for native mount support (Windows, macOS Finder, Linux davfs2).",
+      "tags": [
+        "vfs",
+        "webdav",
+        "filesystem",
+        "service"
+      ],
+      "services": {
+        "entrypoint": "items/webdav-vfs-mount",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "id": "workflows",
+      "name": "Workflow Manager",
+      "description": "Service-owned workflow engine: node model (agent source x output type), structured branch routing with Option A selection propagation, parallel scheduling with per-step/per-run timeouts, a live per-step run state (status/attempt/current action/per-sub-agent fan-out/agent trace) served to both the tools and the app, dry-run fixtures, persistence to the real VFS, and 039-compliant service-declared tools (workflow_list/create/read/modify/run/status/cancel/delete/export/validate/run_list/run_get).",
+      "app": {
+        "entrypoint": "items/workflows/app",
+        "runtime": "iframe",
+        "version": "2.1.0",
+        "icon": "Workflow"
+      },
+      "spec": {
+        "path": "items/workflows/spec",
+        "version": "2.1.0"
+      },
+      "services": {
+        "entrypoint": "items/workflows",
+        "version": "2.1.0"
       }
     }
   ]

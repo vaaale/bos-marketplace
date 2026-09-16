@@ -1,0 +1,243 @@
+{
+  "schemaVersion": 1,
+  "id": "openspec",
+  "label": "OpenSpec",
+  "version": "1.13.0",
+  "_verifiedAgainst": "Fission-AI/openspec@9d4e597 (v1.13.0), schemas/spec-driven/schema.yaml",
+  "sections": [
+    {
+      "rel": "changes",
+      "kind": "active",
+      "leafMarker": "proposal.md",
+      "numbering": "none"
+    },
+    {
+      "rel": "specs",
+      "kind": "truth",
+      "leafMarker": "spec.md",
+      "numbering": "none"
+    },
+    {
+      "rel": "changes/archive",
+      "kind": "archive",
+      "leafMarker": "proposal.md",
+      "numbering": "none",
+      "terminal": true,
+      "terminalLabel": "Archived"
+    }
+  ],
+  "constitution": "config.yaml",
+  "constitutionRoot": "own",
+  "discrepancies": {
+    "rel": "discrepancies.md",
+    "roots": [
+      "own"
+    ]
+  },
+  "artifacts": [
+    {
+      "id": "proposal.md",
+      "generates": "proposal",
+      "requires": [],
+      "scope": "unit"
+    },
+    {
+      "id": "specs",
+      "generates": "specs",
+      "requires": [
+        "proposal.md"
+      ],
+      "scope": "unit"
+    },
+    {
+      "id": "design.md",
+      "generates": "design",
+      "requires": [
+        "proposal.md"
+      ],
+      "scope": "unit"
+    },
+    {
+      "id": "design/ui-mockup.html",
+      "generates": "ui",
+      "requires": [
+        "proposal.md"
+      ],
+      "scope": "unit"
+    },
+    {
+      "id": "tasks.md",
+      "generates": "tasks",
+      "requires": [
+        "specs",
+        "design.md"
+      ],
+      "scope": "unit"
+    }
+  ],
+  "artifactOrder": [
+    "proposal.md",
+    "specs",
+    "design.md",
+    "design/ui-mockup.html",
+    "tasks.md"
+  ],
+  "phases": [
+    {
+      "id": "context",
+      "label": "Context",
+      "requires": [],
+      "rules": [
+        {
+          "when": {
+            "kind": "contains",
+            "file": {
+              "rel": "config.yaml",
+              "scope": "store"
+            },
+            "text": "context:"
+          },
+          "then": "done"
+        }
+      ]
+    },
+    {
+      "id": "proposal",
+      "label": "Proposal",
+      "requires": [],
+      "rules": [
+        {
+          "when": {
+            "kind": "nonEmpty",
+            "file": {
+              "rel": "proposal.md"
+            }
+          },
+          "then": "done"
+        }
+      ]
+    },
+    {
+      "id": "specs",
+      "label": "Delta specs",
+      "requires": [
+        "proposal"
+      ],
+      "rules": [
+        {
+          "when": {
+            "kind": "count",
+            "glob": "specs/**/*.md",
+            "scope": "unit",
+            "min": 1
+          },
+          "then": "done"
+        }
+      ]
+    },
+    {
+      "id": "design",
+      "label": "Design",
+      "requires": [
+        "proposal"
+      ],
+      "rules": [
+        {
+          "when": {
+            "kind": "nonEmpty",
+            "file": {
+              "rel": "design.md"
+            }
+          },
+          "then": "done"
+        }
+      ]
+    },
+    {
+      "id": "ui",
+      "label": "UI",
+      "requires": [
+        "proposal"
+      ],
+      "rules": [
+        {
+          "when": {
+            "kind": "nonEmpty",
+            "file": {
+              "rel": "design/ui-mockup.html"
+            }
+          },
+          "then": "done"
+        }
+      ],
+      "else": "na"
+    },
+    {
+      "id": "tasks",
+      "label": "Tasks",
+      "requires": [
+        "specs",
+        "design"
+      ],
+      "rules": [
+        {
+          "when": {
+            "kind": "nonEmpty",
+            "file": {
+              "rel": "tasks.md"
+            }
+          },
+          "then": "done"
+        }
+      ]
+    },
+    {
+      "id": "apply",
+      "label": "Apply",
+      "requires": [
+        "tasks"
+      ],
+      "rules": [
+        {
+          "when": {
+            "kind": "checklist",
+            "file": {
+              "rel": "tasks.md"
+            },
+            "quantifier": "all"
+          },
+          "then": "done"
+        }
+      ]
+    }
+  ],
+  "stateLabels": {
+    "done": "Done",
+    "pending": "Available",
+    "blocked": "Blocked",
+    "na": "—"
+  },
+  "templates": "templates",
+  "storeRoot": "openspec",
+  "driverSkill": "openspec-driver",
+  "agents": [],
+  "_rolesNote": [
+    "These name agents CONTRIBUTED BY OTHER PACKS (spec-kit's architect,",
+    "architect-reviewer and ui-designer) plus BOS's own `developer`. That is",
+    "deliberate, not a missing dependency: spec-kit is built in and cannot be",
+    "uninstalled, and 045 FR-001a REPORTS two packs offering the same agent id",
+    "as a collision — so shipping our own copy of `architect` would break the",
+    "pack that already provides it. Reference, never duplicate.",
+    "",
+    "`intent` is NOT here. US5's table lists it as a BOS role, but 044 made it a",
+    "SKILL, and a role must name a resolvable AGENT (046 FR-021). Declaring it",
+    "would dangle silently. The driver skill loads the `intent` skill at the",
+    "proposal stage instead — which is what that row actually meant."
+  ],
+  "roles": {
+    "architect": "architect",
+    "architect-reviewer": "architect-reviewer",
+    "ui-designer": "ui-designer",
+    "developer": "developer"
+  }
+}

@@ -1,0 +1,4 @@
+module = "bmm"
+version = "6.13.0-next"
+update_source = "bos:data/user-apps/items/bmad"
+knowledge = "`product-brief.md` — see docs/usage/BMAD/index.md"

@@ -1,0 +1,21 @@
+schema: spec-driven
+
+# OpenSpec's constitution equivalent. This `context:` block is injected into
+# every generated artifact, so it is the one place project-wide rules belong.
+#
+# BOS reports the "Context" phase as done when this key is present — NOT merely
+# when the file exists. A config.yaml with a schema line and no context is a
+# perfectly valid file carrying no principles, and reporting that as done would
+# be worse than reporting nothing.
+context: |
+  Tech stack: <languages, runtimes, frameworks>
+  Package manager: <npm | pnpm | uv | cargo | …>
+
+  Product language:
+  - Write proposals and specs in user-facing behaviour language
+  - Requirements describe the observable contract, not the implementation
+  - Put internal mechanisms in design.md or tasks.md unless the mechanism is
+    itself part of the user-facing contract
+
+  Constraints that every change must respect:
+  - <platform, compatibility, security, performance …>

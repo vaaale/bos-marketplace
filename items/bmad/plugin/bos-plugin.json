@@ -1,0 +1,7 @@
+{
+  "id": "bmad",
+  "name": "BMAD Method",
+  "version": "6.13.0-next",
+  "description": "BMAD's agile method as a BOS spec-method pack: five personas, a PRD-to-stories pipeline, and BOS-grounded architecture/UX/story workflows.",
+  "entry": "index.js"
+}
