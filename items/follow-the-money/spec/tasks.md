@@ -198,7 +198,7 @@
 
 ## Definition of Done
 
-- [ ] **All three facets present** in the item: `app/` (18 files per design §4), `services/` (service.json + package.json + 20 src files), `docs/` (5 pages under `docs/usage/Follow the Money/` and `docs/dev/Follow the Money/`), plus `config/follow-the-money.json`.
+- [ ] **All three facets present** in the item: `app/` (15 files per design §4), `services/` (service.json + package.json + 24 src files), `docs/` (5 pages under `docs/usage/Follow the Money/` and `docs/dev/Follow the Money/`), plus `config/follow-the-money.json`.
 - [ ] **`service.json.id === "follow-the-money"`** and equals the item dir name; `package.json` pins `"type":"commonjs"`; no BOS-source imports anywhere in `services/` (grep for `@/` and `require("@/` → zero hits).
 - [ ] **Service reaches `running`** in the preview; `GET /api/health` returns live data (`pipelineAlive`, `providers[]`, `regions[]`).
 - [ ] **App opens with live US data:** ≥ 23 US rows ranked by score; HealthStrip + PulseStrip render; no-key US/Europe/Asia fully functional; Norway labeled "Awaiting Data" (no fabricated data, NFR-006).
