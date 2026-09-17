@@ -16,7 +16,7 @@
 | Facet | What it is | Runs in |
 |---|---|---|
 | **app** | The investment dashboard — an iframe UI (React allowed for the app facet; the Developer bundles it). The **read surface**: renders precomputed signals, offers region/lookback switching, watchlist, detail, and a config drawer. | The Next.js app process as an installed app (iframe). |
-| **service** | A **background Node worker-thread daemon** — plain Node (CJS or ESM), **unbundled, outside Next.js entirely**. It fetches OHLCV from providers, persists bars, computes all signals, and serves them over **its own HTTP API on its own port**. | A worker-thread service process spawned by `ServiceManager.ts` via `new Worker(entryPath)`, bound to its own configurable port. |
+| **service** | A **background Node worker-thread daemon** — plain Node, **CommonJS** (committed — see §4), **unbundled, outside Next.js entirely**. It fetches OHLCV from providers, persists bars, computes all signals, and serves them over **its own HTTP API on its own port**. | A worker-thread service process spawned by `ServiceManager.ts` via `new Worker(entryPath)`, bound to its own configurable port. |
 | **docs** | End-user + developer pages, shipped inside the item under `docs/usage/<Name>` and `docs/dev/<Name>`. | Rendered by the Docs app overlay at read time. |
 
 **The one load-bearing separation:** the **service is the engine** (fetch → persist → compute → serve), the **app is the read surface**. The app never talks to external providers and never recomputes signals on view. This gives instant loads (FR load < 2 s), deterministic signals computed once per refresh, and graceful offline degradation (last persisted signals + as-of + stale warning, NFR-004).
@@ -70,7 +70,7 @@ interface ProviderAdapter {
 | Twelve Data (FALLBACK, keyed) | `twelvedata` | yes | `https://api.twelvedata.com/time_series?symbol=…&interval=1day&outputsize=800&apikey=…` | Global incl. Norway (`EQNR.OL`, `DNB.OL`) + OBX (`^OBX`) + home-exchange indices (`^GDAXI`,`^FTSE`,`^FCHI`,`^N225`,`^HSI`,`^KS11`). 1 credit/call; 8 req/min; 800 credits/day. `adj_close=1` available (future use). |
 | CNBC (HEARTBEAT, no-key) | `cnbc` | no | `https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol` | Spot only (`last`, `cur`, `exchange`, `last_time`). **US symbols only** (non-US collides — verified). Used solely as the liveness heartbeat; never feeds signals. |
 
-**Explicitly NOT used:** Stooq and Yahoo (IP-blocked from this sandbox — verified). Alpha Vantage (25/day) and EODHD (20/day) free tiers are below the ~44-symbol daily need. (Constraint 5.)
+**Explicitly NOT used:** Stooq and Yahoo (IP-blocked from this sandbox — verified). Alpha Vantage (25/day) and EODHD (20/day) free tiers are below the 46-symbol daily need. (Constraint 5.)
 
 ### 2.2 Fetch / persist pipeline
 
@@ -88,10 +88,10 @@ For a symbol, walk the chain in order:
 4. On success → record `providerUsed` for the symbol (FR-011 "per-symbol provider selection recorded") and proceed to upsert + signal.
 5. If the chain is exhausted with no success and no provider was available due to missing key → mark the symbol **"unavailable — data source not configured"**, retain prior signal stamped **stale**, log to the refresh event list. (US5/Edge cases.)
 
-**Credit accounting (NFR-007, ≤ 9 credits/day):** only the keyed provider (`twelvedata`) consumes credits — 1 per successful `time_series` call. The pipeline tracks `creditsUsedToday` (reset at local UTC midnight) and enforces a **`dailyCreditBudget`** (default 15, far under the 800 free tier). When the budget is exhausted for the day, remaining keyed symbols are marked **"deferred — credit budget"** (not an error) and picked up the next day. At the default universe the keyed set is exactly 9 symbols (OBX, EQNR.OL, DNB.OL, ^GDAXI, ^FTSE, ^FCHI, ^N225, ^HSI, ^KS11) → **9 credits/day**, satisfying NFR-007.
+**Credit accounting (NFR-007, ≤ 9 credits/day):** only the keyed provider (`twelvedata`) consumes credits — 1 per successful `time_series` call. The pipeline tracks `creditsUsedToday` (reset at local UTC midnight) and enforces a **`dailyCreditBudget`** (default 15, far under the 800 free tier). When the budget is exhausted for the day, remaining keyed symbols are marked **"deferred — credit budget"** (not an error) and picked up the next day. At the default universe the keyed set is exactly 9 symbols (`^OBX`, `EQNR.OL`, `DNB.OL`, `^GDAXI`, `^FTSE`, `^FCHI`, `^N225`, `^HSI`, `^KS11`) → **9 credits/day**, satisfying NFR-007.
 
 **Rate-limit pacing (NFR-003):**
-- Nasdaq: **350 ms** spacing between requests (verified clean for 30+ sequential). A 44-symbol daily refresh ≈ 15 s — far under any hidden limit.
+- Nasdaq: **350 ms** spacing between requests (verified clean for 30+ sequential). A 37-symbol no-key refresh ≈ 13 s — far under any hidden limit.
 - Twelve Data: **~7.5 s** spacing (8 req/min ceiling). 9 keyed symbols ≈ 68 s.
 
 **Atomicity / no data corruption (NFR-003, NFR-005):** bars are upserted **per symbol** and each symbol's file is rewritten **only after a fully successful fetch** for that symbol (atomic write: write temp → rename). A failed symbol leaves its prior file untouched — **never zeroed**. A partial refresh commits the successful majority and re-attempts failures next cycle.
@@ -101,7 +101,7 @@ For a symbol, walk the chain in order:
 - **Intraday heartbeat:** every **5 min**, a single CNBC spot quote (NDX) → sets `pipelineAlive` and `lastHeartbeat`. Non-critical: a failure just skips the cycle. Completes < 2 s (NFR-002).
 - Scheduling is `setInterval`/`setTimeout` in the worker (no external cron). An in-process `refreshing` guard prevents overlap; a file lock under the data dir is optional cross-version safety.
 
-**NFR-002 budget check (default universe, ~44 instruments):** Nasdaq 38 symbols × 350 ms ≈ 13 s; Twelve Data 9 symbols × 7.5 s ≈ 68 s; backfill only on first run. Total well under 5 min.
+**NFR-002 budget check (default universe, 46 instruments = 37 no-key + 9 keyed):** Nasdaq 37 symbols × 350 ms ≈ 13 s; Twelve Data 9 symbols × 7.5 s ≈ 68 s; backfill only on first run. Total well under 5 min.
 
 ### 2.3 Signal engine (the core IP)
 
@@ -126,6 +126,8 @@ All signal modules are **pure functions** of `(bars[], config)` — no `Date.now
 | `momentumWeight` / `flowWeight` | `0.5` / `0.5` | composite blend |
 | `pulseTopN` | `5` | cross-region pulse size (FR-021) |
 | `pulsePerRegionK` | `3` | per-region strongest added to pulse pool |
+| `dirFlatEpsilon` | `0.5` | |momentum %| below which the direction indicator is "flat" (percent) |
+| `noBaseDriftEpsilon` | `5` | |1Y momentum %| above which a no-base instrument is "no-base" vs "trending" (percent) |
 
 ---
 
@@ -134,7 +136,7 @@ All signal modules are **pure functions** of `(bars[], config)` — no `Date.now
 if n > k:  momentumPct[L] = (close[t] / close[t-k] - 1) * 100;  complete = true; barsUsed = k
 else:      momentumPct[L] = (close[t] / close[0] - 1) * 100;     complete = false; barsUsed = n-1
 ```
-"Uses whatever history exists, labeled by length" (Edge case). `t-k` and `0`-indexed; no sub-sampling.
+"Uses whatever history exists, labeled by length" (Edge case). `t-k` and `0`-indexed; no sub-sampling. **Short-circuit:** `n=0` → all `momentumPct[L] = null` and `moneyFlowScore = 0` (no fabrication); `n=1` → `momentumPct[L] = 0`; every window index is floored at `0`; an empty or zero trailing baseline → ratio `0` (S2) / confirmation ratio `0` (S5).
 
 **S2. Money-flow ratio** (the "Flow Ratio" column; recent dollar volume vs its own trailing baseline):
 ```
@@ -197,22 +199,26 @@ moneyFlowScore = clamp( round( momentumWeight*momentumScore + flowWeight*flowSco
 ```
 `Math.tanh` is available in plain Node. Components (`momentumScore`, `flowScore`) are persisted for transparency/detail view. A rising sector with high volume scores high; a rising sector with thin volume scores lower — the "strong vs weak money flow" distinction (US1, SC).
 
-**S7. State (enum) — resolution order (deterministic):**
+**S7. State (enum) — resolution order (deterministic).** The per-symbol availability flag comes from the refresh record (was a bar fetched this cycle?) and MUST be checked **FIRST**, so a fresh key-gated symbol (no prior data, `n=0`) classifies as `unavailable`, not `insufficient-data` — the default no-key Norway case the UI renders as "Awaiting Data" (FR-012 / NFR-006 / SC-003):
 ```
-1. if n < baseMinDuration + baselineWindow                    -> "insufficient-data"
-2. elif symbol unavailable this refresh (no provider data)    -> "unavailable"
-3. elif breakout.present && breakout.confirmed                 -> "breaking-out-confirmed"
-4. elif breakout.present && !breakout.confirmed                -> "breaking-out-unconfirmed"
-5. elif base.present && base.durationDays >= baseMinDuration   -> "in-base"
+0. if symbol unavailable this refresh (no provider data this cycle)
+       -> "unavailable"      // if prior bars exist: retain them + stamp `stale` + asOf = last good date
+1. elif n < baseMinDuration + baselineWindow                    -> "insufficient-data"
+2. elif breakout.present && breakout.confirmed                 -> "breaking-out-confirmed"
+3. elif breakout.present && !breakout.confirmed                -> "breaking-out-unconfirmed"
+4. elif base.present && base.durationDays >= baseMinDuration   -> "in-base"
+5. elif base.present == false and abs(momentumPct["1Y"]) > noBaseDriftEpsilon -> "no-base"
 6. else                                                       -> "trending"   // moving, not a tight base
-   // a distinct "no-base" is used only when base.present=false and there is a clear directional drift (|momentum 1Y| above a small epsilon); otherwise "trending"
 ```
-`direction` (for the up/flat/down indicator) = sign of `momentumPct[activeLookback]` (flat when |value| < `dirFlatEpsilon`, default 0.5%).
+`noBaseDriftEpsilon` defaults to `5` (percent): a `base.present==false` instrument with a clear 1Y directional drift is `no-base`, otherwise `trending`.
+`direction` (up/flat/down indicator) = sign of `momentumPct[activeLookback]` (flat when |value| < `dirFlatEpsilon`, default `0.5` percent).
 
 **S8. Cross-region pulse** (FR-021) — computed in the service (ADR-f), persisted each refresh:
 ```
+dataBearing = instruments whose state ∈ { breaking-out-confirmed, breaking-out-unconfirmed, in-base, trending, no-base }
+             // i.e. EXCLUDES "unavailable" and "insufficient-data" (a no-data region contributes zero, by construction)
 pool = every instrument with state == "breaking-out-confirmed" (any region)
-     ∪ top-pulsePerRegionK-by-moneyFlowScore instruments per region not already in pool
+     ∪ per region, the top-pulsePerRegionK-by-moneyFlowScore from that region's dataBearing instruments not already in pool
 sort pool by (moneyFlowScore desc, region asc, symbol asc)   // deterministic tie-break
 pulse = top pulseTopN
 ```
@@ -225,7 +231,7 @@ gapFlag[i] = pct >= gapThreshold          // default 0.20
 ```
 A ≥ 20% single-day move in an ETF is almost always a split or a data artifact (a 3:1 split shows as ≈ −66%); a modest dividend (< ~5%) does **not** flag. Because Nasdaq returns **raw (unadjusted)** close, this is the split/dividend guard. `gapFlag` bars reset the base detector (S3) — a flagged gap is a series break, not a price move, so it never produces a fake breakout.
 
-**Testability (NFR-010 / SC-007 / SC-002):** because S1–S9 are pure, the test suite feeds a synthetic series engineered to sit in a known base then break out with a known volume ratio, and asserts the exact base bounds, breakout state, confirmation state, and score. Re-running on an identical input must yield byte-identical signal JSON (determinism). This is implemented in the service (`services/src/signal/`), not the app.
+**Testability (NFR-010 / SC-007 / SC-002):** because S1–S9 are pure, the test suite feeds a synthetic series engineered to sit in a known base then break out with a known volume ratio, and asserts the exact base bounds, breakout state, confirmation state, and score. Re-running on an identical input must yield byte-identical signal JSON (determinism). **Determinism guardrail:** the Signal / RegionRollup / Pulse builders MUST emit JSON with a **fixed key-insertion order** and iterate only over **arrays** (never `for…in` over object-keyed or `Set` collections, whose iteration order is not guaranteed) so "byte-identical" actually holds. This is implemented in the service (`services/src/signal/`), not the app.
 
 ### 2.4 Storage layout (on-disk)
 
@@ -240,7 +246,7 @@ dataDir()/system/config/follow-the-money/
     ├── secret.json                # the market-data API key (chmod 0600); NEVER returned by any app-facing response (NFR-009)
     ├── manifest.json              # { schemaVersion, createdAt, lastFullRefresh, universeHash, backfillDone }
     ├── universe/
-    │   └── instruments.json       # merged default (~44) + user-added Instruments (FR-006/FR-017)
+    │   └── instruments.json       # merged default (46) + user-added Instruments (FR-006/FR-017)
     ├── bars/
     │   └── <region>/<symbol>.json # { symbol, currency, bars: [ PriceBar … ] }  (date-ascending, upserted by date)
     ├── signals/
@@ -268,10 +274,11 @@ All responses JSON, served by the worker's own HTTP server. Paths are appended t
 | `GET /api/signals?region=US` | Region money-flow ranking (FR-001) | `RegionRollup` (ranked `SignalLite[]` by score desc) |
 | `GET /api/instruments/{symbol}?region=US&lookback=3M` | Instrument detail (FR-008) | `InstrumentDetail` (series + base + breakout + volume + momentum) |
 | `GET /api/pulse` | Cross-region pulse (FR-021) | `Pulse` |
+| `GET /api/watchlist` | The user's watchlist, each symbol resolved to its cross-region `SignalLite` (FR-015) | `{ asOf, entries: [ SignalLite, … ] }` (config order) |
 | `GET /api/universe` | Universe + per-symbol availability (FR-006, config drawer picker) | `{ instruments: Instrument[] }` |
-| `POST /api/refresh` | Trigger a refresh now (FR-013) | `{ started: boolean, refreshId, reason? }` (body: `{ scope?: "all" | region }`) |
+| `POST /api/refresh` | Trigger a refresh now (FR-013) | `{ started: boolean, refreshId, reason? }` (body: `{ scope?: "all" \| region }`) |
 | `GET /api/config` | Service config — **masked** (thresholds, universe, watchlist, `keyConfigured`) (FR-014) | `ServiceConfig` (key never returned) |
-| `PATCH /api/config` | Update thresholds / watchlist add-remove / custom instrument add | `{ ok: true }` + new values |
+| `PATCH /api/config` | Set/clear the market-data key · thresholds · cadence · watchlist add/remove · add, edit, disable or remove a custom instrument | `{ ok: true }` + new masked values (`keyConfigured` presence only) |
 
 **Request/response shapes:**
 
@@ -280,16 +287,21 @@ GET /api/health ->
 { asOf: "2026-09-16", pipelineAlive: true, lastHeartbeat: "2026-09-17T17:05:00Z",
   lastFullRefresh: "2026-09-17T17:05:11Z", nextRefreshAt: "2026-09-18T17:05:00Z",
   providers: [
-     { id:"nasdaq",    status:"ok",     lastRefresh:"…", symbolsOk:38, symbolsFailed:0, keyRequired:false, keyConfigured:null },
+     { id:"nasdaq",    status:"ok",     lastRefresh:"…", symbolsOk:37, symbolsFailed:0, keyRequired:false, keyConfigured:null },
      { id:"twelvedata",status:"limited",lastRefresh:"…", symbolsOk:9,  symbolsFailed:0, keyRequired:true,  keyConfigured:false, creditsUsedToday:9, dailyCreditBudget:15 } ],
+  regions: [                                  // per-region summary — the source the HealthStrip + config-drawer region cards render (FR-016)
+     { region:"US",      total:23, ok:23, failed:0, stale:0, asOf:"2026-09-16" },
+     { region:"Europe",  total:10, ok:10, failed:0, stale:0, asOf:"2026-09-16" },
+     { region:"Asia",    total:10, ok:10, failed:0, stale:0, asOf:"2026-09-16" },
+     { region:"Norway",  total:3,  ok:0,  failed:0, stale:0, asOf:null, reason:"data source not configured" } ],
   keyConfigured: false,
-  unavailable: [ { symbol:"OBX", region:"Norway", reason:"data source not configured" }, … ],
+  unavailable: [ { symbol:"^OBX", region:"Norway", reason:"data source not configured" }, … ],
   events: [ "2026-09-17T17:05:11Z twelvedata 429 retry-after 60s (EQNR.OL)" ] }
 
 GET /api/signals?region=US ->
 { region:"US", currency:"USD", asOf:"2026-09-16",
   instruments: [ SignalLite (ranked by moneyFlowScore desc), … ],
-  counts: { total:38, inBase:6, breakingOutConfirmed:3, breakingOutUnconfirmed:2, trending:20, unavailable:0, insufficient:0 } }
+  counts: { total:23, inBase:6, breakingOutConfirmed:3, breakingOutUnconfirmed:2, trending:10, unavailable:0, insufficient:2 } }
 
 SignalLite ->
 { symbol, name, category, region, direction:"up"|"down"|"flat",
@@ -311,12 +323,30 @@ GET /api/pulse ->
 { asOf:"2026-09-16",
   entries: [ { symbol:"SMH", region:"US", moneyFlowScore:92, state:"breaking-out-confirmed", momentumPct3M:18.4, moneyFlowRatio:2.1 }, … ] }   // top N, all regions
 
+GET /api/watchlist ->
+{ asOf:"2026-09-16",
+  entries: [ SignalLite, … ] }   // each watchlisted symbol resolved across regions, in config order; empty array if the watchlist is empty
+
 GET /api/config ->
-{ thresholds: { baseMinDuration, baseMaxWidth, breakoutVolumeRatio, baselineWindow, flowWindow, lookbackDays },
+{ thresholds: { baseMinDuration, baseMaxWidth, breakoutVolumeRatio, baselineWindow, flowWindow,
+                lookbackDays, gapThreshold, dirFlatEpsilon, noBaseDriftEpsilon,
+                momentumScale, flowScale, momentumWeight, flowWeight, pulseTopN, pulsePerRegionK },
   watchlist: [ symbol, … ],
   customInstruments: [ Instrument (source:"user") ],
   cadence: { refreshHour, refreshMinute, heartbeatEveryMs },
   keyConfigured: boolean }          // presence only — the key value is NEVER included
+
+PATCH /api/config — body is a partial op object; each op is idempotent and independent:
+{ "setKey": { "apiKey": "…" } }            -> writes data/secret.json (mode 0600); response { ok, keyConfigured:true }
+{ "clearKey": true }                        -> deletes data/secret.json; response { ok, keyConfigured:false }
+{ "thresholds": { …partial… } }             -> merge into data/config.json thresholds
+{ "cadence": { …partial… } }                -> merge into cadence
+{ "watchlistAdd": symbol } / { "watchlistRemove": symbol }
+{ "instrumentAdd": Instrument }             -> add a custom (source:"user") instrument to the universe
+{ "instrumentEdit": { symbol, …fields } }   -> edit name / category / region / enabled / weight
+{ "instrumentRemove": symbol }              -> remove a CUSTOM instrument (defaults cannot be removed, only disabled)
+{ "instrumentDisable": { symbol, enabled:false } }
+Key ops return presence only — the key value is NEVER echoed back (NFR-009).
 ```
 
 **Auth:** the service binds to `127.0.0.1` and is reached by the same-origin app (via the Supervisor proxy under deployment, or directly in standalone) — no separate token is required for the app↔service calls (the app is same-container, same-user). If a future headless/non-browser client needs authenticated access, that uses BOS's loopback `/api/secrets/<service>` bridge (mint in-browser, verify per-request) — **not** a hand-rolled worker-thread token scheme (which would fail Bastion routing). Out of scope for v1.
@@ -332,7 +362,7 @@ GET /api/services/follow-the-money/config
 which returns:
 ```
 { configFiles: [ { name:"follow-the-money", values:{ port:0, host:"127.0.0.1" } } ],
-  runtime:   { port: 44231, host: "127.0.0.1" },   // the ACTUALLY-bound port (OS-assigned since config port=0)
+  runtime:   { port: 44231, host: "127.0.0.1" },   // the ACTUALLY-bound port (OS-assigned since config port=0); null only mid-bind
   readOnly: false,
   configSchema: { … },
   wsPath:   "/__supervisor/services/follow-the-money/ws",   // present when supervisorEnabled(), else null
@@ -340,7 +370,7 @@ which returns:
 ```
 The app uses **only** `runtime`, `httpPath`, `wsPath` (and the non-sensitive `values.port`/`host`) from this endpoint — it does **not** surface the sensitive config files here (the service's own `data/`-dir config is read via the service's masked `/api/config`).
 
-**Step 2 — build the service base URL, preferring the proxy path, falling back to the raw port:**
+**Step 2 — build the service base URL, preferring the proxy path, falling back to the raw port.** (If `data.runtime` is `null` — the worker is mid-bind after a fresh install/restart — **poll** the same `GET /api/services/follow-the-money/config` every ~1 s for up to ~15 s before treating the service as offline; this is a transient binding window, not an error.)
 ```
 const httpBaseUrl = data.httpPath
   ? `${location.origin}${data.httpPath}`          // Supervisor-fronted (Bastion / Docker / Dokploy)
@@ -358,20 +388,20 @@ All subsequent app→service calls are `fetch(\`${httpBaseUrl}api/health\`)`, `�
 | **Supervisor only, no Bastion** (single-user Docker/Dokploy) | `http://<hostname>:<public-port>/__supervisor/services/follow-the-money/` | `<public-port>` = `BOS_PUBLIC_PORT` if set (else Supervisor default `8080`) — confirm per deployment, never assume. |
 | **Standalone, no Supervisor** (plain `npm run dev` / `next start`) | `http://localhost:<runtime.port>/` | `httpPath`/`wsPath` are both `null`; fall back to `location.hostname:runtime.port`. **`runtime.port` is never a fixed number** — with config `port:0` it is OS-assigned and changes every restart; never write a specific port into the app or docs as if stable. |
 
-**Graceful offline (NFR-004):** if the service is unreachable (worker stopped, or `runtime` null), the app **still** works — it was served its last persisted data on its previous open, and on a cold open it shows the last persisted signals it can read + their `asOf` + a visible **"data is N hours old / service offline"** banner, rather than an error page. (The app keeps a small client-side cache of the last successful fetches to enable the cold-open case; the primary offline story is the service persisting results it then serves.)
+**Graceful offline (NFR-004):** if the service is unreachable (worker stopped, or `runtime` null after the poll window), the app **still** works — it was served its last persisted data on its previous open, and on a cold open it shows the last persisted signals it can read + their `asOf` + a visible **"data is N hours old / service offline"** banner, rather than an error page. (The app keeps a small client-side cache of the last successful fetches to enable the cold-open case; the primary offline story is the service persisting results it then serves.)
 
 ### 2.7 App facet design (read surface)
 
 React (allowed for the app facet). The mockup is the visual contract — dark terminal theme, the exact CSS token palette, and the color semantics: **green = up / inflow, red = down / outflow, amber = neutral / unconfirmed, blue = in-base**. The app is a pure client of the service API; all formatting is presentational (currency label, momentum sign, ratio meter), all signal logic lives in the service.
 
-- **Shell** (`App.tsx`): header (brand, "Not Financial Advice" pill — FR-018, region + lookback segmented controls — FR-007, "Data & Config" button), the always-visible **HealthStrip**, left rail (4 views + Data Health), main view router.
+- **Shell** (`App.tsx`): header (brand, "Not Financial Advice" pill — FR-018, region + lookback segmented controls — FR-007, "Data & Config" button), the always-visible **HealthStrip**, the **PulseStrip** beneath it, left rail (4 views + Data Health), main view router.
 - **Views:**
   - **Dashboard** (`Dashboard.tsx`, FR-001/SC-001): ranked money-flow table for the active region — `#`, instrument, category, dir, momentum % (active lookback, sortable), money-flow (recent $ volume), flow-ratio meter, state chip, watchlist star. Sort by score / momentum / flow.
   - **Scanner** (`Scanner.tsx`, FR-002/003/004): two columns — **Breaking Out** (confirmed + unconfirmed, with base range, duration, breakout level, volume ratio) and **In Base — Candidates** (ranked by duration desc then width asc; "tightest in region" / "longest base" tags). Filter chips by state.
   - **Instrument Detail** (`Detail.tsx` + `Chart.tsx`, FR-008): price + volume SVG chart with the base range shaded/bracketed (blue), the breakout level dashed (amber), the trailing-avg-volume line, the breakout-bar marker; a stat grid (momentum ×4 lookbacks, recent $ volume, flow ratio, base duration/width, breakout level); lookback switcher re-scopes the window + momentum; "insufficient data" placeholder when `sufficientData=false`.
   - **Watchlist** (`Watchlist.tsx`, FR-015): personal list with score + state + 3M momentum, add/remove.
-  - **PulseStrip** (`PulseStrip.tsx`, FR-021/SC-009): compact always-visible strip on the dashboard + scanner — top N confirmed/strongest across **all** regions, each region-tagged, clickable to detail.
-- **ConfigDrawer** (`ConfigDrawer.tsx`, FR-012/016/017): provider health (from `/api/health`), market-data key entry (presence-only display; write via service `/api/config`), add-instrument form, detection-threshold inputs.
+  - **PulseStrip** (`PulseStrip.tsx`, FR-021/SC-009): a compact, always-visible horizontal strip pinned just under the HealthStrip on both the **dashboard** and **scanner** views — the app's signature element, the at-a-glance "where is the money rotating globally" read. Renders up to `pulseTopN` chips from `GET /api/pulse`, left-to-right by score: each chip = uppercase region tag (region color) + symbol + money-flow score + a mini state glyph (green dot = confirmed breakout, amber = strong flow). Chips are clickable → the instrument's detail view. A region with no data contributes no chips (no placeholder, no error). NOTE: `mockup.html` predates this strip; **this bullet is the binding visual spec for it** — the app Developer builds this element from this description, not from the mockup.
+- **ConfigDrawer** (`ConfigDrawer.tsx`, FR-012/016/017): provider health + per-region cards (from `/api/health.regions`), market-data key entry (presence-only display; write via service `/api/config`), add-instrument form, detection-threshold inputs.
 - **State & persistence:** UI prefs (active region, active lookback, sort) in the app's own `localStorage` (persist across reloads — FR-007). Watchlist/thresholds/universe/key are **server-side** (service `data/config.json`), so they survive app rebuilds and are the source of truth the service reads on refresh.
 - **`serviceClient.ts`** is the single place that does the reachability bootstrap (§2.6) and exposes typed fetchers; every component goes through it.
 
@@ -409,9 +439,10 @@ Region ∈ {US, Europe, Norway, Asia}. Category ∈ {broad, sector, proxy, stock
            "durationDays":412,"tightness":0.085,"sufficientData":true },
   "breakout":{ "present":true,"level":44.90,"direction":"up","volumeRatio":2.1,"confirmed":true },
   "score":{ "moneyFlowScore":92,"momentumScore":88,"flowScore":79 },
+  "stale":false,
   "state":"breaking-out-confirmed" }
 ```
-`state` ∈ { `in-base`, `breaking-out-confirmed`, `breaking-out-unconfirmed`, `trending`, `no-base`, `insufficient-data`, `unavailable` }.
+`state` ∈ { `in-base`, `breaking-out-confirmed`, `breaking-out-unconfirmed`, `trending`, `no-base`, `insufficient-data`, `unavailable` }. `stale` is true when the symbol's last successful fetch is older than one trading day (FR-012 / ADR-e).
 
 **RegionRollup** — `data/signals/regions/<region>.json` (the ranked list the dashboard reads).
 ```
@@ -430,17 +461,20 @@ Region ∈ {US, Europe, Norway, Asia}. Category ∈ {broad, sector, proxy, stock
 ```
 
 **AppConfig (split by home, by design):**
-- **Client-side (app `localStorage`)** — UI prefs only: `activeRegion`, `activeLookback`, `sortKey`, `sortDir`. Persist across reloads (FR-007).
-- **Server-side (service `data/config.json`)** — the durable, refresh-relevant config (FR-014/017): `thresholds { baseMinDuration, baseMaxWidth, breakoutVolumeRatio, baselineWindow, flowWindow, lookbackDays }`, `cadence { refreshHour, refreshMinute, heartbeatEveryMs }`, `watchlist [symbol]`, `customInstruments [Instrument]`, `keyConfigured: boolean`. Managed via the service's masked `/api/config` GET/PATCH.
+- **Client-side (app `localStorage`)** — UI prefs only: `activeRegion`, `activeLookback`, `sortKey`, `sortDir`, `schemaVersion`. Persist across reloads (FR-007).
+- **Server-side (service `data/config.json`)** — the durable, refresh-relevant config (FR-014/017): `thresholds` (the full set in §2.3 incl. `dirFlatEpsilon`, `noBaseDriftEpsilon`, `gapThreshold`, the score scales/weights, and the pulse params), `cadence { refreshHour, refreshMinute, heartbeatEveryMs }`, `watchlist [symbol]`, `customInstruments [Instrument]`, `keyConfigured: boolean`. Managed via the service's masked `/api/config` GET/PATCH.
 - **The market-data API key** — `data/secret.json` (0600), **presence-only** in every app-facing response (NFR-009).
 
-**Default universe (~44 instruments, from research §6):**
-- US broad (4): SPY, QQQ, IWM, NDX (NDX price-only; QQQ carries volume) — Nasdaq.
-- US sector ETFs (15): XLK, XLE, XLF, XLV, XLI, XLY, XLP, XLU, XLB, XLRE, XLC, SMH, SOXX, XBI, XOP, XPH, XME, GDX, ITB (all verified) — Nasdaq. *(Adjust the exact set to ~15 during plan; all are verified reachable.)*
+**Default universe (46 instruments = 37 no-key + 9 keyed; definitive list, counts reconciled across §2.2/§3/§4):**
+- US broad (4): SPY, QQQ, IWM, NDX — Nasdaq. **NDX is `assetclass=index` → price-only (no volume)**, so `dollarVolume`/`moneyFlowRatio` are `0` and the app renders its flow as "—"; NDX ranks on momentum only. QQQ (an ETF) carries the US-tech volume read.
+- US sector ETFs (19): XLK, XLE, XLF, XLV, XLI, XLY, XLP, XLU, XLB, XLRE, XLC, SMH, SOXX, XBI, XOP, XPH, XME, GDX, ITB (all verified reachable) — Nasdaq.
 - US-listed Europe proxies (7): EFA, EWG, EWU, EWI, EWP, EWN, FXN — Nasdaq (USD, full OHLCV).
 - US-listed Asia proxies (7): EWJ, EWH, FXI, EWA, IEMG, VWO, EEM — Nasdaq (USD, full OHLCV).
-- **Keyed (Twelve Data) — 9 total, 9 credits/day:** Norway: OBX (`^OBX`), EQNR.OL, DNB.OL; Europe home-exchange: `^GDAXI`, `^FTSE`, `^FCHI`; Asia home-exchange: `^N225`, `^HSI`, `^KS11`.
-  - Region assignment for keyed indices: `^GDAXI/^FTSE/^FCHI` → Europe; `^N225/^HSI/^KS11` → Asia; OBX/EQNR.OL/DNB.OL → Norway. Norway has **no** no-key substitute (no liquid US Nordic ETF) — it is fully key-gated.
+  - **No-key total: 4 + 19 + 7 + 7 = 37** (US 23, Europe 7, Asia 7, Norway 0).
+- **Keyed (Twelve Data) — 9 total, 9 credits/day:** Norway: `^OBX`, `EQNR.OL`, `DNB.OL`; Europe home-exchange: `^GDAXI`, `^FTSE`, `^FCHI`; Asia home-exchange: `^N225`, `^HSI`, `^KS11`.
+  - Region assignment for keyed indices: `^GDAXI/^FTSE/^FCHI` → Europe; `^N225/^HSI/^KS11` → Asia; `^OBX`/`EQNR.OL`/`DNB.OL` → Norway. Norway has **no** no-key substitute (no liquid US Nordic ETF) — it is fully key-gated.
+  - **Per-region totals (keyed added):** US 23, Europe 10, Asia 10, Norway 3 → **46**.
+  - **Norway symbol spellings are authoritative here** (`^OBX`, `EQNR.OL`, `DNB.OL` — the `.OL` Oslo suffix per the research report). The `mockup.html` Norway rows (`EQNR.O`, `AKO.O`, `SAND.O`) are **illustrative only** and do **not** define the universe. **HARD GATE (see §8):** before the first backfill, a live keyed probe MUST confirm each Oslo ticker resolves on Twelve Data; a wrong suffix = `NOT_FOUND` = the symbol permanently `unavailable`, which would fail the one key-gated region (SC-003).
 
 ---
 
@@ -451,7 +485,7 @@ follow-the-money/                                  # item root → data/user-app
 ├── app/                                           # ---- APP FACET (React, bundled by app_build) ----
 │   └── src/
 │       ├── main.tsx                               # entry; mounts into document.getElementById("root")
-│       ├── App.tsx                                # shell: header + HealthStrip + rail + view router
+│       ├── App.tsx                                # shell: header + HealthStrip + PulseStrip + rail + view router
 │       ├── index.css                              # dark terminal theme (mockup token palette)
 │       ├── lib/
 │       │   ├── serviceClient.ts                   # reachability bootstrap (§2.6) + typed fetchers; the ONLY app→service path
@@ -459,25 +493,26 @@ follow-the-money/                                  # item root → data/user-app
 │       │   └── format.ts                          # currency / momentum / ratio / date formatting
 │       └── components/
 │           ├── HealthStrip.tsx                    # as-of + per-region dots + key chip (FR-016)
+│           ├── PulseStrip.tsx                     # cross-region pulse strip (FR-021/SC-009)
 │           ├── RegionBar.tsx                      # region + lookback segmented controls (FR-007)
 │           ├── Dashboard.tsx                      # ranked money-flow table (FR-001)
 │           ├── Scanner.tsx                        # breaking-out + in-base columns (FR-002/003/004)
 │           ├── Detail.tsx                         # instrument detail view (FR-008)
 │           ├── Chart.tsx                          # SVG price+volume+base+breakout chart
 │           ├── Watchlist.tsx                      # personal list (FR-015)
-│           ├── PulseStrip.tsx                     # cross-region pulse (FR-021)
-│           └── ConfigDrawer.tsx                   # providers / key / add instrument / thresholds
+│           └── ConfigDrawer.tsx                   # providers / region cards / key / add instrument / thresholds
 │
 ├── services/                                      # ---- SERVICE FACET (plain Node, UNBUNDLED) ----
 │   ├── service.json                               # { id:"follow-the-money", entry:"src/index.js",
 │   │                                                #   configSchema:{ port:{default:0}, host:{default:"127.0.0.1"} },
 │   │                                                #   settingsRegistration:{ label:"Follow the Money" } }
-│   └── src/                                       # CJS or ESM; NO BOS-source imports; self-contained
+│   ├── package.json                               # { "type": "commonjs" } — pins CommonJS so the unbundled worker does not default-misparse ESM `import` syntax
+│   └── src/                                       # CommonJS (require); NO BOS-source imports; self-contained
 │       ├── index.js                               # worker entry: parentPort guard (CH-011),
 │       │                                          #   initialize → read configDirPath + follow-the-money.json → bind
 │       │                                          #   HTTP → postMessage {initialized} then {bound,port,host}; dispose; crash-safe
 │       ├── http/
-│       │   └── server.js                          # route table → /api/health,signals,instruments,pulse,universe,refresh,config
+│       │   └── server.js                          # route table → /api/health,signals,instruments,pulse,watchlist,universe,refresh,config
 │       ├── pipeline/
 │       │   ├── scheduler.js                       # daily cron (17:05 UTC default) + 5-min heartbeat (setInterval/timeout)
 │       │   ├── refresh.js                         # full-refresh orchestration: per-symbol chain resolve → fetch → upsert → signal; partial-failure isolation
@@ -489,7 +524,7 @@ follow-the-money/                                  # item root → data/user-app
 │       │   ├── cnbc.js                            # HEARTBEAT spot (US only)
 │       │   └── http.js                            # shared fetch: headers, timeout, 429/retry-after, ProviderError mapping
 │       ├── signal/                                # PURE functions of (bars, config) — deterministic, testable
-│       │   ├── engine.js                          # orchestrates S1–S9 → Signal; state resolution
+│       │   ├── engine.js                          # orchestrates S1–S9 → Signal; state resolution; fixed-key JSON emit
 │       │   ├── momentum.js                        # S1
 │       │   ├── moneyflow.js                       # S2
 │       │   ├── base.js                            # S3
@@ -500,12 +535,12 @@ follow-the-money/                                  # item root → data/user-app
 │       ├── storage/
 │       │   ├── store.js                           # atomic read/write (write-temp → rename); mkdir -p
 │       │   ├── bars.js                            # per-symbol bar upsert by (instrument,date)
-│       │   ├── signals.js                         # Signal / RegionRollup / Pulse writers
+│       │   ├── signals.js                         # Signal / RegionRollup / Pulse writers (fixed key order)
 │       │   └── refreshlog.js                      # bounded JSONL append
 │       ├── config/
 │       │   └── defaults.js                        # all §2.3 defaults + cadence + budget + host/port
 │       └── universe/
-│           └── default-universe.js                # the curated ~44 Instruments (research §6)
+│           └── default-universe.js                # the curated 46 Instruments (research §6; 37 no-key + 9 keyed)
 │
 ├── config/
 │   └── follow-the-money.json                      # BOS-seeded config defaults: { "port": 0, "host": "127.0.0.1" }
@@ -539,7 +574,7 @@ The item **calls** these; it does not modify them.
 ## 6. ADRs
 
 **ADR-a — Provider primary/fallback split (Nasdaq primary + Twelve Data keyed fallback).**
-Nasdaq API is the primary because it is open (no key), verified reachable from this sandbox, returns full OHLCV **with volume** (required for dollar-volume flow), and has 5-yr history. Stooq/Yahoo are IP-blocked (verified); Alpha Vantage (25/day) and EODHD (20/day) free tiers are below the ~44-symbol daily need. Norway and home-exchange indices have **no no-key source** (no liquid US-listed Nordic ETF), so they must come from a keyed, global, well-documented provider → Twelve Data (free, 800 credits/day, 8 req/min) as the **fallback**. The split keeps the product **fully functional with no key** (US + Europe/Asia via US-listed proxy ETFs) and makes the key optional — unlocking only the one region that can't otherwise be covered (Norway) plus exact home-exchange index levels. Adapter isolation (NFR-008) means the split is a configuration of the chain, not a fork.
+Nasdaq API is the primary because it is open (no key), verified reachable from this sandbox, returns full OHLCV **with volume** (required for dollar-volume flow), and has 5-yr history. Stooq/Yahoo are IP-blocked (verified); Alpha Vantage (25/day) and EODHD (20/day) free tiers are below the 46-symbol daily need. Norway and home-exchange indices have **no no-key source** (no liquid US-listed Nordic ETF), so they must come from a keyed, global, well-documented provider → Twelve Data (free, 800 credits/day, 8 req/min) as the **fallback**. The split keeps the product **fully functional with no key** (US + Europe/Asia via US-listed proxy ETFs) and makes the key optional — unlocking only the one region that can't otherwise be covered (Norway) plus exact home-exchange index levels. Adapter isolation (NFR-008) means the split is a configuration of the chain, not a fork.
 
 **ADR-b — Service port defaults to `0` + proxy-path connectivity.**
 A configurable port MUST default to **`0`** (OS-assigned), never a fixed number: a fixed default collides with BOS's reserved ranges (dev `3000`; Supervisor `BOS_PUBLIC_PORT` `8080/8090` + the base/preview pool **3000–3020**) — this exact collision (a service defaulting to `3001`, the first preview-pool slot) caused a real production `EADDRINUSE` incident. `0` lands in the OS ephemeral range, never in those. Because the service binds its **own** port and that port is **not directly reachable** once BOS is behind a reverse proxy, the app resolves the actually-bound port from `runtime` and **prefers `httpPath`/`wsPath`** (Supervisor proxy) when present, falling back to direct `host:port` only in standalone (services.md §11 — no invented URL). This is the documented, production-correct pattern.
@@ -551,7 +586,7 @@ The worker is handed `configDirPath`; it persists under `configDirPath/data/` �
 NFR-011 (byte-identical output for identical input) and NFR-010 (synthetic-series testability) require isolated **pure** functions of `(bars, config)` with no I/O, `Date.now()`, or randomness — the app's runtime is the wrong home (provider timing, bundling, and view-frequency would defeat determinism and the < 2 s load NFR). Computing once per refresh in the worker means signals are persisted, served instantly, and available offline (NFR-004). The app renders cached results and does **no** signal math — only presentational formatting.
 
 **ADR-e — Norway / key-gating degrades to a labeled "awaiting data source," never silent or fabricated.**
-When no key is configured, the keyed provider is unavailable. Norway instruments (and any home-exchange index) are marked **`unavailable`** with reason "data source not configured," **contribute no pulse entries**, and their prior signals (if any) are **retained and stamped stale** — not dropped, not zeroed, never presented without the label (NFR-006, FR-012, US3). The rest of the product (US, Europe, Asia via proxies) is fully functional no-key. Adding a key via the config drawer unlocks them on the next refresh (FR-012, US7).
+When no key is configured, the keyed provider is unavailable. Norway instruments (and any home-exchange index) are marked **`unavailable`** with reason "data source not configured", **contribute no pulse entries**, and their prior signals (if any) are **retained and stamped stale** (`stale:true` on the Signal) — not dropped, not zeroed, never presented without the label (NFR-006, FR-012, US3). The rest of the product (US, Europe, Asia via proxies) is fully functional no-key. Adding a key via the config drawer unlocks them on the next refresh (FR-012, US7).
 
 **ADR-f — Cross-region pulse computed in the service and persisted.**
 The pulse (FR-021/SC-009) is a function of **all four regions'** signals. Computing it in the service makes it part of the persisted, deterministic signal set (NFR-011), so it loads instantly, is available offline (NFR-004), and the app doesn't have to fetch and merge all four regions client-side (which would also be fragile to a mid-merge offline). The app just renders `GET /api/pulse`. Regions without data contribute no entries and cause no error.
@@ -563,7 +598,7 @@ The pulse (FR-021/SC-009) is a function of **all four regions'** signals. Comput
 | Risk | Likelihood / impact | Mitigation |
 |---|---|---|
 | **Nasdaq API is undocumented** (internal nasdaq.com API; no SLA/changelog) — could break or change schema at any time | Medium / high | Adapter isolation → a Nasdaq schema break is one module to fix. Twelve Data fallback covers every critical symbol. Per-symbol `providerUsed` logging + `/api/health` make breakage visible fast. Conservative 350 ms pace avoids triggering hidden limits. |
-| **Twelve Data free-tier limits** (8 req/min, 800 credits/day) | Low / medium | Only 9 keyed symbols by default → 9 credits/day (NFR-007). ~7.5 s spacing honors 8/min. Honor `Retry-After` on 429. A `dailyCreditBudget` (15) cap turns an overrun into a graceful "deferred" (not an error). Keyed symbols are the fallback-only set, so a limit hit never touches the no-key 38. |
+| **Twelve Data free-tier limits** (8 req/min, 800 credits/day) | Low / medium | Only 9 keyed symbols by default → 9 credits/day (NFR-007). ~7.5 s spacing honors 8/min. Honor `Retry-After` on 429. A `dailyCreditBudget` (15) cap turns an overrun into a graceful "deferred" (not an error). Keyed symbols are the fallback-only set, so a limit hit never touches the no-key 37. |
 | **Market holidays / weekends** | High / low | Refresh runs post-close; the **as-of** timestamp is surfaced on every view (FR-020). A flat close is **not** treated as a "no-move" signal without the date context — the signal engine operates on the last trading bar, and `asOf` carries the date. If the latest bar date < the expected last trading day, health flags the region **stale**. |
 | **Data freshness** (stale bars if a refresh is missed) | Medium / medium | Intraday heartbeat (5 min) confirms the pipeline is alive. `asOf` per region/instrument always shown. Offline → "data is N hours old / service offline" banner (NFR-004). Catch-up on worker start reconciles missed days. |
 | **Raw (unadjusted) close from Nasdaq** — splits/dividends distort the series | Low / medium | Gap detector (S9) flags ≥ 20% single-day moves as `gapFlag` → base detector resets there (FR-019), so a split never fabricates a breakout. Research: sector ETFs rarely split in-window (non-issue), but it's detected anyway. Twelve Data `adj_close=1` is available as a future total-return upgrade. |
@@ -576,9 +611,9 @@ The pulse (FR-021/SC-009) is a function of **all four regions'** signals. Comput
 
 ## 8. Open items for the plan/tasks phase (not design decisions)
 
-- Pin the exact US sector-ETF subset to ~15 (all candidates are verified reachable; pick the set).
-- Confirm Twelve Data Norway symbol spellings (`^OBX` vs `OBX`) against a live keyed probe before first backfill (research verified the *endpoint*, not the exact Oslo tickers with a key).
-- Decide `dirFlatEpsilon` (default 0.5 %) and the `no-base` vs `trending` split threshold, against the synthetic test set (SC-002).
-- Confirm the app's `localStorage` schema versioning for UI prefs (region/lookback/sort).
+- **[HARD GATE — blocks the first backfill of any keyed symbol]** Confirm the Twelve Data Oslo/Nordic suffixes (`^OBX` vs `OBX`; `EQNR.OL` vs `EQNR.O`) with a live keyed probe and record the confirmed tickers in `default-universe.js` before enabling the Norway region. (The research verified the endpoint, not the exact Oslo tickers with a key.)
+- Tune `dirFlatEpsilon` (default 0.5 %) and `noBaseDriftEpsilon` (default 5 %) against the synthetic test set (SC-002).
+- Confirm the app's `localStorage` `schemaVersion` value and migration path for UI prefs (region/lookback/sort).
+- The exact 19-symbol US sector set is fixed above (§3); plan may trim only if a symbol fails the no-key probe, in which case note the removal in the plan.
 
-*Design authored against `spec.md`, `mockup.html`, the verified data-research report (2026-09-17), and BOS's own `docs/dev/apps/services.md` §3/§6/§10/§11/§12 plus `src/app/api/services/[id]/config/route.ts`, `src/core/service/ServiceManager.ts`, `src/system/items/installed.ts`, and `src/os/data-dir.ts` (verified against source, not doc drift).*
+*Design authored against `spec.md`, `mockup.html`, the verified data-research report (2026-09-17), and BOS's own `docs/dev/apps/services.md` §3/§6/§10/§11/§12 plus `src/app/api/services/[id]/config/route.ts`, `src/core/service/ServiceManager.ts`, `src/system/items/installed.ts`, and `src/os/data-dir.ts` (verified against source, not doc drift). All eight architect-review MAJOR findings resolved: S7 state ordering (unavailable first) + no-base epsilon; S1 short-circuit; S8 dataBearing exclusion; determinism guardrail; `GET /api/watchlist` + full `PATCH /api/config` ops; health `regions[]`; universe counts reconciled to 46 (37 no-key + 9 keyed) with NDX price-only note and Norway-symbol hard gate; PulseStrip binding visual spec; worker committed to CommonJS with `package.json`; mid-bind runtime polling.*
