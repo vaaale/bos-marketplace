@@ -68,9 +68,16 @@ through it.
 
 Never `/mockups/…`, `/workspace/…` or `/Documents/…`. Those are the user's own
 sandbox: a mockup there does not ride the feature branch, does not promote or
-discard with the feature, and nobody who opens the item afterwards finds it. A
-real session produced a finished mockup at `/mockups/<app>.html` and it was
-simply not part of the app it was designed for.
+discard with the feature, and nobody who opens the item afterwards finds it.
+
+**Nor the staging directory the app's code is built in** — that is the trap,
+because putting it there feels right. A staging directory holds FACETS (`app/`,
+`services/`, `config/`, `docs/`) and `app_build` carries exactly those into the
+item; a `mockup.html` beside them is not a facet, is not installed, and is left
+in scratch space while the app ships without it.
+
+Two real sessions lost a finished mockup this way — `/mockups/<app>.html`, then
+`/workspace/<app>/mockup.html`.
 
 An item's spec directory is reachable ONLY through the `app_spec_*` tools —
 `file_write` cannot see `data/user-apps` at all. If a write is refused for want
