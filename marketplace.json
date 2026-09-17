@@ -371,6 +371,25 @@
         "entrypoint": "items/workflows",
         "version": "2.1.0"
       }
+    },
+    {
+      "id": "follow-the-money",
+      "name": "Follow the Money",
+      "description": "",
+      "app": {
+        "entrypoint": "items/follow-the-money/app",
+        "runtime": "iframe",
+        "version": "1.0.0",
+        "icon": "TrendingUp"
+      },
+      "spec": {
+        "path": "items/follow-the-money/spec",
+        "version": "1.0.0"
+      },
+      "services": {
+        "entrypoint": "items/follow-the-money",
+        "version": "1.0.0"
+      }
     }
   ]
 }
