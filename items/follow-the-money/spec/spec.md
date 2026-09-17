@@ -18,7 +18,8 @@ The tool implements a specific, documented investing workflow rather than generi
 2. **Base level / heartbeat.** Before a large move, a sector or instrument tends to trade sideways in a horizontal range for a sustained period (the "heartbeat"); the longer the base, the more potential expansion. The tool detects that range, its duration, and its tightness.
 3. **Breakout + volume confirmation.** The actionable event is a close above the upper bound of a detected base *with* elevated dollar volume versus the trailing baseline (institutions buying). Without the volume, it is not confirmed.
 4. **Multi-region.** The same three signals are computed independently for US, Europe, Norway, and Asia, from a curated universe of indices + sector/industry ETFs per region.
-5. **Analytical tool, not an advisor.** The product presents signals and lets the user apply judgment (position sizing, portfolio fit, exit timing). It displays a clear "not financial advice" notice and does not emit stock alerts.
+5. **Cross-region rotation pulse.** Beyond the per-region views, a single always-visible strip surfaces the strongest confirmed money-flow moves *across all four regions* this refresh — the at-a-glance answer to "where is the money rotating globally?". This is the weekly read condensed to a glance.
+6. **Analytical tool, not an advisor.** The product presents signals and lets the user apply judgment (position sizing, portfolio fit, exit timing). It displays a clear "not financial advice" notice and does not emit stock alerts.
 
 The background service is the engine: it fetches, persists, computes, and serves. The app facet is the read surface. Separating them means signals are computed once per refresh (not on every view), the app loads instantly from cached results, and the app degrades gracefully when the service is offline.
 
@@ -163,6 +164,7 @@ I can view data health (last refresh per provider, failures, whether a key is se
 - **FR-018**: The app MUST display a persistent **"not financial advice / analytical tool"** notice on the dashboard and detail views.
 - **FR-019**: The service MUST **detect abnormal single-bar price gaps** (potential splits/corrections) in a fetched series and flag them; the base detector MUST treat a flagged gap as a series break, not a price move.
 - **FR-020**: The app MUST **surface the "as-of" timestamp** of the underlying data on every region view and detail view.
+- **FR-021**: The app MUST show a **cross-region money-flow pulse** — a compact, always-visible strip (on the dashboard and scanner) listing the top N (default 5) confirmed breakouts / strongest money-flow instruments across ALL four regions for the current refresh, each tagged with its region, so a user can see global rotation at a glance. The strip MUST be clickable through to each instrument's detail. Regions with no data (e.g., Norway without a key) MUST simply contribute no entries, not an error.
 
 ### Non-Functional Requirements
 
@@ -199,6 +201,7 @@ I can view data health (last refresh per provider, failures, whether a key is se
 - **SC-006**: Keyed-provider consumption at the default universe is ≤ 9 credits/day.
 - **SC-007**: For an identical synthetic input series, repeated runs of the signal computation produce byte-identical signal output (determinism).
 - **SC-008**: A new region or a new instrument added via configuration appears in the app on the next refresh with no code change.
+- **SC-009**: With at least two regions refreshed, the cross-region pulse lists the top N confirmed/strongest money-flow instruments across all regions, each correctly tagged with its region and clickable to detail; regions without data contribute no entries and cause no error.
 
 ## Assumptions
 
