@@ -2,8 +2,16 @@
   "id": "follow-the-money",
   "entry": "src/index.js",
   "configSchema": {
-    "port": { "default": 0 },
-    "host": { "default": "127.0.0.1" }
+    "port": {
+      "default": 0
+    },
+    "host": {
+      "default": "127.0.0.1"
+    }
   },
-  "settingsRegistration": { "label": "Follow the Money" }
+  "settingsRegistration": {
+    "label": "Follow the Money"
+  },
+  "name": "Follow the Money",
+  "version": "1.0.0"
 }
