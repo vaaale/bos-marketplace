@@ -645,7 +645,7 @@ function renderDashboard(){
       <td><span class="cat ${i.cat}">${i.cat}</span></td>
       <td><span class="dir ${i.dir}">${awaiting?'—':dirSym}</span></td>
       <td class="r"><span class="mom ${awaiting?'':momClass(m)}">${fmtMom(m)}</span></td>
-      <td class="r"><span class="flow ${awaiting?'':(i.flow>=4?'pos':'')}">${fmtFlow(R.cur,i.flow)}</span></td>
+      <td class="r"><span class="flow ${awaiting?'':(i.dir==='down'?'neg':'')}">${fmtFlow(R.cur,i.flow)}</span></td>
       <td class="r"><span class="ratio">${awaiting?'—':`<span class="rv" style="color:${ratioColor(i.ratio)}">${ratioText(i.ratio)}</span><span class="meter ${ratioClass(i.ratio)}"><i style="width:${meterW(i.ratio)}%"></i></span>`}</span></td>
       <td>${chip(i.state)}</td>
       <td class="r"><span class="wl-star ${wl?'':'off'}" data-wl="${i.sym}" title="Toggle watchlist">${wl?'★':'☆'}</span></td>
@@ -905,7 +905,7 @@ function fmtVal(v){ if(v>=1000) return Math.round(v).toLocaleString(); if(v>=100
 /* ---------- 4. WATCHLIST ---------- */
 function renderWatchlist(){
   $('#wlCount').textContent=watchlist.length;
-  const list=watchlist.map(bySym||allBySym).map(allBySym).filter(Boolean).sort((a,b)=>b.score-a.score);
+  const list=watchlist.map(allBySym).filter(Boolean).sort((a,b)=>b.score-a.score);
   if(!list.length){ $('#wlList').innerHTML=`<div class="wl-empty"><div class="big">☆</div>No instruments pinned yet.<br>Add them from the dashboard or detail view.</div>`; return; }
   $('#wlList').innerHTML = list.map((i,idx)=>{
     const R=DATA[i.region];
