@@ -1,0 +1,274 @@
+// Data Sources & Configuration drawer (FR-012/016/017, US7): provider-health
+// cards (health.providers[]), per-region cards (health.regions[]), market-data
+// key entry (presence-only display — the key value never comes back), add-
+// instrument form, and detection-threshold inputs. All writes go through the
+// service's masked PATCH /api/config; key changes take effect on the next
+// refresh.
+import React, { useEffect, useState } from "react";
+import type { Health, Instrument, Region, ServiceConfig } from "../lib/types";
+import { patchConfig, postRefresh } from "../lib/serviceClient";
+import { fmtAsOf } from "../lib/format";
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+  health: Health | null;
+  config: ServiceConfig | null;
+  onConfigChanged: (c: ServiceConfig) => void;
+  toast: (msg: string) => void;
+}
+
+const PROVIDER_LABEL: Record<string, string> = { nasdaq: "Nasdaq API", twelvedata: "Twelve Data" };
+const PROVIDER_ROLE: Record<string, string> = { nasdaq: "primary · no key", twelvedata: "fallback · keyed" };
+
+export default function ConfigDrawer({ open, onClose, health, config, onConfigChanged, toast }: Props) {
+  const [apiKey, setApiKey] = useState("");
+  const [newSym, setNewSym] = useState("");
+  const [newRegion, setNewRegion] = useState<Region>("US");
+  const [newCat, setNewCat] = useState<Instrument["category"]>("sector");
+  const [newProv, setNewProv] = useState<Instrument["provider"]>("both");
+  const [baseMinDuration, setBaseMinDuration] = useState("");
+  const [breakoutVolumeRatio, setBreakoutVolumeRatio] = useState("");
+  const [baselineWindow, setBaselineWindow] = useState("");
+
+  useEffect(() => {
+    if (config) {
+      setBaseMinDuration(String(config.thresholds.baseMinDuration));
+      setBreakoutVolumeRatio(String(config.thresholds.breakoutVolumeRatio));
+      setBaselineWindow(String(config.thresholds.baselineWindow));
+    }
+  }, [config]);
+
+  const run = async (label: string, ops: Parameters<typeof patchConfig>[0]) => {
+    try {
+      const res = await patchConfig(ops);
+      onConfigChanged(res);
+      toast(label);
+    } catch (e) {
+      toast(`Failed: ${e instanceof Error ? e.message : "service offline"}`);
+    }
+  };
+
+  return (
+    <>
+      <div className={`overlay${open ? " on" : ""}`} onClick={onClose} />
+      <aside className={`drawer${open ? " on" : ""}`} data-testid="config-drawer">
+        <div className="dr-head">
+          <h2>Data Sources &amp; Configuration</h2>
+          <button className="x" onClick={onClose} data-testid="drawer-close">
+            ✕
+          </button>
+        </div>
+        <div className="dr-body">
+          <div className="dr-sec">
+            <h3>
+              Provider Health <span className="ln" />
+            </h3>
+            {(health?.providers || []).map((p) => {
+              const cls = p.status === "ok" ? "ok" : p.status === "limited" ? (p.keyRequired && !p.keyConfigured ? "warn" : "warn") : "off";
+              const stat = p.keyRequired && !p.keyConfigured ? "LIMITED" : p.status.toUpperCase();
+              return (
+                <div key={p.id} className={`prov ${cls}`}>
+                  <span className="pd" />
+                  <div>
+                    <div className="pname">{PROVIDER_LABEL[p.id] || p.id}</div>
+                    <div className="pmeta">
+                      {PROVIDER_ROLE[p.id] || ""} · {p.symbolsOk} ok / {p.symbolsFailed} failed
+                      {p.keyRequired
+                        ? ` · key ${p.keyConfigured ? "set" : "NOT set"} · ${p.creditsUsedToday ?? 0}/${p.dailyCreditBudget ?? "—"} credits`
+                        : ""}
+                    </div>
+                  </div>
+                  <span className="pstat">{stat}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="dr-sec">
+            <h3>
+              Regions <span className="ln" />
+            </h3>
+            {(health?.regions || []).map((r) => (
+              <div key={r.region} className={`prov ${r.reason ? "warn" : r.ok > 0 ? "ok" : "off"}`} data-testid={`region-card-${r.region}`}>
+                <span className="pd" />
+                <div>
+                  <div className="pname">{r.region}</div>
+                  <div className="pmeta">
+                    {r.ok}/{r.total} ok · {r.stale} stale · as-of {fmtAsOf(r.asOf)}
+                    {r.reason ? ` · ${r.reason}` : ""}
+                  </div>
+                </div>
+                <span className="pstat">{r.reason ? "AWAITING" : r.ok === r.total ? "OK" : "PARTIAL"}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="dr-sec">
+            <h3>
+              Market-Data API Key <span className="ln" />
+            </h3>
+            <div className="field">
+              <label htmlFor="apikey">Twelve Data API key {config?.keyConfigured ? "(configured)" : "(not configured)"}</label>
+              <input
+                type="password"
+                id="apikey"
+                placeholder={config?.keyConfigured ? "••••••••••••••••  (stored — never displayed)" : "paste a free Twelve Data key"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                data-testid="key-input"
+              />
+              <div className="note">
+                A free key unlocks <b>Norway</b> instruments and exact <b>home-exchange index</b> levels (OBX, DAX, FTSE,
+                Nikkei…). Stored only in the service config — never in the app bundle, never echoed back. No key required
+                for US / Europe / Asia (US-listed proxies). Takes effect on the next refresh.
+              </div>
+            </div>
+            <button
+              className="btn primary"
+              data-testid="save-key"
+              onClick={() => {
+                if (!apiKey.trim()) {
+                  toast("Enter a key first");
+                  return;
+                }
+                run("Key saved — Norway unlocks on next refresh", { setKey: { apiKey: apiKey.trim() } });
+                setApiKey("");
+              }}
+            >
+              Save key
+            </button>{" "}
+            {config?.keyConfigured && (
+              <button className="btn" data-testid="clear-key" onClick={() => run("Key cleared", { clearKey: true })}>
+                Clear key
+              </button>
+            )}
+          </div>
+
+          <div className="dr-sec">
+            <h3>
+              Add Instrument <span className="ln" />
+            </h3>
+            <div className="field">
+              <label>Symbol</label>
+              <input value={newSym} onChange={(e) => setNewSym(e.target.value)} placeholder="e.g. XSD or EQNR.OL" data-testid="add-symbol" />
+            </div>
+            <div className="row2">
+              <div className="field">
+                <label>Region</label>
+                <select value={newRegion} onChange={(e) => setNewRegion(e.target.value as Region)}>
+                  <option>US</option>
+                  <option>Europe</option>
+                  <option>Norway</option>
+                  <option>Asia</option>
+                </select>
+              </div>
+              <div className="field">
+                <label>Category</label>
+                <select value={newCat} onChange={(e) => setNewCat(e.target.value as Instrument["category"])}>
+                  <option>broad</option>
+                  <option>sector</option>
+                  <option>proxy</option>
+                  <option>stock</option>
+                </select>
+              </div>
+            </div>
+            <div className="field">
+              <label>Provider</label>
+              <select value={newProv} onChange={(e) => setNewProv(e.target.value as Instrument["provider"])}>
+                <option value="both">primary + fallback</option>
+                <option value="primary">primary (no key)</option>
+                <option value="fallback">fallback (key required)</option>
+              </select>
+            </div>
+            <button
+              className="btn"
+              data-testid="add-instrument"
+              onClick={() => {
+                const symbol = newSym.trim().toUpperCase();
+                if (!symbol) {
+                  toast("Enter a symbol");
+                  return;
+                }
+                run(`${symbol} added to universe — included next refresh`, {
+                  instrumentAdd: { symbol, region: newRegion, category: newCat, provider: newProv }
+                });
+                setNewSym("");
+              }}
+            >
+              Add to universe
+            </button>
+            <div className="field">
+              <div className="note" style={{ marginTop: 8 }}>
+                Added instruments join the next scheduled refresh. The app reads precomputed signals — no live
+                recomputation on view.
+              </div>
+            </div>
+          </div>
+
+          <div className="dr-sec">
+            <h3>
+              Detection Thresholds <span className="ln" />
+            </h3>
+            <div className="row2">
+              <div className="field">
+                <label>Base min. duration (trading days)</label>
+                <input value={baseMinDuration} onChange={(e) => setBaseMinDuration(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Breakout vol. ratio (×)</label>
+                <input value={breakoutVolumeRatio} onChange={(e) => setBreakoutVolumeRatio(e.target.value)} />
+              </div>
+            </div>
+            <div className="field">
+              <label>Baseline window (trading days)</label>
+              <input value={baselineWindow} onChange={(e) => setBaselineWindow(e.target.value)} />
+            </div>
+            <button
+              className="btn"
+              onClick={() => {
+                const ops: Record<string, number> = {};
+                const d = Number(baseMinDuration);
+                const r = Number(breakoutVolumeRatio);
+                const w = Number(baselineWindow);
+                if (Number.isFinite(d) && d > 0) ops.baseMinDuration = d;
+                if (Number.isFinite(r) && r > 0) ops.breakoutVolumeRatio = r;
+                if (Number.isFinite(w) && w > 0) ops.baselineWindow = w;
+                run("Thresholds saved — applied on next refresh", { thresholds: ops });
+              }}
+            >
+              Save thresholds
+            </button>
+          </div>
+
+          <div className="dr-sec">
+            <h3>
+              Refresh <span className="ln" />
+            </h3>
+            <button
+              className="btn primary"
+              data-testid="refresh-now"
+              onClick={async () => {
+                try {
+                  const r = await postRefresh("all");
+                  toast(r.started ? "Refresh started" : `Not started — ${r.reason || "already running"}`);
+                } catch {
+                  toast("Service offline");
+                }
+              }}
+            >
+              Refresh now
+            </button>
+            <div className="field">
+              <div className="note" style={{ marginTop: 8 }}>
+                Daily refresh runs at{" "}
+                {config ? `${String(config.cadence.refreshHour).padStart(2, "0")}:${String(config.cadence.refreshMinute).padStart(2, "0")} UTC` : "17:05 UTC"}
+                ; a 5-minute heartbeat confirms the pipeline is alive between refreshes.
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </>
+  );
+}
