@@ -2,6 +2,6 @@
   "id": "follow-the-money",
   "name": "Follow the Money",
   "icon": "TrendingUp",
-  "createdAt": 1789670821314,
+  "createdAt": 1789676370548,
   "entry": "src/main.tsx"
 }

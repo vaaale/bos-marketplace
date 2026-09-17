@@ -2,15 +2,21 @@
 // Worker entry for the follow-the-money background service.
 // Self-contained plain Node (CommonJS) — NO BOS-source imports (Constraint 1).
 //
-// IPC contract (ServiceManager):
-//   <- initialize { configDirPath, logsPath, serviceId }
-//   -> { initialized: true }
-//   -> { bound: true, port, host }        (after the HTTP server is listening)
-//   <- dispose                            -> close server, clear timers, exit
-//   -> { crashed: true, message }         (uncaughtException/unhandledRejection)
+// IPC contract (ServiceManager, src/core/service/types.ts WorkerToMainMessage —
+// every worker→main message carries a `type` field):
+//   <- { type: "initialize", configDirPath, logsPath, serviceId }
+//   -> { type: "initialized" }
+//   -> { type: "bound", port, host }      (after the HTTP server is listening)
+//   <- { type: "dispose" }                -> close server, clear timers,
+//   -> { type: "disposed" }                  then exit the worker thread
+//   -> { type: "crash", error, stack }    (uncaughtException/unhandledRejection)
 
-// CH-011: parentPort guard FIRST — when loaded on the main thread (the
-// manifest's import() load check), exit 0 silently.
+// CH-011: parentPort guard FIRST — when loaded outside a worker thread (e.g.
+// a load-check import of this entry), do NOTHING: no side effects, no
+// handlers, no exports. NEVER call process.exit() here — outside a worker,
+// `process` is the HOST process, so exiting would take down the whole server
+// that imported this module, not just this module. (Top-level `return` is
+// valid in CommonJS: module code runs inside the module wrapper function.)
 let parentPort = null;
 try {
   parentPort = require("node:worker_threads").parentPort;
@@ -18,7 +24,7 @@ try {
   parentPort = null;
 }
 if (!parentPort) {
-  process.exit(0);
+  return;
 }
 
 const fs = require("node:fs");
@@ -55,9 +61,9 @@ function makeLogger(logsPath, serviceId) {
   };
 }
 
-function crashed(message) {
+function crashed(message, stack) {
   try {
-    parentPort.postMessage({ crashed: true, message: String(message) });
+    parentPort.postMessage({ type: "crash", error: String(message), stack: stack ? String(stack) : undefined });
   } catch (err) { /* channel gone */ }
 }
 
@@ -107,12 +113,12 @@ function initialize(msg) {
   };
 
   server = createServer(ctx);
-  parentPort.postMessage({ initialized: true });
+  parentPort.postMessage({ type: "initialized" });
   server.listen(port, host, () => {
     const addr = server.address();
     const boundPort = addr && typeof addr === "object" ? addr.port : port;
     ctx.log("bound on " + host + ":" + boundPort);
-    parentPort.postMessage({ bound: true, port: boundPort, host });
+    parentPort.postMessage({ type: "bound", port: boundPort, host });
     ctx.scheduler = startScheduler(ctx);
   });
   server.on("error", (err) => {
@@ -126,6 +132,11 @@ function dispose() {
     if (ctx && ctx.scheduler) ctx.scheduler.stop();
     if (server) server.close();
   } catch (err) { /* best effort */ }
+  try {
+    parentPort.postMessage({ type: "disposed" });
+  } catch (err) { /* channel gone */ }
+  // In a worker thread this exits ONLY the worker, never the host process —
+  // and this line is only reachable with parentPort set (guard at the top).
   process.exit(0);
 }
 
