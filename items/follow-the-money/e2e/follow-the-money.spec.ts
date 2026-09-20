@@ -126,3 +126,38 @@ test("config drawer key presence toggles the health chip", async ({ page }) => {
   }
   await app.getByTestId("drawer-close").click();
 });
+
+// Regression — the "key still shows OFF / not configured with no error" defect.
+//
+// Reproduction: after app_build the preview's service worker was not (re)started,
+// so the app could not reach it — its health/config routes answered 404 (unbound).
+// getJSON treated that 404 as "a live answer (unknown resource), not offline" and
+// returned { data: null, offline: false }, so health/config stayed null and the
+// key chip rendered "key: not configured" — a FALSE negative — with NO toast, NO
+// health event and NO offline banner. HealthStrip compounded it by rendering
+// health===null (no data) identically to keyConfigured===false (genuinely unset).
+//
+// We simulate the unbound worker by 404-ing the service's own core routes (NOT
+// the /api/services/<id>/config bootstrap, which is a different path) and assert
+// the failure is now visible and the key state is honest. Fails on the unfixed
+// code (banner absent + chip "key: not configured"); passes once fixed
+// (banner present + chip "key: unknown").
+test("an unreachable service surfaces an offline banner + honest key state, never a silent 'not configured'", async ({ page, context }) => {
+  context.route("**/follow-the-money/api/health", (r) =>
+    r.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) })
+  );
+  context.route("**/follow-the-money/api/config", (r) =>
+    r.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) })
+  );
+
+  // Load the app directly (not via openApp, which waits for the dashboard table
+  // that does not render while the service is unreachable).
+  await page.goto(BASE + "/apps/follow-the-money/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("health-strip").waitFor({ timeout: 30000 });
+
+  // The failure is VISIBLE: the offline / last-saved-data banner is present.
+  await expect(page.getByTestId("offline-banner")).toBeVisible({ timeout: 20000 });
+  // And the key chip is an honest "unknown" (no data), NOT a false "not configured".
+  await expect(page.getByTestId("key-chip")).toContainText("unknown");
+  await expect(page.getByTestId("key-chip")).not.toContainText("not configured");
+});

@@ -34,13 +34,20 @@ export default function HealthStrip({ health, offline, onOpenDrawer }: Props) {
         </React.Fragment>
       ))}
       <span className="sep" />
+      {/* health === null means no fresh data (service unreachable / not loaded
+          yet) — that is NOT a known "not configured." Render an honest unknown
+          so an absent health can't masquerade as a false negative. */}
       <span
-        className={`key-chip${health?.keyConfigured ? " set" : ""}`}
+        className={`key-chip${health !== null && health.keyConfigured ? " set" : ""}`}
         onClick={onOpenDrawer}
         data-testid="key-chip"
       >
         <span className="d" />
-        {health?.keyConfigured ? "key: configured" : "key: not configured"}
+        {health === null
+          ? "key: unknown"
+          : health.keyConfigured
+            ? "key: configured"
+            : "key: not configured"}
       </span>
     </div>
   );

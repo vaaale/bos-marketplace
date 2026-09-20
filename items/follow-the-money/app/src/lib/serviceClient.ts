@@ -91,7 +91,22 @@ function cachePut<T>(key: string, data: T): void {
   }
 }
 
-async function getJSON<T>(path: string, cacheKey: string): Promise<FetchResult<T>> {
+function cacheInvalidate(key: string): void {
+  try {
+    localStorage.removeItem(CACHE_PREFIX + key);
+  } catch {
+    /* best effort */
+  }
+}
+
+// `core` marks a route the bound service ALWAYS answers (health, config,
+// pulse, watchlist, universe). For those, a 404 is NOT a real "no such thing"
+// answer — it means the service base is mis-addressed or the worker is unbound
+// (e.g. not (re)started after a build). That is offline and must surface
+// (stale banner); treating it as "no data, all fine" silently renders a false
+// key status with no error. Per-resource routes (instruments, signals) DO 404
+// for unknown symbol/region, so they keep the "not offline" treatment.
+async function getJSON<T>(path: string, cacheKey: string, core = false): Promise<FetchResult<T>> {
   const base = await getServiceBaseUrl();
   if (base) {
     try {
@@ -101,7 +116,7 @@ async function getJSON<T>(path: string, cacheKey: string): Promise<FetchResult<T
         cachePut(cacheKey, data);
         return { data, offline: false, cachedAt: null };
       }
-      if (res.status === 404) {
+      if (res.status === 404 && !core) {
         // a real answer from a live service (unknown symbol/region) — not offline
         return { data: null, offline: false, cachedAt: null };
       }
@@ -130,7 +145,7 @@ async function sendJSON<T>(path: string, method: "POST" | "PATCH", body: unknown
 
 // ---- typed fetchers (design §2.5) ----
 export function fetchHealth(): Promise<FetchResult<Health>> {
-  return getJSON<Health>("api/health", "health");
+  return getJSON<Health>("api/health", "health", true);
 }
 
 export function fetchSignals(region: Region): Promise<FetchResult<RegionRollup>> {
@@ -152,23 +167,33 @@ export function fetchInstrument(
 }
 
 export function fetchPulse(): Promise<FetchResult<Pulse>> {
-  return getJSON<Pulse>("api/pulse", "pulse");
+  return getJSON<Pulse>("api/pulse", "pulse", true);
 }
 
 export function fetchWatchlist(): Promise<FetchResult<WatchlistResponse>> {
-  return getJSON<WatchlistResponse>("api/watchlist", "watchlist");
+  return getJSON<WatchlistResponse>("api/watchlist", "watchlist", true);
 }
 
 export function fetchUniverse(): Promise<FetchResult<{ instruments: Instrument[] }>> {
-  return getJSON<{ instruments: Instrument[] }>("api/universe", "universe");
+  return getJSON<{ instruments: Instrument[] }>("api/universe", "universe", true);
 }
 
 export function fetchConfig(): Promise<FetchResult<ServiceConfig>> {
-  return getJSON<ServiceConfig>("api/config", "config");
+  return getJSON<ServiceConfig>("api/config", "config", true);
 }
 
 export function patchConfig(ops: ConfigOps): Promise<ServiceConfig & { ok: boolean }> {
-  return sendJSON<ServiceConfig & { ok: boolean }>("api/config", "PATCH", ops);
+  return sendJSON<ServiceConfig & { ok: boolean }>("api/config", "PATCH", ops).then((res) => {
+    // A key op changed keyConfigured server-side. The cached health and config
+    // still carry the OLD key status; drop them so an offline render right
+    // after the change re-serves nothing stale. The in-memory config already
+    // holds the response's correct presence, and the next live fetch repopulates.
+    if (ops.setKey || ops.clearKey) {
+      cacheInvalidate("health");
+      cacheInvalidate("config");
+    }
+    return res;
+  });
 }
 
 export function postRefresh(scope?: Region | "all"): Promise<{ started: boolean; refreshId: string | null; reason?: string }> {

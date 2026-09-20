@@ -8,6 +8,8 @@ The app is a read surface over a background service. If the banner appears:
 2. On a branch preview, the service starts on preview boot; give it a few seconds after a rebuild — the app polls for up to ~15 s while the service binds its port.
 3. The app still works offline: it renders the last persisted signals with their as-of timestamps and this banner. Nothing is lost; it reconnects automatically.
 
+While the service is unreachable, the key chip in the health strip reads **key: unknown** (not "not configured") — the app has no fresh data to assert either way, and it says so rather than guessing. It flips to "configured" / "not configured" as soon as the service answers again. (This is distinct from a row saying "Awaiting Data," which is a per-instrument state that only applies once the service is reachable and a key is genuinely absent.)
+
 ## Rows say "Awaiting Data"
 
 Those instruments need the keyed market-data provider (Twelve Data) and no key is configured — this is expected, not an error. Affected symbols: the whole **Norway** region (`^OBX`, `EQNR.OL`, `DNB.OL`), the home-exchange indices (`^GDAXI`, `^FTSE`, `^FCHI`, `^N225`, `^HSI`, `^KS11`), and any **individual stock** you add under Data & Config. Nasdaq (the no-key provider) serves only ETFs and indices — it has no stock assetclass — so a user-added stock can only be fetched by the keyed fallback; with no key it waits here rather than failing silently.
