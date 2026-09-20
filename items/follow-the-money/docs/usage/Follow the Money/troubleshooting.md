@@ -10,7 +10,7 @@ The app is a read surface over a background service. If the banner appears:
 
 ## Rows say "Awaiting Data"
 
-Those instruments need the keyed market-data provider (Twelve Data) and no key is configured — this is expected, not an error. Affected symbols: the whole **Norway** region (`^OBX`, `EQNR.OL`, `DNB.OL`) and the home-exchange indices (`^GDAXI`, `^FTSE`, `^FCHI`, `^N225`, `^HSI`, `^KS11`).
+Those instruments need the keyed market-data provider (Twelve Data) and no key is configured — this is expected, not an error. Affected symbols: the whole **Norway** region (`^OBX`, `EQNR.OL`, `DNB.OL`), the home-exchange indices (`^GDAXI`, `^FTSE`, `^FCHI`, `^N225`, `^HSI`, `^KS11`), and any **individual stock** you add under Data & Config. Nasdaq (the no-key provider) serves only ETFs and indices — it has no stock assetclass — so a user-added stock can only be fetched by the keyed fallback; with no key it waits here rather than failing silently.
 
 - Add a free Twelve Data key under **Data & Config → Market-Data API Key**; they are fetched on the next refresh (or press **Refresh now**).
 - Everything else (US, Europe/Asia proxies — 37 instruments) is fully functional with **no key**.
@@ -25,7 +25,7 @@ Those instruments need the keyed market-data provider (Twelve Data) and no key i
 
 ## What works without a key?
 
-All of US (23 instruments), the Europe proxies (7), and the Asia proxies (7) — the full dashboard, scanner, detail, watchlist, and pulse. The key only *adds* Norway and exact home-exchange index levels.
+All of US (23 instruments), the Europe proxies (7), and the Asia proxies (7) — the full dashboard, scanner, detail, watchlist, and pulse. The key *adds* Norway, exact home-exchange index levels, and any individual stock you add (those need the keyed provider, since Nasdaq doesn't serve individual stocks no-key).
 
 ## Rate limits / 429 events in the health events list
 

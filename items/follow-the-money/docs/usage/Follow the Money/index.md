@@ -35,15 +35,15 @@ Work left to right through the rail:
 
 The **health strip** at the top always shows the data as-of time, per-region fetch counts, and whether a market-data key is configured. Every view carries the as-of timestamp — on weekends and market holidays you're seeing the most recent trading day, labeled as such.
 
-## Key setup (unlocks Norway + home-exchange indices)
+## Key setup (unlocks Norway + home-exchange indices + individual stocks)
 
 Everything above works **without any API key** for US, Europe, and Asia (via the US-listed proxies). One optional free key unlocks the rest:
 
 1. Get a free API key from [Twelve Data](https://twelvedata.com) (free tier: 800 credits/day — this app uses at most ~9/day).
 2. Open **Data & Config** (header button, or click the key chip in the health strip).
-3. Paste the key under **Market-Data API Key** and click **Save key**.
+3. Paste the key in the **Twelve Data API key** field and click **Save Twelve Data key**.
 
-The key is stored only in the service's own configuration (file mode 0600), never in the app bundle, and never displayed or echoed back — the UI only ever shows *configured / not configured*. Norway and the home-exchange indices are fetched on the **next refresh** (use **Refresh now** in the drawer to trigger one immediately).
+The key is stored only in the service's own configuration (file mode 0600), never in the app bundle, and never displayed or echoed back — the UI only ever shows *configured / not configured*. Norway, the home-exchange indices, and any individual stock you add are fetched on the **next refresh** (use **Refresh now** in the drawer to trigger one immediately). Individual stocks need this key because the no-key provider (Nasdaq) serves only ETFs and indices, not individual stocks.
 
 Until a key is configured, those instruments show as **"Awaiting Data"** — deliberately, instead of fake or unlabeled-stale numbers.
 

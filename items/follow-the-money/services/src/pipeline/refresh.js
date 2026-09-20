@@ -38,12 +38,15 @@ function isDisplayInstrument(registry, inst) {
   return inst.enabled || isKeyGated(registry, inst);
 }
 
-async function fetchViaChain(ctx, inst, range, keyConfigured, apiKey, events, manifest, dailyCreditBudget) {
+async function fetchViaChain(ctx, inst, range, events, manifest, dailyCreditBudget) {
+  const dataDir = ctx.dataDir;
   const chain = ctx.registry.chainFor(inst);
   let sawNoKey = false;
   let lastError = null;
   for (const adapter of chain) {
-    if (adapter.requiresKey && !keyConfigured) {
+    // Per-provider key availability (NFR-008): a keyed adapter is usable only
+    // if ITS OWN key slot is configured — not a single global flag.
+    if (adapter.requiresKey && !configMod.keyConfiguredFor(dataDir, adapter.id)) {
       sawNoKey = true;
       continue; // availability check: NO_KEY -> next provider
     }
@@ -57,7 +60,7 @@ async function fetchViaChain(ctx, inst, range, keyConfigured, apiKey, events, ma
       try {
         const opts =
           adapter.id === "twelvedata"
-            ? { apiKey, onCredit: () => { manifest.creditsUsedToday += 1; } }
+            ? { apiKey: configMod.getKey(dataDir, adapter.id), onCredit: () => { manifest.creditsUsedToday += 1; } }
             : undefined;
         const bars = await ctx.registry.paced(adapter.id, () => adapter.fetchDaily(inst, range, opts));
         return { ok: true, providerUsed: adapter.id, bars };
@@ -111,8 +114,6 @@ async function doRefresh(ctx, scope, refreshId) {
   const dataDir = ctx.dataDir;
   const cfg = configMod.getConfig(dataDir);
   const thresholds = cfg.thresholds;
-  const keyConfigured = configMod.keyConfigured(dataDir);
-  const apiKey = configMod.getKey(dataDir);
   const universe = configMod.getUniverse(dataDir);
   const nowIso = new Date().toISOString();
   const today = nowIso.slice(0, 10);
@@ -143,16 +144,20 @@ async function doRefresh(ctx, scope, refreshId) {
 
   for (const inst of targets) {
     const key = inst.region + "|" + inst.symbol;
+    const chain = ctx.registry.chainFor(inst);
     const gated = isKeyGated(ctx.registry, inst);
-    if (!inst.enabled || (gated && !keyConfigured)) {
+    // Per-provider key gate (NFR-008): a key-gated instrument (every provider
+    // in its chain requires a key) is fetchable only if SOME provider in the
+    // chain has its own key slot configured.
+    const hasKeyInChain = chain.some((a) => !a.requiresKey || configMod.keyConfiguredFor(dataDir, a.id));
+    if (!inst.enabled || (gated && !hasKeyInChain)) {
       // hard-gate / no-key: never fetched, labeled unavailable
       fetchStatus[key] = { ok: false, unavailable: true };
       continue;
     }
     const range = neededRange(dataDir, inst, new Date());
     const events = [];
-    const result = await fetchViaChain(ctx, inst, range, keyConfigured, apiKey, events, manifest, cfg.dailyCreditBudget);
-    const chain = ctx.registry.chainFor(inst);
+    const result = await fetchViaChain(ctx, inst, range, events, manifest, cfg.dailyCreditBudget);
     const primaryId = chain.length ? chain[0].id : "nasdaq";
     if (result.ok) {
       const bars = upsertBars(dataDir, inst, result.bars, thresholds); // atomic, per-symbol
@@ -245,7 +250,7 @@ async function doRefresh(ctx, scope, refreshId) {
       symbolsOk: p.symbolsOk,
       symbolsFailed: p.symbolsFailed,
       creditsUsedToday: id === "twelvedata" ? manifest.creditsUsedToday : undefined,
-      keyConfigured,
+      keyConfigured: configMod.keyConfiguredFor(dataDir, id),
       asOf: maxBarDate,
       events: p.events.slice(0, 50)
     });

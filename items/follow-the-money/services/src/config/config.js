@@ -61,19 +61,109 @@ function getConfig(dataDir) {
   };
 }
 
-// ---- secret (key) ----
+// ---- secret (key) — per-provider (NFR-008 / NFR-009) ----
+// data/secret.json is keyed by PROVIDER: { providers: { <id>: "<key>" } },
+// mode 0600, inside the data/ subdir so BOS's config-route enumeration
+// (top-level *.json only) can never expose it. Key VALUES are presence-only
+// in every app-facing response (NFR-009) — only keyConfigured booleans leave
+// the service.
+//
+// MIGRATION: the legacy flat shapes — a bare key string, or { apiKey: "…" } —
+// are normalized on every read, and rewritten to the keyed format once, on
+// startup (migrateSecrets), so users do not re-enter their key after an
+// upgrade. There is exactly one keyed provider today (twelvedata), so a
+// legacy key maps to that provider's slot; the per-provider shape means a
+// future second keyed provider is data, not a refactor (NFR-008).
+
+const LEGACY_KEY_PROVIDER = "twelvedata";
+
+// Normalize whatever shape is on disk into { providers: { id: key } }. Pure —
+// no I/O side effects beyond the single read.
+function normalizeSecretDoc(raw) {
+  if (raw === null || raw === undefined) return { providers: {} };
+  if (typeof raw === "string") {
+    // legacy bare key string
+    return { providers: raw ? { [LEGACY_KEY_PROVIDER]: raw } : {} };
+  }
+  if (typeof raw === "object") {
+    if (raw.providers && typeof raw.providers === "object" && !Array.isArray(raw.providers)) {
+      const providers = {};
+      for (const k of Object.keys(raw.providers)) {
+        if (typeof raw.providers[k] === "string" && raw.providers[k]) providers[k] = raw.providers[k];
+      }
+      return { providers };
+    }
+    if (typeof raw.apiKey === "string" && raw.apiKey) {
+      // legacy { apiKey: "…" }
+      return { providers: { [LEGACY_KEY_PROVIDER]: raw.apiKey } };
+    }
+  }
+  return { providers: {} };
+}
+
+// Read + normalize the secret (no write). Absent file -> empty providers.
+function readSecrets(dataDir) {
+  return normalizeSecretDoc(store.readJSON(secretPath(dataDir), null));
+}
+
+// Startup migration: if the on-disk secret is a legacy flat shape carrying a
+// key, rewrite it to the keyed format. Returns a human description of what was
+// migrated, or null when there is nothing to migrate. May throw on write
+// failure (the caller logs with cause; reads still normalize on the fly).
+function migrateSecrets(dataDir) {
+  if (!store.exists(secretPath(dataDir))) return null;
+  const raw = store.readJSON(secretPath(dataDir), null);
+  const isLegacy =
+    typeof raw === "string" ||
+    (raw !== null && typeof raw === "object" && !(raw.providers && typeof raw.providers === "object" && !Array.isArray(raw.providers)));
+  if (!isLegacy) return null;
+  const doc = normalizeSecretDoc(raw);
+  if (Object.keys(doc.providers).length === 0) return null; // legacy but empty
+  store.writeJSON(secretPath(dataDir), doc, { mode: 0o600 });
+  return "flat/" + (typeof raw === "string" ? "string" : "apiKey") + " -> providers{" + Object.keys(doc.providers).join(",") + "}";
+}
+
+function getKey(dataDir, providerId) {
+  const doc = readSecrets(dataDir);
+  return providerId && doc.providers[providerId] ? doc.providers[providerId] : null;
+}
+
+function setKey(dataDir, providerId, apiKey) {
+  const doc = readSecrets(dataDir);
+  doc.providers[providerId] = apiKey;
+  store.writeJSON(secretPath(dataDir), doc, { mode: 0o600 });
+}
+
+function clearKey(dataDir, providerId) {
+  const doc = readSecrets(dataDir);
+  delete doc.providers[providerId];
+  if (Object.keys(doc.providers).length === 0) store.removeFile(secretPath(dataDir));
+  else store.writeJSON(secretPath(dataDir), doc, { mode: 0o600 });
+}
+
+function keyConfiguredFor(dataDir, providerId) {
+  return Boolean(getKey(dataDir, providerId));
+}
+
+// Per-provider presence map for the KEYED providers (from the registry's
+// adapters' requiresKey flag). Presence only — no key values (NFR-009).
+function keyConfiguredMap(dataDir, registry) {
+  const out = {};
+  if (registry && registry.adapters) {
+    for (const id of Object.keys(registry.adapters)) {
+      const a = registry.adapters[id];
+      if (a && a.requiresKey) out[id] = keyConfiguredFor(dataDir, id);
+    }
+  }
+  return out;
+}
+
+// Backward-compatible flat accessor: the (single) keyed provider's status.
+// There is exactly one keyed provider today (twelvedata); this keeps the
+// read side (health top-level, refresh pipeline) unchanged while storage and
+// the write ops are per-provider.
 function keyConfigured(dataDir) {
-  return store.exists(secretPath(dataDir));
-}
-function getKey(dataDir) {
-  const doc = store.readJSON(secretPath(dataDir), null);
-  return (doc && doc.apiKey) || null;
-}
-function setKey(dataDir, apiKey) {
-  store.writeJSON(secretPath(dataDir), { apiKey }, { mode: 0o600 });
-}
-function clearKey(dataDir) {
-  store.removeFile(secretPath(dataDir));
+  return keyConfiguredFor(dataDir, LEGACY_KEY_PROVIDER);
 }
 
 // ---- manifest ----
@@ -104,6 +194,17 @@ function providerIdsFor(provider) {
   return ["nasdaq"];
 }
 
+// Default provider chain for a USER-ADDED instrument. Nasdaq (the no-key
+// primary) serves only ETFs and indices — it cannot serve individual stocks
+// (there is no stock assetclass on the chart endpoint; verified live). A
+// stock therefore defaults to "both" (chain [nasdaq, twelvedata]) so the
+// keyed, stock-capable fallback is in the chain and a stock actually fetches
+// when a key is set (and degrades to a labeled "unavailable" when it isn't).
+// Non-stocks keep the no-key "primary" default.
+function defaultProviderFor(category) {
+  return category === "stock" ? "both" : "primary";
+}
+
 function getUniverse(dataDir) {
   const cfg = getConfig(dataDir);
   const overridable = ["name", "category", "region", "enabled", "weight"];
@@ -117,15 +218,19 @@ function getUniverse(dataDir) {
     return out;
   });
   for (const c of cfg.customInstruments) {
+    const cat = c.category || "stock";
     merged.push(
       Object.assign(
         {
           symbol: c.symbol,
           name: c.name || c.symbol,
           region: c.region || "US",
-          category: c.category || "stock",
-          provider: c.provider || "primary",
-          providerIds: Array.isArray(c.providerIds) && c.providerIds.length ? c.providerIds : providerIdsFor(c.provider || "primary"),
+          category: cat,
+          provider: c.provider || defaultProviderFor(cat),
+          providerIds:
+            Array.isArray(c.providerIds) && c.providerIds.length
+              ? c.providerIds
+              : providerIdsFor(c.provider || defaultProviderFor(cat)),
           currency: c.currency || "USD",
           enabled: c.enabled !== false,
           weight: c.weight !== undefined ? c.weight : null,
@@ -150,18 +255,46 @@ function universeHash(instruments) {
 }
 
 // ---- PATCH /api/config ops (design §2.5). Each op idempotent/independent.
-// Returns { ok, error?, cadenceChanged? }.
-function applyConfigOps(dataDir, ops) {
+// Key ops are PER PROVIDER (NFR-008): setKey { providerId, apiKey }, clearKey
+// { providerId }. registry (the provider adapter map) is used to validate that
+// providerId is a known, key-requiring provider. Returns { ok, error?,
+// cadenceChanged? }.
+function applyConfigOps(dataDir, ops, registry) {
   const user = readUserConfig(dataDir);
   let cadenceChanged = false;
 
+  function requireKeyedProvider(providerId, opName) {
+    if (!providerId || typeof providerId !== "string") {
+      return opName + " requires a providerId (a provider from the registry, e.g. twelvedata)";
+    }
+    if (registry && registry.adapters) {
+      const a = registry.adapters[providerId];
+      if (!a) return "unknown provider: " + providerId;
+      if (!a.requiresKey) return "provider does not require an API key: " + providerId;
+    }
+    return null;
+  }
+
   if (ops.setKey) {
+    const providerId = ops.setKey.providerId || LEGACY_KEY_PROVIDER;
+    const err = requireKeyedProvider(providerId, "setKey");
+    if (err) return { ok: false, error: err };
     if (!ops.setKey.apiKey || typeof ops.setKey.apiKey !== "string") {
       return { ok: false, error: "setKey requires a non-empty apiKey string" };
     }
-    setKey(dataDir, ops.setKey.apiKey);
+    setKey(dataDir, providerId, ops.setKey.apiKey);
   }
-  if (ops.clearKey === true) clearKey(dataDir);
+  if (ops.clearKey) {
+    const providerId =
+      typeof ops.clearKey === "string"
+        ? ops.clearKey
+        : ops.clearKey === true
+          ? LEGACY_KEY_PROVIDER
+          : (ops.clearKey && ops.clearKey.providerId) || LEGACY_KEY_PROVIDER;
+    const err = requireKeyedProvider(providerId, "clearKey");
+    if (err) return { ok: false, error: err };
+    clearKey(dataDir, providerId);
+  }
 
   if (ops.thresholds && typeof ops.thresholds === "object") {
     user.thresholds = Object.assign({}, user.thresholds, ops.thresholds);
@@ -182,12 +315,13 @@ function applyConfigOps(dataDir, ops) {
     const isDefault = DEFAULT_UNIVERSE.some((d) => d.symbol === a.symbol);
     if (isDefault) return { ok: false, error: "symbol already in the default universe" };
     user.customInstruments = user.customInstruments.filter((c) => c.symbol !== a.symbol);
+    const addCat = a.category || "stock";
     user.customInstruments.push({
       symbol: a.symbol,
       name: a.name || a.symbol,
       region: a.region || "US",
-      category: a.category || "stock",
-      provider: a.provider || "primary",
+      category: addCat,
+      provider: a.provider || defaultProviderFor(addCat),
       currency: a.currency || "USD",
       enabled: a.enabled !== false,
       weight: a.weight !== undefined ? a.weight : null,
@@ -233,14 +367,17 @@ function applyConfigOps(dataDir, ops) {
 }
 
 // Masked config for GET /api/config — the key value is NEVER included.
-function maskedConfig(dataDir) {
+// keyConfigured is PER PROVIDER (presence only, for the keyed providers) so
+// the write ops, storage, and this read are all consistent with GET /api/health
+// providers[].
+function maskedConfig(dataDir, registry) {
   const cfg = getConfig(dataDir);
   return {
     thresholds: cfg.thresholds,
     watchlist: cfg.watchlist,
     customInstruments: cfg.customInstruments,
     cadence: cfg.cadence,
-    keyConfigured: keyConfigured(dataDir)
+    keyConfigured: keyConfiguredMap(dataDir, registry)
   };
 }
 
@@ -249,9 +386,14 @@ module.exports = {
   readUserConfig,
   writeUserConfig,
   keyConfigured,
+  keyConfiguredFor,
+  keyConfiguredMap,
   getKey,
   setKey,
   clearKey,
+  readSecrets,
+  migrateSecrets,
+  LEGACY_KEY_PROVIDER,
   readManifest,
   writeManifest,
   getUniverse,

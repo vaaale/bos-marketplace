@@ -31,6 +31,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const store = require("./storage/store.js");
 const defaults = require("./config/defaults.js");
+const configMod = require("./config/config.js");
 const { createRegistry } = require("./providers/registry.js");
 const { createServer } = require("./http/server.js");
 const { startScheduler } = require("./pipeline/scheduler.js");
@@ -111,6 +112,18 @@ function initialize(msg) {
       lastRefreshFinished: null
     }
   };
+
+  // One-time startup migration of any legacy flat secret.json (a bare key
+  // string or { apiKey }) to the per-provider keyed format, so users do not
+  // re-enter their key after an upgrade (Defect 3). Non-fatal by design: the
+  // read path normalizes legacy shapes on the fly, so a write-back failure
+  // only costs a re-migration on the next start — logged with cause.
+  try {
+    const migrated = configMod.migrateSecrets(dataDir);
+    if (migrated) ctx.log("secret migration: " + migrated);
+  } catch (err) {
+    ctx.log("secret migration failed (reads still normalize on the fly): " + String((err && err.stack) || err));
+  }
 
   server = createServer(ctx);
   parentPort.postMessage({ type: "initialized" });

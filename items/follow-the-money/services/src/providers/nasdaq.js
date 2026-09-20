@@ -5,6 +5,19 @@
 // Returns OHLCV rows in ohlcv[].z with string numbers containing commas and
 // dateTime "M/D/YYYY". assetclass=index (NDX) is price-only -> volume 0.
 // Raw (unadjusted) close only — the S9 gap detector is the split guard.
+//
+// assetclass is DERIVED PER INSTRUMENT (FR-017 / NFR-008): NDX (assetClass
+// "index") -> "index"; individual stocks (category "stock") -> not served;
+// everything else (broad/sector/proxy ETFs) -> "etf".
+//
+// IMPORTANT (verified live 2026-09-20): the chart endpoint accepts ONLY the
+// assetclass values "etf" and "index". There is NO stock assetclass — any other
+// value (including "stock") is rejected with "Bad or No parameter assetclass",
+// and a real stock (AAPL/NFLX) returns "Symbol not exists" under both etf and
+// index. Nasdaq therefore cannot serve individual stocks at all; the only
+// stock-capable provider is the keyed fallback (Twelve Data). For a stock we
+// signal NOT_FOUND so the per-symbol chain (FR-011) falls through to that
+// provider instead of issuing an invalid request.
 
 const { httpRequest, ProviderError } = require("./http.js");
 
@@ -40,6 +53,18 @@ function findRows(json) {
   return null;
 }
 
+// Derive the assetclass for the chart endpoint from the instrument.
+//   assetClass === "index"  -> "index"   (NDX; price-only, no volume)
+//   category   === "stock"  -> "unsupported" (Nasdaq serves no individual
+//                                  stocks; signal NOT_FOUND so the chain falls
+//                                  through to the stock-capable provider)
+//   anything else            -> "etf"       (broad / sector / proxy ETFs)
+function resolveAssetClass(symbolRef) {
+  if (symbolRef && symbolRef.assetClass === "index") return "index";
+  if (symbolRef && symbolRef.category === "stock") return "unsupported";
+  return "etf";
+}
+
 const nasdaq = {
   id: "nasdaq",
   name: "Nasdaq API",
@@ -47,9 +72,18 @@ const nasdaq = {
   isAvailable() {
     return true;
   },
-  // symbolRef: Instrument (uses .symbol and optional .assetClass)
+  // symbolRef: Instrument (uses .symbol, .category, optional .assetClass)
   async fetchDaily(symbolRef, range) {
-    const assetclass = symbolRef.assetClass === "index" ? "index" : "etf";
+    const assetclass = resolveAssetClass(symbolRef);
+    if (assetclass === "unsupported") {
+      // Nasdaq's chart endpoint has no stock assetclass; it cannot serve an
+      // individual stock. Signal NOT_FOUND (before any network I/O) so the
+      // per-symbol chain (FR-011) falls through to a stock-capable provider
+      // rather than issuing a request the endpoint would reject.
+      throw new ProviderError("NOT_FOUND", false, {
+        cause: "Nasdaq chart endpoint does not serve individual stocks: " + symbolRef.symbol
+      });
+    }
     const url =
       "https://api.nasdaq.com/api/quote/" +
       encodeURIComponent(symbolRef.symbol) +
@@ -101,5 +135,7 @@ const nasdaq = {
     return bars;
   }
 };
+
+nasdaq.resolveAssetClass = resolveAssetClass;
 
 module.exports = nasdaq;

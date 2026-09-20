@@ -68,7 +68,7 @@ Body `{ "scope"?: "all" | "US" | "Europe" | "Norway" | "Asia" }` (default `all`)
 
 ### `GET /api/config`
 
-**Masked** service config: `{ thresholds (full set), watchlist, customInstruments (source:"user"), cadence, keyConfigured }`. The key value is **never** included.
+**Masked** service config: `{ thresholds (full set), watchlist, customInstruments (source:"user"), cadence, keyConfigured }`. `keyConfigured` is a **per-provider** presence map over the keyed providers — e.g. `{ "twelvedata": false }` (a second keyed provider would just add a key). The key **value** is **never** included (NFR-009); this read is consistent with `GET /api/health` `providers[]`.
 
 ### `PATCH /api/config`
 
@@ -76,12 +76,12 @@ Body is a partial op object; each op is idempotent and independent. Responds `{ 
 
 | Op | Effect |
 |---|---|
-| `{ "setKey": { "apiKey": "…" } }` | writes `data/secret.json` (mode 0600); response has `keyConfigured: true` |
-| `{ "clearKey": true }` | deletes the secret |
+| `{ "setKey": { "providerId": "twelvedata", "apiKey": "…" } }` | writes that provider's slot in `data/secret.json` (mode 0600); response `keyConfigured` shows `{ "twelvedata": true }`. `providerId` must name a key-requiring provider from the registry (400 otherwise) |
+| `{ "clearKey": { "providerId": "twelvedata" } }` | deletes that provider's slot (the secret file is removed when it was the last one) |
 | `{ "thresholds": { …partial } }` | merged into the durable config; applied on the next refresh |
 | `{ "cadence": { …partial } }` | merged; re-arms the in-worker scheduler immediately |
 | `{ "watchlistAdd": "SMH" }` / `{ "watchlistRemove": "SMH" }` | watchlist membership |
-| `{ "instrumentAdd": { symbol, region, category, provider, … } }` | adds a `source:"user"` instrument — joins the next refresh with no code change |
+| `{ "instrumentAdd": { symbol, region, category, provider, … } }` | adds a `source:"user"` instrument — joins the next refresh with no code change. A `category: "stock"` instrument defaults to `provider: "both"` (chain `[nasdaq, twelvedata]`) because Nasdaq serves only ETFs/indices, not individual stocks (it has no stock assetclass); the keyed, stock-capable fallback is therefore in the chain. Non-stocks default to `provider: "primary"` |
 | `{ "instrumentEdit": { symbol, name?/category?/region?/enabled?/weight? } }` | edits a custom instrument, or overlays a default one |
 | `{ "instrumentDisable": { "symbol": "…", "enabled": false } }` | disable/enable |
 | `{ "instrumentRemove": "…" }` | **custom instruments only** — defaults can only be disabled (400 otherwise) |

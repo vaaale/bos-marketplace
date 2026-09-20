@@ -20,9 +20,32 @@ interface Props {
 
 const PROVIDER_LABEL: Record<string, string> = { nasdaq: "Nasdaq API", twelvedata: "Twelve Data" };
 const PROVIDER_ROLE: Record<string, string> = { nasdaq: "primary · no key", twelvedata: "fallback · keyed" };
+// The one keyed provider today. Used only as a fallback for the field list
+// when the service is offline (config === null) — when online, the keyed
+// providers come from config.keyConfigured (per provider), so adding a second
+// keyed provider is data, not a refactor (NFR-008).
+const DEFAULT_KEYED_PROVIDERS = ["twelvedata"];
+// Per-provider helper text for the key field. A second keyed provider would
+// just add a case here (data, not a refactor — NFR-008).
+function keyHelp(id: string): React.ReactNode {
+  if (id === "twelvedata") {
+    return (
+      <>
+        A free key from <b>twelvedata.com</b>. Used for the <b>Norway</b> region, exact{" "}
+        <b>home-exchange index</b> levels (OBX, DAX, FTSE, Nikkei…), and <b>individual stocks</b>{" "}
+        (the keyed fallback provider). Stored only in the service config — never in the app bundle,
+        never echoed back. No key is needed for US / Europe / Asia broad, sector &amp; proxy ETFs
+        (Nasdaq, no-key). Takes effect on the next refresh.
+      </>
+    );
+  }
+  return (
+    <>Stored only in the service config — never in the app bundle, never echoed back. Takes effect on the next refresh.</>
+  );
+}
 
 export default function ConfigDrawer({ open, onClose, health, config, onConfigChanged, toast }: Props) {
-  const [apiKey, setApiKey] = useState("");
+  const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
   const [newSym, setNewSym] = useState("");
   const [newRegion, setNewRegion] = useState<Region>("US");
   const [newCat, setNewCat] = useState<Instrument["category"]>("sector");
@@ -48,6 +71,12 @@ export default function ConfigDrawer({ open, onClose, health, config, onConfigCh
       toast(`Failed: ${e instanceof Error ? e.message : "service offline"}`);
     }
   };
+
+  // Keyed providers, per provider, from the service's per-provider config.
+  // Online: derived from config.keyConfigured (a second keyed provider would
+  // just appear here — data, not a refactor, NFR-008). Offline: the known one.
+  const keyMap: Record<string, boolean> = config ? config.keyConfigured || {} : {};
+  const keyedProviders: string[] = config ? Object.keys(keyMap) : DEFAULT_KEYED_PROVIDERS;
 
   return (
     <>
@@ -106,43 +135,57 @@ export default function ConfigDrawer({ open, onClose, health, config, onConfigCh
 
           <div className="dr-sec">
             <h3>
-              Market-Data API Key <span className="ln" />
+              Market-Data API Keys <span className="ln" />
             </h3>
-            <div className="field">
-              <label htmlFor="apikey">Twelve Data API key {config?.keyConfigured ? "(configured)" : "(not configured)"}</label>
-              <input
-                type="password"
-                id="apikey"
-                placeholder={config?.keyConfigured ? "••••••••••••••••  (stored — never displayed)" : "paste a free Twelve Data key"}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                data-testid="key-input"
-              />
-              <div className="note">
-                A free key unlocks <b>Norway</b> instruments and exact <b>home-exchange index</b> levels (OBX, DAX, FTSE,
-                Nikkei…). Stored only in the service config — never in the app bundle, never echoed back. No key required
-                for US / Europe / Asia (US-listed proxies). Takes effect on the next refresh.
-              </div>
-            </div>
-            <button
-              className="btn primary"
-              data-testid="save-key"
-              onClick={() => {
-                if (!apiKey.trim()) {
-                  toast("Enter a key first");
-                  return;
-                }
-                run("Key saved — Norway unlocks on next refresh", { setKey: { apiKey: apiKey.trim() } });
-                setApiKey("");
-              }}
-            >
-              Save key
-            </button>{" "}
-            {config?.keyConfigured && (
-              <button className="btn" data-testid="clear-key" onClick={() => run("Key cleared", { clearKey: true })}>
-                Clear key
-              </button>
-            )}
+            {keyedProviders.length === 0 && <div className="note">No data provider currently requires an API key.</div>}
+            {keyedProviders.map((id) => {
+              const label = PROVIDER_LABEL[id] || id;
+              const configured = Boolean(keyMap[id]);
+              return (
+                <React.Fragment key={id}>
+                  <div className="field">
+                    <label htmlFor={`apikey-${id}`}>
+                      {label} API key {configured ? "(configured)" : "(not configured)"}
+                    </label>
+                    <input
+                      type="password"
+                      id={`apikey-${id}`}
+                      placeholder={configured ? "••••••••••••••••  (stored — never displayed)" : `paste a free ${label} key`}
+                      value={keyInputs[id] || ""}
+                      onChange={(e) => setKeyInputs((m) => ({ ...m, [id]: e.target.value }))}
+                      data-testid={`key-input-${id}`}
+                    />
+                    <div className="note">{keyHelp(id)}</div>
+                  </div>
+                  <button
+                    className="btn primary"
+                    data-testid={`save-key-${id}`}
+                    onClick={() => {
+                      const v = (keyInputs[id] || "").trim();
+                      if (!v) {
+                        toast(`Enter a ${label} key first`);
+                        return;
+                      }
+                      run(`${label} key saved — takes effect on the next refresh`, {
+                        setKey: { providerId: id, apiKey: v }
+                      });
+                      setKeyInputs((m) => ({ ...m, [id]: "" }));
+                    }}
+                  >
+                    Save {label} key
+                  </button>{" "}
+                  {configured && (
+                    <button
+                      className="btn"
+                      data-testid={`clear-key-${id}`}
+                      onClick={() => run(`${label} key cleared`, { clearKey: { providerId: id } })}
+                    >
+                      Clear {label} key
+                    </button>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </div>
 
           <div className="dr-sec">

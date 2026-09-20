@@ -320,7 +320,7 @@ function createServer(ctx) {
       }
 
       if (method === "GET" && p === "/api/config") {
-        sendJSON(res, 200, configMod.maskedConfig(ctx.dataDir)); // key NEVER included
+        sendJSON(res, 200, configMod.maskedConfig(ctx.dataDir, ctx.registry)); // key NEVER included
         return;
       }
 
@@ -332,14 +332,14 @@ function createServer(ctx) {
           sendJSON(res, 400, { error: "invalid JSON body" });
           return;
         }
-        const result = configMod.applyConfigOps(ctx.dataDir, ops || {});
+        const result = configMod.applyConfigOps(ctx.dataDir, ops || {}, ctx.registry);
         if (!result.ok) {
           sendJSON(res, 400, { ok: false, error: result.error });
           return;
         }
         if (result.cadenceChanged && ctx.scheduler) ctx.scheduler.rearm();
         // respond with new masked values — presence only, never echo the key
-        sendJSON(res, 200, Object.assign({ ok: true }, configMod.maskedConfig(ctx.dataDir)));
+        sendJSON(res, 200, Object.assign({ ok: true }, configMod.maskedConfig(ctx.dataDir, ctx.registry)));
         return;
       }
 

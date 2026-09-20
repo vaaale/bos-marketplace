@@ -97,6 +97,36 @@ test("S3+S4+S5: base detected with exact bounds; confirmed breakout at 2.5× vol
   assert.ok(Math.abs(signal.score.flowScore - flowScore) < 1e-12);
 });
 
+// S3 REGRESSION (trailing-run base, not all-or-nothing):
+// The defect: detectBase accumulated lower/upper over the WHOLE scan window
+// and set present=false at the first width violation, so present=true only if
+// the entire trailing window (up to baseScanWindow=252 bars) stayed within
+// baseMaxWidth=10% — i.e. a full year of consolidation. A real base is a
+// 60-day tight run PRECEDED by a wider move. That reading also made the
+// Scanner structurally dead (S4 needs a valid preceding base) and forced every
+// instrument to "trending"/"no-base" after a backfill.
+// The invariant (design §2.3): "the loop stops at the first violation — the
+// base is exactly the longest recent contiguous tight run ending at t".
+// Run with: node --test services/tests/signal.test.js
+test("S3 trailing-run: a 90-day tight band preceded by a wider run IS a 90-day base", () => {
+  // 150 bars of a ~12% single-day oscillation (width 11.3% of mid > baseMaxWidth
+  // 10%, but < 20% so S9 does NOT flag a gap), then 90 bars inside a ~2% band
+  // (width 1.98% <= 5% <= 10%). The tight run ends exactly at the last bar.
+  const closes = [];
+  const volumes = [];
+  for (let i = 0; i < 150; i++) { closes.push(i % 2 === 0 ? 100 : 112); volumes.push(1000000); }
+  for (let i = 150; i < 240; i++) { closes.push(i % 2 === 0 ? 100 : 102); volumes.push(1000000); }
+  const bars = makeBars(closes, volumes);
+  // sanity: no gap flags anywhere (max single-day move is ~12%)
+  assert.ok(bars.every((b) => b.gapFlag === false), "no gap flags in the synthetic series");
+
+  const base = detectBase(bars, T);
+  assert.equal(base.present, true, "a trailing tight run is a base (was all-or-nothing: present=false)");
+  assert.equal(base.durationDays, 90, "duration = length of the tight run, not the whole window");
+  assert.ok(base.tightness <= 0.05, "tightness is the final (tight-run) width, <= 5%");
+  assert.ok(base.sufficientData, "240 bars >= baseMinDuration + baselineWindow");
+});
+
 test("S5: same geometry at 1.2× volume -> breakout unconfirmed", () => {
   const bars = baseBreakoutSeries(1.2);
   const breakout = detectBreakout(bars, T);

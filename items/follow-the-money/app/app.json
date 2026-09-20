@@ -1,7 +1,7 @@
 {
   "id": "follow-the-money",
   "name": "Follow the Money",
-  "icon": "TrendingUp",
-  "createdAt": 1789676370548,
+  "icon": "Puzzle",
+  "createdAt": 1789942442157,
   "entry": "src/main.tsx"
 }

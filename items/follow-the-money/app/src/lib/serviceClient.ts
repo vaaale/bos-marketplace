@@ -24,7 +24,10 @@ import type {
 } from "./types";
 
 const SERVICE_ID = "follow-the-money";
-const CACHE_PREFIX = "ftm.cache.v1:";
+// v2: ServiceConfig.keyConfigured is now a per-provider map (was a flat
+// boolean) — bump the prefix so a stale v1 cache can't be read under the new
+// shape (the cold-open path would otherwise mis-render the key fields).
+const CACHE_PREFIX = "ftm.cache.v2:";
 
 export interface FetchResult<T> {
   data: T | null;

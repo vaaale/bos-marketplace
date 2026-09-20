@@ -195,7 +195,9 @@ export interface ServiceConfig {
   watchlist: string[];
   customInstruments: Instrument[];
   cadence: { refreshHour: number; refreshMinute: number; heartbeatEveryMs: number };
-  keyConfigured: boolean;
+  // Per-provider presence (keyed providers only). Presence only — the key
+  // values are never returned (NFR-009). E.g. { twelvedata: false }.
+  keyConfigured: Record<string, boolean>;
 }
 
 export interface RefreshRecord {
@@ -212,8 +214,10 @@ export interface RefreshRecord {
 
 // PATCH /api/config op object (partial, idempotent, independent ops)
 export interface ConfigOps {
-  setKey?: { apiKey: string };
-  clearKey?: true;
+  // Key ops are PER PROVIDER (NFR-008): providerId from the provider registry
+  // (e.g. "twelvedata"). The key value is written server-side, never echoed.
+  setKey?: { providerId: string; apiKey: string };
+  clearKey?: { providerId: string };
   thresholds?: Record<string, unknown>;
   cadence?: Partial<ServiceConfig["cadence"]>;
   watchlistAdd?: string;

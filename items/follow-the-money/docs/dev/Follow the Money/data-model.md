@@ -10,7 +10,10 @@ dataDir()/system/config/follow-the-money/
 ├── runtime.json                   # BOS-written after the worker's "bound" IPC: { port, host } — manager-owned
 └── data/                          # SERVICE-OWNED, durable
     ├── config.json                # thresholds/cadence overrides, watchlist, customInstruments, universeOverrides
-    ├── secret.json                # market-data API key (mode 0600); NEVER in any response
+    ├── secret.json                # market-data API keys, keyed BY PROVIDER: { providers: { <id>: key } }
+    │                              # (mode 0600); NEVER in any response. Legacy flat shapes
+    │                              # (a bare string or { apiKey }) are migrated to the keyed
+    │                              # provider's slot on startup.
     ├── manifest.json              # { schemaVersion, createdAt, lastFullRefresh, universeHash, backfillDone,
     │                              #   creditsUsedToday, creditsDate, lastOkFetch }
     ├── universe/instruments.json  # merged default (46) + user instruments, snapshotted each refresh
@@ -33,7 +36,7 @@ Dates/timestamps are UTC ISO-8601. Signals, rollups, and the pulse are fully der
   "enabled": true, "weight": null, "source": "default" }
 ```
 
-`region ∈ {US, Europe, Norway, Asia}`, `category ∈ {broad, sector, proxy, stock}`, `source ∈ {default, user}`. `providerIds` is the ordered fetch chain. NDX additionally carries `"assetClass": "index"` (Nasdaq price-only — volume 0, flow metrics 0, app renders "—"; it ranks via its momentum component).
+`region ∈ {US, Europe, Norway, Asia}`, `category ∈ {broad, sector, proxy, stock}`, `source ∈ {default, user}`. `providerIds` is the ordered fetch chain. NDX additionally carries `"assetClass": "index"` (Nasdaq price-only — volume 0, flow metrics 0, app renders "—"; it ranks via its momentum component). A user-added `category: "stock"` instrument defaults to `provider: "both"` (`providerIds: ["nasdaq", "twelvedata"]`): Nasdaq serves only ETFs and indices (its chart endpoint accepts just those two assetclasses — there is no stock assetclass), so the chain must include the keyed, stock-capable fallback for a stock to fetch; without a key a stock degrades to a labeled `unavailable`, exactly like the key-gated regions.
 
 **Default universe (46 = 37 no-key + 9 keyed):** US broad 4 (SPY, QQQ, IWM, NDX) + US sector 19 (XLK, XLE, XLF, XLV, XLI, XLY, XLP, XLU, XLB, XLRE, XLC, SMH, SOXX, XBI, XOP, XPH, XME, GDX, ITB) + Europe proxies 7 (EFA, EWG, EWU, EWI, EWP, EWN, FXN) + Asia proxies 7 (EWJ, EWH, FXI, EWA, IEMG, VWO, EEM); keyed: Norway `^OBX, EQNR.OL, DNB.OL` + Europe `^GDAXI, ^FTSE, ^FCHI` + Asia `^N225, ^HSI, ^KS11`. Per-region totals: US 23, Europe 10, Asia 10, Norway 3. The nine keyed ship `enabled:false` pending the live-probe hard gate.
 
@@ -77,6 +80,6 @@ Dates/timestamps are UTC ISO-8601. Signals, rollups, and the pulse are fully der
 
 ## AppConfig — split by home, by design
 
-- **Client (app `localStorage`)** — UI prefs only: `{ schemaVersion, activeRegion, activeLookback, sortKey, sortDir }` (key `ftm.prefs`), plus a per-route response cache (`ftm.cache.v1:*`) for cold-open offline.
+- **Client (app `localStorage`)** — UI prefs only: `{ schemaVersion, activeRegion, activeLookback, sortKey, sortDir }` (key `ftm.prefs`), plus a per-route response cache (`ftm.cache.v2:*`) for cold-open offline. (Bumped to v2 when `ServiceConfig.keyConfigured` became a per-provider map — a stale v1 cache with the old flat boolean shape would mis-render the key fields on a cold open.)
 - **Server (service `data/config.json`)** — the durable, refresh-relevant config: `thresholds` (all 16 §2.3 keys: `lookbackDays {3M:63, 6M:126, 1Y:252, 2Y:504}`, `flowWindow 5`, `baselineWindow 20`, `baseMinDuration 60`, `baseMaxWidth 0.10`, `baseScanWindow 252`, `breakoutVolumeRatio 1.5`, `gapThreshold 0.20`, `momentumScale 15`, `flowScale 0.75`, `momentumWeight/flowWeight 0.5`, `pulseTopN 5`, `pulsePerRegionK 3`, `dirFlatEpsilon 0.5`, `noBaseDriftEpsilon 5`), `cadence { refreshHour 17, refreshMinute 5, heartbeatEveryMs 300000 }`, `watchlist`, `customInstruments`, `universeOverrides`.
-- **The API key** — `data/secret.json` (0600), presence-only (`keyConfigured`) in every app-facing response.
+- **The API keys** — `data/secret.json` (0600), keyed by provider (`{ providers: { <id>: key } }`), presence-only in every app-facing response: `GET /api/config` `keyConfigured` is a per-provider map and `GET /api/health` `providers[]` carry per-provider `keyConfigured`. Key values never leave the service (NFR-009).

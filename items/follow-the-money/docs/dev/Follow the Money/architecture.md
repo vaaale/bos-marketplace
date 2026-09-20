@@ -18,7 +18,7 @@ Pluggable adapters behind one interface (`fetchDaily`, optional `fetchSpot`), re
 
 | Adapter | Role | Key | Notes |
 |---|---|---|---|
-| `nasdaq` | PRIMARY | no | api.nasdaq.com chart API. Requires browser-ish `User-Agent` + `Origin` + `Referer` headers. `ohlcv[].z` rows: string numbers with commas, `M/D/YYYY` dates; `assetclass=index` (NDX) rows carry only `lastSalePrice` → price-only, volume 0. Raw (unadjusted) close. Paced 350 ms. |
+| `nasdaq` | PRIMARY | no | api.nasdaq.com chart API. Requires browser-ish `User-Agent` + `Origin` + `Referer` headers. `ohlcv[].z` rows: string numbers with commas, `M/D/YYYY` dates. **assetclass is derived per instrument and is limited to `etf` (everything) and `index` (NDX)** — the endpoint accepts *no other value* (verified live: `assetclass=stock` and 10 others → "bad parameter"; a real stock under etf/index → "symbol not exists"). **Individual stocks are therefore not served by Nasdaq at all**; for a stock the adapter signals `NOT_FOUND` (before any request) so the chain falls through to the keyed, stock-capable fallback. NDX rows carry only `lastSalePrice` → price-only, volume 0. Raw (unadjusted) close. Paced 350 ms. |
 | `twelvedata` | FALLBACK | yes | Global incl. Oslo (`EQNR.OL`) and `^` home-exchange indices. 1 credit/successful call, 8 req/min (paced ~7.5 s), `outputsize=800`, values are date-descending → reversed. |
 | `cnbc` | HEARTBEAT | no | `fetchSpot` only, US symbols only. Feeds the 5-min liveness check, never signals. |
 
@@ -32,9 +32,9 @@ Stooq and Yahoo are deliberately not used (IP-blocked from the deployment sandbo
 
 ## Signal engine (deterministic, pure)
 
-`services/src/signal/*` are pure functions of `(bars, thresholds)` — no `Date.now()`, no randomness, no I/O. S1 momentum per lookback, S2 money-flow ratio (recent window excluded from its own baseline), S3 backwards-scan base detector (gap flags are series breaks), S4 breakout against the *preceding valid* base, S5 volume confirmation (≥ 1.5× trailing 20-day dollar volume), S6 composite 0–100 score (`50 + 50·tanh` blend), S7 state resolution with `unavailable` checked **first**, S8 cross-region pulse, S9 abnormal-gap detection (≥ 20 % single-day move → split/artifact guard on raw closes).
+`services/src/signal/*` are pure functions of `(bars, thresholds)` — no `Date.now()`, no randomness, no I/O. S1 momentum per lookback, S2 money-flow ratio (recent window excluded from its own baseline), S3 **trailing-run** base detector — the base is the *longest recent contiguous tight run ending at the last bar*: scan backwards, stop at the first bar whose running width exceeds `baseMaxWidth` (or a gap flag, which is a series break); `durationDays` = that run's length, `tightness` = its final width (a 60-day tight band preceded by a wider move *is* a 60-day base — the earlier all-or-nothing reading, which required a full year of consolidation, made the Scanner dead), S4 breakout against the *preceding valid* base, S5 volume confirmation (≥ 1.5× trailing 20-day dollar volume), S6 composite 0–100 score (`50 + 50·tanh` blend), S7 state resolution with `unavailable` checked **first**, S8 cross-region pulse, S9 abnormal-gap detection (≥ 20 % single-day move → split/artifact guard on raw closes).
 
-Determinism guardrail: signal/rollup/pulse objects are built with fixed key-insertion order and array-only iteration, so identical input produces **byte-identical** JSON (verified: re-running the pipeline on unchanged data leaves every signal file byte-identical). Unit suite: `node --test services/tests/signal.test.js` (no npm deps).
+Determinism guardrail: signal/rollup/pulse objects are built with fixed key-insertion order and array-only iteration, so identical input produces **byte-identical** JSON (verified: re-running the pipeline on unchanged data leaves every signal file byte-identical). Unit suite: `node --test services/tests/` (no npm deps) — `signal.test.js` (engine + the trailing-run regression), `nasdaq.test.js` (assetclass resolution / stock fall-through), `config.test.js` (per-provider keys, secret migration, NFR-009, stock provider chain).
 
 ## Storage (ADR-c)
 

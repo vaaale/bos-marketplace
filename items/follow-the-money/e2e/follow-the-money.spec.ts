@@ -106,21 +106,22 @@ test("config drawer key presence toggles the health chip", async ({ page }) => {
   await expect(app.getByTestId("key-chip")).toContainText("not configured");
   await app.getByTestId("config-btn").click();
   await expect(app.getByTestId("config-drawer")).toBeVisible();
-  await expect(app.getByTestId("key-input")).toBeVisible();
+  // key field is per-provider (NFR-008); the single keyed provider is twelvedata
+  await expect(app.getByTestId("key-input-twelvedata")).toBeVisible();
 
   if (TEST_KEY) {
-    await app.getByTestId("key-input").fill(TEST_KEY);
-    await app.getByTestId("save-key").click();
+    await app.getByTestId("key-input-twelvedata").fill(TEST_KEY);
+    await app.getByTestId("save-key-twelvedata").click();
     await expect(app.getByTestId("key-chip")).toContainText("key: configured", { timeout: 10000 });
-    await app.getByTestId("clear-key").click();
+    await app.getByTestId("clear-key-twelvedata").click();
     await expect(app.getByTestId("key-chip")).toContainText("not configured", { timeout: 10000 });
   } else {
     // presence-state round-trip with a throwaway key (cleared immediately) —
     // the service stores it but never uses it until the next refresh
-    await app.getByTestId("key-input").fill("e2e-throwaway-key");
-    await app.getByTestId("save-key").click();
+    await app.getByTestId("key-input-twelvedata").fill("e2e-throwaway-key");
+    await app.getByTestId("save-key-twelvedata").click();
     await expect(app.getByTestId("key-chip")).toContainText("key: configured", { timeout: 10000 });
-    await app.getByTestId("clear-key").click();
+    await app.getByTestId("clear-key-twelvedata").click();
     await expect(app.getByTestId("key-chip")).toContainText("not configured", { timeout: 10000 });
   }
   await app.getByTestId("drawer-close").click();
