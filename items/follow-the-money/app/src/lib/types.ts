@@ -175,6 +175,10 @@ export interface Health {
   asOf: string | null;
   pipelineAlive: boolean;
   lastHeartbeat: string | null;
+  // Set when the last heartbeat FAILED (null when it succeeded / never ran) —
+  // so a dead pipeline can't read as merely "live but quiet". Optional: older
+  // service builds don't emit it.
+  lastHeartbeatError?: string | null;
   lastFullRefresh: string | null;
   nextRefreshAt: string | null;
   refreshing: boolean;

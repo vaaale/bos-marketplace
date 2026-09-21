@@ -34,11 +34,16 @@ function startScheduler(ctx) {
       if (spot) {
         ctx.state.pipelineAlive = true;
         ctx.state.lastHeartbeat = new Date().toISOString();
+        ctx.state.lastHeartbeatError = null;
       } else {
         ctx.state.pipelineAlive = false; // skip the cycle, non-critical
+        // Surface WHY — a bare pipelineAlive:false with no cause is the
+        // no-cause-failure silence that hid the missing-UA bug (Fix: visibility).
+        ctx.state.lastHeartbeatError = cnbc.lastError || "heartbeat returned no quote";
       }
     } catch (err) {
       ctx.state.pipelineAlive = false;
+      ctx.state.lastHeartbeatError = String((err && err.message) || err);
     }
   }
 

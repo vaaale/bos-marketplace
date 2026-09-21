@@ -167,6 +167,11 @@ function buildHealth(ctx) {
     asOf,
     pipelineAlive: Boolean(ctx.state.pipelineAlive),
     lastHeartbeat: ctx.state.lastHeartbeat || null,
+    // Why the last heartbeat failed (null when it succeeded / never ran). A dead
+    // heartbeat with pipelineAlive:false and NO cause was the exact silence that
+    // hid the missing-UA bug — surface the reason so it can't be mistaken for a
+    // live-but-quiet pipeline.
+    lastHeartbeatError: ctx.state.lastHeartbeatError || null,
     lastFullRefresh: manifest.lastFullRefresh || null,
     nextRefreshAt: ctx.state.nextRefreshAt || nextRefreshAt(cfg.cadence, new Date()).toISOString(),
     refreshing: Boolean(ctx.state.refreshing),

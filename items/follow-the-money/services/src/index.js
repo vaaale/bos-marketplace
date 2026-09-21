@@ -108,6 +108,7 @@ function initialize(msg) {
       refreshing: false,
       pipelineAlive: false,
       lastHeartbeat: null,
+      lastHeartbeatError: null,
       nextRefreshAt: null,
       lastRefreshFinished: null
     }

@@ -9,7 +9,7 @@ Served by the worker's own HTTP server on its own port (config default `{ port: 
 ### `GET /api/health`
 
 ```json
-{ "asOf": "2026-09-16", "pipelineAlive": true, "lastHeartbeat": "…", "lastFullRefresh": "…",
+{ "asOf": "2026-09-16", "pipelineAlive": true, "lastHeartbeat": "…", "lastHeartbeatError": null, "lastFullRefresh": "…",
   "nextRefreshAt": "…", "refreshing": false,
   "providers": [
     { "id": "nasdaq", "status": "ok", "lastRefresh": "…", "symbolsOk": 37, "symbolsFailed": 0,
@@ -27,7 +27,7 @@ Served by the worker's own HTTP server on its own port (config default `{ port: 
   "events": [ "2026-09-17T17:05:11Z twelvedata 429 retry-after 60s (EQNR.OL)" ] }
 ```
 
-`regions[]` is what the HealthStrip and the config-drawer region cards render. `reason` appears when a region has zero fetched instruments and all of them are key-gated.
+`regions[]` is what the HealthStrip and the config-drawer region cards render. `reason` appears when a region has zero fetched instruments and all of them are key-gated. `lastHeartbeatError` is `null` when the last heartbeat succeeded (or none has run yet) and holds a human-readable cause (e.g. `no quote for NDX (empty or unexpected response)`, `HTTP 403 — …`) when it failed — so a dead heartbeat cannot read as merely a quiet-but-live pipeline.
 
 ### `GET /api/signals?region=US`
 
