@@ -56,6 +56,10 @@ export interface Instrument {
   weight: number | null;
   source: "default" | "user";
   availability?: "ok" | "stale" | "unavailable" | "disabled" | "pending";
+  // Fix B: a keyed symbol whose first probe hit NOT_FOUND on the provider is
+  // permanently marked so later cycles skip it (no credit waste). The app shows
+  // it grey ("ticker not found"), distinct from the amber "pending probe" state.
+  notFound?: boolean;
 }
 
 export interface SignalLite {
@@ -142,7 +146,10 @@ export interface Pulse {
 
 export interface ProviderStatus {
   id: string;
-  status: "ok" | "limited" | "off";
+  // Fix A: a keyed provider whose key was REJECTED (401/403) is "auth_error" —
+  // distinct from "limited" (no key configured) so the UI can say "re-enter or
+  // rotate" instead of the silent "not configured".
+  status: "ok" | "limited" | "off" | "auth_error";
   lastRefresh: string | null;
   symbolsOk: number;
   symbolsFailed: number;
@@ -150,6 +157,8 @@ export interface ProviderStatus {
   keyConfigured: boolean | null;
   creditsUsedToday?: number;
   dailyCreditBudget?: number;
+  // Fix A: short human-readable cause when status === "auth_error".
+  lastError?: string;
 }
 
 export interface RegionSummary {

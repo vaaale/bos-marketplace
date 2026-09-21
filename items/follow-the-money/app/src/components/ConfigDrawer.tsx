@@ -14,6 +14,10 @@ interface Props {
   onClose: () => void;
   health: Health | null;
   config: ServiceConfig | null;
+  // Fix B: the live universe (GET /api/universe) — carries per-symbol `enabled`
+  // + `availability` + the probe's `notFound` marker, so the drawer can show
+  // the 9 keyed symbols' real status instead of a flat "awaiting".
+  universe: { instruments: Instrument[] } | null;
   onConfigChanged: (c: ServiceConfig) => void;
   toast: (msg: string) => void;
 }
@@ -44,7 +48,7 @@ function keyHelp(id: string): React.ReactNode {
   );
 }
 
-export default function ConfigDrawer({ open, onClose, health, config, onConfigChanged, toast }: Props) {
+export default function ConfigDrawer({ open, onClose, health, config, universe, onConfigChanged, toast }: Props) {
   const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
   const [newSym, setNewSym] = useState("");
   const [newRegion, setNewRegion] = useState<Region>("US");
@@ -94,8 +98,11 @@ export default function ConfigDrawer({ open, onClose, health, config, onConfigCh
               Provider Health <span className="ln" />
             </h3>
             {(health?.providers || []).map((p) => {
-              const cls = p.status === "ok" ? "ok" : p.status === "limited" ? (p.keyRequired && !p.keyConfigured ? "warn" : "warn") : "off";
-              const stat = p.keyRequired && !p.keyConfigured ? "LIMITED" : p.status.toUpperCase();
+              const authErr = p.status === "auth_error";
+              // Fix A: a rejected key renders RED ("err") — not the neutral amber
+              // "limited" that means "no key set". The two are different actions.
+              const cls = p.status === "ok" ? "ok" : authErr ? "err" : p.status === "limited" ? "warn" : "off";
+              const stat = authErr ? "KEY REJECTED" : p.keyRequired && !p.keyConfigured ? "LIMITED" : p.status.toUpperCase();
               return (
                 <div key={p.id} className={`prov ${cls}`}>
                   <span className="pd" />
@@ -107,6 +114,11 @@ export default function ConfigDrawer({ open, onClose, health, config, onConfigCh
                         ? ` · key ${p.keyConfigured ? "set" : "NOT set"} · ${p.creditsUsedToday ?? 0}/${p.dailyCreditBudget ?? "—"} credits`
                         : ""}
                     </div>
+                    {authErr && p.lastError ? (
+                      <div className="perr" data-testid={`provider-auth-error-${p.id}`}>
+                        ⚠ {p.lastError} — re-enter or rotate the key
+                      </div>
+                    ) : null}
                   </div>
                   <span className="pstat">{stat}</span>
                 </div>
@@ -114,23 +126,63 @@ export default function ConfigDrawer({ open, onClose, health, config, onConfigCh
             })}
           </div>
 
+          {(() => {
+            // Fix B: the keyed-only symbols (provider "fallback" = the 9 T10-gated
+            // home-exchange indices / Norway rows) auto-enable on their first
+            // successful fetch. Show each one's real status so the user sees
+            // "pending / will probe" instead of a wall of silent "awaiting".
+            const keyed = (universe?.instruments || []).filter((i) => i.provider === "fallback");
+            if (keyed.length === 0) return null;
+            const keySet = Boolean(health?.keyConfigured) || Object.values(config?.keyConfigured || {}).some(Boolean);
+            return (
+              <div className="dr-sec">
+                <h3>
+                  Keyed Symbols <span className="ln" />
+                </h3>
+                <div className="note" style={{ marginBottom: 8 }}>
+                  These need the key above. Each auto-enables on its first successful
+                  fetch — no manual step. {keySet ? "A key is set, so pending ones probe on the next refresh." : "No key set — they stay pending until a key is saved."}
+                </div>
+                {keyed.map((i) => {
+                  const notFound = Boolean(i.notFound);
+                  const dot = i.enabled ? "ok" : notFound ? "off" : "warn";
+                  const label = i.enabled ? "enabled" : notFound ? "ticker not found" : "will probe on next refresh";
+                  return (
+                    <div key={i.symbol} className={`sym-status ${dot}`} data-testid={`keyed-sym-${i.symbol}`}>
+                      <span className="ss-dot" />
+                      <span className="ss-sym num">{i.symbol}</span>
+                      <span className="ss-name">{i.name}</span>
+                      <span className="ss-label">{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
           <div className="dr-sec">
             <h3>
               Regions <span className="ln" />
             </h3>
-            {(health?.regions || []).map((r) => (
-              <div key={r.region} className={`prov ${r.reason ? "warn" : r.ok > 0 ? "ok" : "off"}`} data-testid={`region-card-${r.region}`}>
-                <span className="pd" />
-                <div>
-                  <div className="pname">{r.region}</div>
-                  <div className="pmeta">
-                    {r.ok}/{r.total} ok · {r.stale} stale · as-of {fmtAsOf(r.asOf)}
-                    {r.reason ? ` · ${r.reason}` : ""}
+            {(health?.regions || []).map((r) => {
+              // Fix A: a region whose reason is a key rejection renders red, not
+              // the neutral amber "awaiting" used for the no-key / pending states.
+              const rejected = r.reason !== undefined && /rejected/i.test(r.reason);
+              const cls = r.reason ? (rejected ? "err" : "warn") : r.ok > 0 ? "ok" : "off";
+              return (
+                <div key={r.region} className={`prov ${cls}`} data-testid={`region-card-${r.region}`}>
+                  <span className="pd" />
+                  <div>
+                    <div className="pname">{r.region}</div>
+                    <div className="pmeta">
+                      {r.ok}/{r.total} ok · {r.stale} stale · as-of {fmtAsOf(r.asOf)}
+                      {r.reason ? ` · ${r.reason}` : ""}
+                    </div>
                   </div>
+                  <span className="pstat">{r.reason ? (rejected ? "KEY REJECTED" : "AWAITING") : r.ok === r.total ? "OK" : "PARTIAL"}</span>
                 </div>
-                <span className="pstat">{r.reason ? "AWAITING" : r.ok === r.total ? "OK" : "PARTIAL"}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="dr-sec">

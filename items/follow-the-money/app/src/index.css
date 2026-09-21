@@ -92,13 +92,17 @@ header{
 .health .sep{width:1px;height:14px;background:var(--line-2)}
 .hdot{display:inline-flex;align-items:center;gap:6px}
 .hdot .d{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
-.hdot.ok .d{background:var(--up)} .hdot.warn .d{background:var(--am)} .hdot.off .d{background:var(--txt-3)}
+.hdot.ok .d{background:var(--up)} .hdot.warn .d{background:var(--am)} .hdot.err .d{background:var(--dn)} .hdot.off .d{background:var(--txt-3)}
 .health .count{color:var(--txt-3);font-family:var(--mono);font-variant-numeric:tabular-nums}
 .key-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:5px;border:1px dashed var(--line-2);color:var(--am);cursor:pointer}
 .key-chip:hover{background:var(--am-bg)}
 .key-chip .d{width:8px;height:8px;border-radius:50%;background:var(--am)}
 .key-chip.set{color:var(--up)}
 .key-chip.set .d{background:var(--up)}
+/* Fix A: a configured key the provider REJECTED is red — distinct from the
+   amber "not configured" and green "configured". */
+.key-chip.err{color:var(--dn);border-color:rgba(255,93,93,.5)}
+.key-chip.err .d{background:var(--dn)}
 
 /* ============ PULSE STRIP (design §2.7 binding spec) ============ */
 .pulse{
@@ -302,7 +306,19 @@ svg.chart{display:block;width:100%;height:auto}
 .prov .pname{font-weight:600;font-size:12.5px}
 .prov .pmeta{font-size:11px;color:var(--txt-3);font-family:var(--mono);font-variant-numeric:tabular-nums}
 .prov .pstat{margin-left:auto;font:600 10px var(--sans);padding:2px 7px;border-radius:4px}
-.prov.ok .pstat{color:var(--up);background:var(--up-bg)} .prov.warn .pstat{color:var(--am);background:var(--am-bg)} .prov.off .pstat{color:var(--txt-3);background:var(--bg-4)}
+.prov.ok .pstat{color:var(--up);background:var(--up-bg)} .prov.warn .pstat{color:var(--am);background:var(--am-bg)} .prov.err .pstat{color:var(--dn);background:var(--dn-bg)} .prov.off .pstat{color:var(--txt-3);background:var(--bg-4)}
+.prov.err .pd{background:var(--dn)}
+/* Fix A: the red cause line under a rejected-key provider. */
+.perr{font-size:11px;color:var(--dn);margin-top:5px;line-height:1.4}
+
+/* Fix B: keyed-symbol status rows (enabled / pending-probe / not-found). */
+.sym-status{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg-3);border:1px solid var(--line);border-radius:6px;margin-bottom:6px;font-size:11.5px}
+.sym-status .ss-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+.sym-status.ok .ss-dot{background:var(--up)} .sym-status.warn .ss-dot{background:var(--am)} .sym-status.off .ss-dot{background:var(--txt-3)}
+.sym-status .ss-sym{font-weight:700;color:var(--txt)}
+.sym-status .ss-name{color:var(--txt-3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sym-status .ss-label{color:var(--txt-3);font-size:10px;letter-spacing:.3px;text-transform:uppercase;white-space:nowrap}
+.sym-status.ok .ss-label{color:var(--up)} .sym-status.warn .ss-label{color:var(--am)}
 .field{margin-bottom:12px}
 .field label{display:block;font-size:11px;color:var(--txt-2);margin-bottom:5px}
 .field input,.field select{width:100%;appearance:none;background:var(--bg);border:1px solid var(--line-2);border-radius:6px;color:var(--txt);font:13px var(--mono);padding:9px 11px;outline:none}

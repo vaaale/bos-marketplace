@@ -6,7 +6,13 @@
 // adapter, minimum spacing between calls).
 
 class ProviderError extends Error {
-  // code: RATE_LIMITED | NOT_FOUND | UNAUTHORIZED | NO_KEY | TRANSIENT | UNKNOWN
+  // code: RATE_LIMITED | NOT_FOUND | INVALID_KEY | UNAUTHORIZED | NO_KEY | TRANSIENT | UNKNOWN
+  //
+  // NO_KEY and INVALID_KEY are distinct (Fix A): NO_KEY means the key slot is
+  // EMPTY (checked before any request is sent) — "data source not configured".
+  // INVALID_KEY means a key WAS sent and the provider rejected it (HTTP 401/403)
+  // — the user has a key but it is expired/rotated/typo'd. Collapsing the two
+  // into one label is exactly the silence that hid the expired-key incident.
   constructor(code, retryable, extra) {
     super((extra && extra.cause) || code);
     this.name = "ProviderError";
@@ -60,8 +66,11 @@ async function httpRequest(url, opts) {
       cause: "HTTP 429"
     });
   }
-  if (res.status === 401) throw new ProviderError("NO_KEY", false, { cause: "HTTP 401" });
-  if (res.status === 403) throw new ProviderError("UNAUTHORIZED", false, { cause: "HTTP 403" });
+  // A present-but-rejected key is INVALID_KEY, not NO_KEY (Fix A). 401 and 403
+  // both mean "the key you sent is not accepted" — the user must re-enter or
+  // rotate it, NOT "configure a data source that isn't there".
+  if (res.status === 401) throw new ProviderError("INVALID_KEY", false, { cause: "HTTP 401 — key invalid or expired" });
+  if (res.status === 403) throw new ProviderError("INVALID_KEY", false, { cause: "HTTP 403 — key forbidden or expired" });
   if (res.status >= 500) throw new ProviderError("TRANSIENT", true, { cause: "HTTP " + res.status });
   if (res.status === 404) throw new ProviderError("NOT_FOUND", false, { cause: "HTTP 404" });
   if (res.status >= 400) throw new ProviderError("UNKNOWN", false, { cause: "HTTP " + res.status });

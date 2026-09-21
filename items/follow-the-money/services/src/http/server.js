@@ -14,7 +14,7 @@ const configMod = require("../config/config.js");
 const { readBars } = require("../storage/bars.js");
 const { readSignal, readRegionRollup, readPulse } = require("../storage/signals.js");
 const { readRecords, latestByProvider } = require("../storage/refreshlog.js");
-const { startRefresh, REGION_ORDER, UNAVAILABLE_REASON, isKeyGated, isDisplayInstrument } = require("../pipeline/refresh.js");
+const { startRefresh, REGION_ORDER, UNAVAILABLE_REASON, NOT_FOUND_REASON, PENDING_PROBE_REASON, isKeyGated, isDisplayInstrument } = require("../pipeline/refresh.js");
 const { nextRefreshAt } = require("../pipeline/scheduler.js");
 
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -70,14 +70,28 @@ function buildHealth(ctx) {
     keyConfigured: null
   });
   const td = latest.twelvedata;
+  // Fix A: if the most recent keyed refresh recorded INVALID_KEY events, the
+  // configured key was REJECTED (expired/rotated) — that is "auth_error", not
+  // "ok"/"limited". The user has to re-enter/rotate the key, which is a
+  // different action than "configure a missing data source".
+  const tdEvents = (td && td.events) || [];
+  const tdAuthError = tdEvents.some((e) => e.indexOf("INVALID_KEY") !== -1);
+  const tdStatus = !keyConfigured
+    ? "limited"
+    : tdAuthError
+      ? "auth_error"
+      : td
+        ? td.symbolsFailed === 0 ? "ok" : "limited"
+        : "off";
   providerRows.push({
     id: "twelvedata",
-    status: !keyConfigured ? "limited" : td ? (td.symbolsFailed === 0 ? "ok" : "limited") : "off",
+    status: tdStatus,
     lastRefresh: td ? td.ts : null,
     symbolsOk: td ? td.symbolsOk : 0,
     symbolsFailed: td ? td.symbolsFailed : 0,
     keyRequired: true,
     keyConfigured,
+    lastError: tdAuthError ? "401 Unauthorized — key invalid or expired" : undefined,
     creditsUsedToday: manifest.creditsUsedToday || 0,
     dailyCreditBudget: cfg.dailyCreditBudget
   });
@@ -85,24 +99,39 @@ function buildHealth(ctx) {
   const regions = [];
   const unavailable = [];
   let asOf = null;
+  const universeOverrides = cfg.universeOverrides || {};
   for (const region of REGION_ORDER) {
     const insts = universe.filter((i) => i.region === region && isDisplayInstrument(ctx.registry, i));
     let ok = 0;
     let stale = 0;
     let unav = 0;
     let regionAsOf = null;
+    const regionReasons = new Set();
     for (const inst of insts) {
       const sig = readSignal(dataDir, region, inst.symbol);
       if (!sig) {
+        // No signal yet (never refreshed / just installed). For a key-gated
+        // symbol this is a pre-fetch estimate of the reason: no key at all, a
+        // probe already confirmed the ticker doesn't exist (notFound), or the
+        // T10 pending-probe state (key present, not yet enabled).
         if (isKeyGated(ctx.registry, inst) && (!keyConfigured || !inst.enabled)) {
           unav += 1;
-          unavailable.push({ symbol: inst.symbol, region, reason: UNAVAILABLE_REASON });
+          const o = universeOverrides[inst.symbol];
+          const reason = !keyConfigured
+            ? UNAVAILABLE_REASON
+            : o && o.notFound
+              ? NOT_FOUND_REASON
+              : PENDING_PROBE_REASON;
+          unavailable.push({ symbol: inst.symbol, region, reason });
+          regionReasons.add(reason);
         }
         continue;
       }
       if (sig.state === "unavailable") {
         unav += 1;
-        unavailable.push({ symbol: inst.symbol, region, reason: UNAVAILABLE_REASON });
+        const reason = sig.unavailableReason || UNAVAILABLE_REASON;
+        unavailable.push({ symbol: inst.symbol, region, reason });
+        regionReasons.add(reason);
       } else if (sig.stale) {
         stale += 1;
       } else {
@@ -118,7 +147,12 @@ function buildHealth(ctx) {
       stale,
       asOf: regionAsOf
     };
-    if (ok === 0 && unav > 0 && unav === insts.length) row.reason = UNAVAILABLE_REASON;
+    // When a whole region is unavailable, surface the reason. If every symbol
+    // shares one reason, use it (so "key rejected" isn't masked by the generic
+    // "not configured"); a mixed region falls back to the generic label.
+    if (ok === 0 && unav > 0 && unav === insts.length) {
+      row.reason = regionReasons.size === 1 ? Array.from(regionReasons)[0] : UNAVAILABLE_REASON;
+    }
     regions.push(row);
     if (regionAsOf && (!asOf || regionAsOf > asOf)) asOf = regionAsOf;
   }
@@ -216,6 +250,7 @@ function buildWatchlist(ctx) {
 function buildUniverse(ctx) {
   const dataDir = ctx.dataDir;
   const keyConfigured = configMod.keyConfigured(dataDir);
+  const universeOverrides = configMod.getConfig(dataDir).universeOverrides || {};
   const instruments = configMod.getUniverse(dataDir).map((inst) => {
     const sig = readSignal(dataDir, inst.region, inst.symbol);
     let availability;
@@ -225,7 +260,12 @@ function buildUniverse(ctx) {
     else if (sig && sig.stale) availability = "stale";
     else if (sig) availability = "ok";
     else availability = "pending";
-    return Object.assign({}, inst, { availability });
+    // Fix B: expose the probe's permanent-NOT_FOUND marker so the app can show
+    // "ticker not found" (grey) distinct from the pending-probe (amber) state.
+    return Object.assign({}, inst, {
+      availability,
+      notFound: Boolean(universeOverrides[inst.symbol] && universeOverrides[inst.symbol].notFound)
+    });
   });
   return { instruments };
 }

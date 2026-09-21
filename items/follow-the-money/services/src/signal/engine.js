@@ -81,7 +81,11 @@ function computeSignal({ instrument, bars, thresholds, availability }) {
     breakout,
     score,
     stale: Boolean(av.stale),
-    state
+    state,
+    // Fix A: WHY it's unavailable (key rejected / not configured / not found).
+    // Always present (null when not unavailable) so the fixed key order keeps
+    // SC-007 byte-identity intact.
+    unavailableReason: state === "unavailable" ? av.unavailableReason || null : null
   };
 }
 

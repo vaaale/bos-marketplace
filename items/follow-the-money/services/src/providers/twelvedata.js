@@ -28,7 +28,10 @@ const twelvedata = {
     if (!json) throw new ProviderError("UNKNOWN", false, { cause: "non-JSON response" });
     if (json.status === "error" || json.code) {
       const code = Number(json.code);
-      if (code === 401) throw new ProviderError("NO_KEY", false, { cause: json.message || "401" });
+      // A key was sent (it's in o.apiKey) but the provider rejected it — that
+      // is INVALID_KEY, not NO_KEY (Fix A). The NO_KEY above only fires when no
+      // key was configured at all.
+      if (code === 401) throw new ProviderError("INVALID_KEY", false, { cause: json.message || "401 — key invalid or expired" });
       if (code === 429) {
         throw new ProviderError("RATE_LIMITED", true, { retryAfterMs: 60000, cause: json.message || "429" });
       }

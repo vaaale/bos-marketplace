@@ -24,7 +24,14 @@ const configMod = require("../config/config.js");
 
 const REGION_ORDER = ["US", "Europe", "Norway", "Asia"];
 const REGION_CURRENCY = { US: "USD", Europe: "USD", Norway: "NOK", Asia: "USD" };
+// Unavailable reasons (per symbol). Distinguishing them is the point of Fix A:
+// "not configured" (no key) vs "key rejected" (present but 401/403) vs "ticker
+// not found" (404) vs "will probe" (T10 pending) are four different user
+// actions — collapsing them into one silent label is what hid the incident.
 const UNAVAILABLE_REASON = "data source not configured";
+const KEY_REJECTED_REASON = "key rejected — re-enter or rotate";
+const NOT_FOUND_REASON = "ticker not found on provider";
+const PENDING_PROBE_REASON = "will probe on next refresh";
 
 // A display instrument appears in rollups/health even when it cannot be
 // fetched: enabled instruments always; disabled instruments only when they
@@ -38,10 +45,31 @@ function isDisplayInstrument(registry, inst) {
   return inst.enabled || isKeyGated(registry, inst);
 }
 
+// ---- Fix B: the T10 hard gate self-resolves ------------------------------
+// A key-gated symbol that ships enabled:false probes on its FIRST real fetch
+// (no extra credits — the probe IS the fetch). Success enables it (persisted);
+// a definitive NOT_FOUND marks it so later cycles skip it without re-attacking
+// the provider (no credit waste). Both write through the same atomic user
+// config path every other universe override does — one mechanism.
+function patchUniverseOverride(dataDir, symbol, patch) {
+  const user = configMod.readUserConfig(dataDir);
+  user.universeOverrides = Object.assign({}, user.universeOverrides);
+  user.universeOverrides[symbol] = Object.assign({}, user.universeOverrides[symbol] || {}, patch);
+  configMod.writeUserConfig(dataDir, user);
+}
+function enableInstrument(dataDir, symbol) {
+  patchUniverseOverride(dataDir, symbol, { enabled: true, notFound: false });
+}
+function markInstrumentNotFound(dataDir, symbol) {
+  patchUniverseOverride(dataDir, symbol, { enabled: false, notFound: true });
+}
+
 async function fetchViaChain(ctx, inst, range, events, manifest, dailyCreditBudget) {
   const dataDir = ctx.dataDir;
   const chain = ctx.registry.chainFor(inst);
   let sawNoKey = false;
+  let sawInvalidKey = false;
+  let failedProvider = null;
   let lastError = null;
   for (const adapter of chain) {
     // Per-provider key availability (NFR-008): a keyed adapter is usable only
@@ -70,11 +98,18 @@ async function fetchViaChain(ctx, inst, range, events, manifest, dailyCreditBudg
             ? err
             : new ProviderError("UNKNOWN", false, { cause: String((err && err.message) || err) });
         lastError = pe;
+        failedProvider = adapter.id;
         if (pe.code === "NOT_FOUND") {
           events.push(adapter.id + " NOT_FOUND (" + inst.symbol + ")");
           fellThrough = true; // fall through to the next provider
         } else if (pe.code === "NO_KEY") {
           sawNoKey = true;
+          fellThrough = true;
+        } else if (pe.code === "INVALID_KEY") {
+          // Fix A: a PRESENT key the provider rejected (HTTP 401/403) — the
+          // user has a key but it is expired/rotated. Distinct from NO_KEY.
+          sawInvalidKey = true;
+          events.push(adapter.id + " INVALID_KEY (" + inst.symbol + ")");
           fellThrough = true;
         } else if (pe.code === "UNAUTHORIZED") {
           events.push(adapter.id + " UNAUTHORIZED (" + inst.symbol + ")");
@@ -102,11 +137,25 @@ async function fetchViaChain(ctx, inst, range, events, manifest, dailyCreditBudg
       }
     }
   }
-  // Chain exhausted. Missing-key cause (incl. primary NOT_FOUND + no key)
-  // -> "unavailable — data source not configured" (spec edge case).
-  const keyCause =
-    sawNoKey && (!lastError || lastError.code === "NOT_FOUND" || lastError.code === "NO_KEY");
-  return { ok: false, unavailable: keyCause, error: lastError };
+  // Chain exhausted. Resolve the unavailable reason from what was actually
+  // observed. The three user-action cases (Fix A) each get a distinct label:
+  // a present-but-rejected key ("key rejected"), an empty key slot ("not
+  // configured"), or a provider 404 ("ticker not found"). A transient failure
+  // (rate-limit / network / 5xx) is NOT "unavailable" — it retries next cycle
+  // with backoff and keeps its prior data (counted as symbolsFailed).
+  let unavailable = false;
+  let reason = null;
+  if (sawInvalidKey) {
+    unavailable = true;
+    reason = KEY_REJECTED_REASON;
+  } else if (sawNoKey && (!lastError || lastError.code === "NOT_FOUND" || lastError.code === "NO_KEY")) {
+    unavailable = true;
+    reason = UNAVAILABLE_REASON;
+  } else if (lastError && lastError.code === "NOT_FOUND") {
+    unavailable = true;
+    reason = NOT_FOUND_REASON;
+  }
+  return { ok: false, unavailable, reason, error: lastError, failedProvider };
 }
 
 // The full pipeline. scope: "all" | region name.
@@ -142,6 +191,7 @@ async function doRefresh(ctx, scope, refreshId) {
   const fetchStatus = {}; // "region|symbol" -> { ok, providerUsed, unavailable, deferred }
   let maxBarDate = null;
 
+  const overrides = cfg.universeOverrides;
   for (const inst of targets) {
     const key = inst.region + "|" + inst.symbol;
     const chain = ctx.registry.chainFor(inst);
@@ -150,16 +200,34 @@ async function doRefresh(ctx, scope, refreshId) {
     // in its chain requires a key) is fetchable only if SOME provider in the
     // chain has its own key slot configured.
     const hasKeyInChain = chain.some((a) => !a.requiresKey || configMod.keyConfiguredFor(dataDir, a.id));
-    if (!inst.enabled || (gated && !hasKeyInChain)) {
-      // hard-gate / no-key: never fetched, labeled unavailable
-      fetchStatus[key] = { ok: false, unavailable: true };
+    // A permanently-NOT_FOUND probe (Fix B): the symbol was probed once and the
+    // provider rejected the ticker, so stop re-attacking it (no credit waste).
+    const notFound = gated && !inst.enabled && Boolean(overrides[inst.symbol] && overrides[inst.symbol].notFound);
+    // Fix B: a disabled key-gated symbol WITH a configured key PROBES on this
+    // fetch — the probe IS the real fetch (no extra credits). Non-keyed and
+    // no-key symbols keep the hard gate (skipped, labeled unavailable).
+    const probe = gated && !inst.enabled && hasKeyInChain && !notFound;
+    if ((gated && !hasKeyInChain) || (!inst.enabled && !probe)) {
+      // hard-gate / no-key / permanent not-found: never fetched, labeled
+      fetchStatus[key] = {
+        ok: false,
+        unavailable: true,
+        reason: notFound ? NOT_FOUND_REASON : UNAVAILABLE_REASON
+      };
       continue;
     }
     const range = neededRange(dataDir, inst, new Date());
     const events = [];
     const result = await fetchViaChain(ctx, inst, range, events, manifest, cfg.dailyCreditBudget);
     const primaryId = chain.length ? chain[0].id : "nasdaq";
+    const failProvider = result.failedProvider || primaryId;
     if (result.ok) {
+      if (probe) {
+        // The T10 gate self-resolves: the first successful real fetch enables
+        // the symbol (persisted atomically) — it joins the universe next cycle.
+        enableInstrument(dataDir, inst.symbol);
+        events.push("enabled " + inst.symbol + " (first successful fetch)");
+      }
       const bars = upsertBars(dataDir, inst, result.bars, thresholds); // atomic, per-symbol
       fetchStatus[key] = { ok: true, providerUsed: result.providerUsed };
       manifest.lastOkFetch[key] = nowIso;
@@ -174,13 +242,22 @@ async function doRefresh(ctx, scope, refreshId) {
       fetchStatus[key] = { ok: false, deferred: true };
       const p = prov("twelvedata");
       p.events.push(...events);
+    } else if (result.unavailable && result.reason === NOT_FOUND_REASON && probe) {
+      // A probe that hit NOT_FOUND: the provider rejects this ticker. Mark it
+      // permanently (enabled:false, notFound:true) so later cycles skip it
+      // without re-attacking — no credit waste (Fix B).
+      markInstrumentNotFound(dataDir, inst.symbol);
+      events.push("not found " + inst.symbol + " (probe) — marked, skipped next cycle");
+      fetchStatus[key] = { ok: false, unavailable: true, reason: NOT_FOUND_REASON };
+      const p = prov(failProvider);
+      p.events.push(...events);
     } else if (result.unavailable) {
-      fetchStatus[key] = { ok: false, unavailable: true };
-      const p = prov(primaryId);
+      fetchStatus[key] = { ok: false, unavailable: true, reason: result.reason || UNAVAILABLE_REASON };
+      const p = prov(failProvider);
       p.events.push(...events);
     } else {
       fetchStatus[key] = { ok: false };
-      const p = prov(result.error && result.error.code === "RATE_LIMITED" ? primaryId : primaryId);
+      const p = prov(failProvider);
       p.symbolsFailed += 1;
       p.events.push(...events);
     }
@@ -207,6 +284,10 @@ async function doRefresh(ctx, scope, refreshId) {
     const fetchedOk = Boolean(status && status.ok);
     const unavailable = Boolean(status && status.unavailable) && !fetchedOk;
     const stale = !fetchedOk && bars.length > 0;
+    // The per-symbol unavailable reason (Fix A) is stamped on the signal so the
+    // read surface can show WHY (key rejected / not configured / not found)
+    // instead of one silent "awaiting" label.
+    const unavailableReason = unavailable && status && status.reason ? status.reason : null;
     const priorSignal = require("../storage/signals.js").readSignal(dataDir, inst.region, inst.symbol);
     const providerUsed = fetchedOk
       ? status.providerUsed
@@ -215,7 +296,7 @@ async function doRefresh(ctx, scope, refreshId) {
       instrument: inst,
       bars,
       thresholds,
-      availability: { unavailable, stale, providerUsed }
+      availability: { unavailable, stale, providerUsed, unavailableReason }
     });
     writeSignal(dataDir, signal);
     regionLites[inst.region].push(toSignalLite(signal, inst, thresholds));
@@ -285,4 +366,17 @@ function startRefresh(ctx, scope) {
   return { started: true, refreshId, done };
 }
 
-module.exports = { startRefresh, doRefresh, REGION_ORDER, REGION_CURRENCY, UNAVAILABLE_REASON, isKeyGated, isDisplayInstrument };
+module.exports = {
+  startRefresh,
+  doRefresh,
+  REGION_ORDER,
+  REGION_CURRENCY,
+  UNAVAILABLE_REASON,
+  KEY_REJECTED_REASON,
+  NOT_FOUND_REASON,
+  PENDING_PROBE_REASON,
+  isKeyGated,
+  isDisplayInstrument,
+  enableInstrument,
+  markInstrumentNotFound
+};

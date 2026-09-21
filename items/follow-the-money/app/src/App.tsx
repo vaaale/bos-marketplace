@@ -6,6 +6,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type {
   Health,
+  Instrument,
   Lookback,
   Pulse,
   Region,
@@ -18,6 +19,7 @@ import {
   fetchHealth,
   fetchPulse,
   fetchSignals,
+  fetchUniverse,
   fetchWatchlist,
   patchConfig
 } from "./lib/serviceClient";
@@ -80,6 +82,7 @@ export default function App() {
   const [rollup, setRollup] = useState<RegionRollup | null>(null);
   const [config, setConfig] = useState<ServiceConfig | null>(null);
   const [watchlistData, setWatchlistData] = useState<WatchlistResponse | null>(null);
+  const [universe, setUniverse] = useState<{ instruments: Instrument[] } | null>(null);
   const [offline, setOffline] = useState(false);
   const [cachedAt, setCachedAt] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -101,11 +104,12 @@ export default function App() {
   }, []);
 
   const loadGlobal = useCallback(async () => {
-    const [h, p, c, w] = await Promise.all([fetchHealth(), fetchPulse(), fetchConfig(), fetchWatchlist()]);
+    const [h, p, c, w, u] = await Promise.all([fetchHealth(), fetchPulse(), fetchConfig(), fetchWatchlist(), fetchUniverse()]);
     if (h.data) setHealth(h.data);
     if (p.data) setPulse(p.data);
     if (c.data) setConfig(c.data);
     if (w.data) setWatchlistData(w.data);
+    if (u.data) setUniverse(u.data);
     setOffline(h.offline);
     setCachedAt(h.cachedAt);
   }, []);
@@ -264,6 +268,7 @@ export default function App() {
         onClose={() => setDrawerOpen(false)}
         health={health}
         config={config}
+        universe={universe}
         onConfigChanged={(c) => {
           setConfig(c);
           loadGlobal();
