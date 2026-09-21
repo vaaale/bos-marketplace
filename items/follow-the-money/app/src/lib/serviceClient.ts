@@ -17,6 +17,7 @@ import type {
   Instrument,
   Lookback,
   Pulse,
+  RefreshLog,
   Region,
   RegionRollup,
   ServiceConfig,
@@ -106,14 +107,14 @@ function cacheInvalidate(key: string): void {
 // (stale banner); treating it as "no data, all fine" silently renders a false
 // key status with no error. Per-resource routes (instruments, signals) DO 404
 // for unknown symbol/region, so they keep the "not offline" treatment.
-async function getJSON<T>(path: string, cacheKey: string, core = false): Promise<FetchResult<T>> {
+async function getJSON<T>(path: string, cacheKey: string, core = false, noCache = false): Promise<FetchResult<T>> {
   const base = await getServiceBaseUrl();
   if (base) {
     try {
       const res = await fetch(base + path, { cache: "no-store" });
       if (res.ok) {
         const data = (await res.json()) as T;
-        cachePut(cacheKey, data);
+        if (!noCache) cachePut(cacheKey, data);
         return { data, offline: false, cachedAt: null };
       }
       if (res.status === 404 && !core) {
@@ -123,6 +124,11 @@ async function getJSON<T>(path: string, cacheKey: string, core = false): Promise
     } catch {
       /* fall through to cache */
     }
+  }
+  if (noCache) {
+    // A live tail (the refresh log): never serve a stale cached snapshot as if
+    // it were current — offline is offline (the panel shows the offline state).
+    return { data: null, offline: true, cachedAt: null };
   }
   const cached = cacheGet<T>(cacheKey);
   return { data: cached ? cached.data : null, offline: true, cachedAt: cached ? cached.t : null };
@@ -198,4 +204,12 @@ export function patchConfig(ops: ConfigOps): Promise<ServiceConfig & { ok: boole
 
 export function postRefresh(scope?: Region | "all"): Promise<{ started: boolean; refreshId: string | null; reason?: string }> {
   return sendJSON("api/refresh", "POST", { scope: scope || "all" });
+}
+
+// Refresh Console live tail. `since` tails only events after that seq (omit for
+// the whole current/most-recent refresh). Core route (the bound service always
+// answers) + noCache (a live tail must never render a stale snapshot as fresh).
+export function fetchRefreshLog(since?: number): Promise<FetchResult<RefreshLog>> {
+  const q = since === undefined ? "" : `?since=${encodeURIComponent(String(since))}`;
+  return getJSON<RefreshLog>("api/refresh/log" + q, `refreshlog:${since ?? "all"}`, true, true);
 }

@@ -319,6 +319,41 @@ svg.chart{display:block;width:100%;height:auto}
 .sym-status .ss-name{color:var(--txt-3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sym-status .ss-label{color:var(--txt-3);font-size:10px;letter-spacing:.3px;text-transform:uppercase;white-space:nowrap}
 .sym-status.ok .ss-label{color:var(--up)} .sym-status.warn .ss-label{color:var(--am)}
+
+/* ============ REFRESH CONSOLE (mockup contract) ============ */
+.rc-head{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.rc-rt{font:600 12px var(--sans);letter-spacing:.2px;display:inline-flex;align-items:center;gap:8px;color:var(--txt)}
+.rc-spin{width:12px;height:12px;border-radius:50%;border:2px solid var(--line-2);border-top-color:var(--cy);animation:rcspin .8s linear infinite;display:inline-block}
+.rc-spin.idle{border-color:var(--line-2);border-top-color:var(--line-2);animation:none}
+@keyframes rcspin{to{transform:rotate(360deg)}}
+.rc-tally{margin-left:auto;font:600 11px var(--mono);font-variant-numeric:tabular-nums;color:var(--txt-2)}
+.rc-tally .ok{color:var(--up)} .rc-tally .iss{color:var(--dn)}
+.rc-asof{font:500 10.5px var(--mono);color:var(--txt-3)}
+.rc-hb{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--txt-2);background:var(--bg-3);border:1px solid var(--line);border-radius:6px;padding:7px 10px;margin-bottom:10px}
+.rc-hb .hd{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+.rc-hb.alive .hd{background:var(--up);box-shadow:0 0 0 3px rgba(55,214,122,.16)}
+.rc-hb.dead .hd{background:var(--dn);box-shadow:0 0 0 3px rgba(255,93,93,.14)}
+.rc-hb .cause{color:var(--dn);font-family:var(--mono);font-size:10.5px}
+.rc-hb .ts{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--txt-3)}
+.rc-filter{display:flex;gap:6px;margin-bottom:9px}
+.rc-filter .fchip{font-size:10.5px;padding:4px 9px}
+.rc-log{background:#070a0f;border:1px solid var(--line-2);border-radius:7px;padding:8px 10px;height:260px;overflow-y:auto;font-family:var(--mono);font-size:11px;line-height:1.75}
+.rc-line{display:grid;grid-template-columns:62px 80px 84px 1fr;gap:8px;align-items:baseline;white-space:nowrap}
+.rc-line .t{color:var(--txt-3)}
+.rc-line .s{color:var(--txt);font-weight:700}
+.rc-line .p{color:var(--txt-3)}
+.rc-line .st{color:var(--txt-2);display:inline-flex;align-items:center;gap:6px}
+.rc-line .st .glyph{font-weight:700;width:12px;text-align:center}
+.rc-st.ok{color:var(--up)} .rc-st.warn{color:var(--am)} .rc-st.err{color:var(--dn)} .rc-st.off{color:var(--txt-3)}
+.rc-st .glyph{color:inherit}
+.rc-tag{font:700 8.5px var(--sans);letter-spacing:.4px;text-transform:uppercase;color:var(--cy);background:var(--cy-bg);border:1px solid rgba(91,157,255,.35);border-radius:3px;padding:1px 4px;white-space:nowrap}
+.rc-empty{color:var(--txt-3);font-style:italic}
+.rc-legend{font-size:10px;color:var(--txt-3);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap}
+.rc-legend span{display:inline-flex;align-items:center;gap:5px}
+.rc-legend i{width:7px;height:7px;border-radius:50%;display:inline-block}
+/* Offline: never render a false empty log when the service is unreachable. */
+.rc-offline{background:var(--bg-3);border:1px solid var(--line);border-radius:7px;padding:12px 10px;font-size:11px;color:var(--am);display:flex;align-items:center;gap:8px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
 .field{margin-bottom:12px}
 .field label{display:block;font-size:11px;color:var(--txt-2);margin-bottom:5px}
 .field input,.field select{width:100%;appearance:none;background:var(--bg);border:1px solid var(--line-2);border-radius:6px;color:var(--txt);font:13px var(--mono);padding:9px 11px;outline:none}

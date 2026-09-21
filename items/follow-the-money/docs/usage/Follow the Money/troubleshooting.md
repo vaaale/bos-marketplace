@@ -41,3 +41,14 @@ Expected. NDX is fetched as a price-only index (no volume data), so dollar-volum
 ## A refresh seems stuck / "refresh already running"
 
 Only one refresh runs at a time. A full default-universe refresh takes well under a minute (the very first run backfills 5 years of history and takes slightly longer). Press **Refresh now** again after it completes; the health strip's *Last refresh* timestamp updates when it lands.
+
+## Refresh Console — see exactly what a refresh did
+
+Open **Data & Config → Refresh Console** (between Provider Health and the API key field). It streams one line per fetch *attempt* for the current (or last completed) refresh — the fastest way to see **why** a symbol is in a given state instead of guessing from a silent row:
+
+- **green `ok`** — fetched. A keyed symbol that auto-enabled on its first successful fetch shows a **probe → enabled** tag.
+- **amber `retry` / `deferred`** — a rate-limited attempt that retried (`rate-limited → retry`), or a keyed symbol held back by the daily credit budget (`deferred — credit budget`).
+- **red `error`** — `key rejected (401) — re-enter/rotate` (your key is present but expired/rotated — re-save it), `not found on provider` (the ticker doesn't exist there), or `timeout / transient` (a network/provider hiccup that retries next cycle).
+- **grey `skip`** — `awaiting data source` (key-gated, no key configured).
+
+The **heartbeat line** under the header shows whether the pipeline is **alive** (green) or **dead** (red, with the failure cause). The **Issues only** chip filters to every non-`ok` line. The log keeps the last 200 lines and resets on each refresh. Key material never appears in the log — a rejected key reads as a fixed phrase, never the key itself.

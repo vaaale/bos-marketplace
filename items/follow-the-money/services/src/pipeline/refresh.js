@@ -15,12 +15,21 @@ const path = require("node:path");
 const store = require("../storage/store.js");
 const { readBars, upsertBars } = require("../storage/bars.js");
 const { writeSignal, writeRegionRollup, readRegionRollup, writePulse } = require("../storage/signals.js");
-const { appendRecord } = require("../storage/refreshlog.js");
+const { appendRecord, appendEvent } = require("../storage/refreshlog.js");
+const { createRefreshBuffer } = require("../storage/refreshbuffer.js");
 const { computeSignal, toSignalLite } = require("../signal/engine.js");
 const { computePulse } = require("../signal/pulse.js");
 const { neededRange } = require("./backfill.js");
 const { ProviderError, sleep } = require("../providers/http.js");
 const configMod = require("../config/config.js");
+
+// Test seam: the backoff sleeps (5 s × 2^attempt) make the retry path slow to
+// exercise. Tests replace them with an instant no-op; production keeps the real
+// sleep. (Same seam pattern the assistant runtime uses for model calls.)
+let sleepFn = sleep;
+function _setSleepForTests(fn) {
+  sleepFn = typeof fn === "function" ? fn : sleep;
+}
 
 const REGION_ORDER = ["US", "Europe", "Norway", "Asia"];
 const REGION_CURRENCY = { US: "USD", Europe: "USD", Norway: "NOK", Asia: "USD" };
@@ -64,6 +73,76 @@ function markInstrumentNotFound(dataDir, symbol) {
   patchUniverseOverride(dataDir, symbol, { enabled: false, notFound: true });
 }
 
+// ---- Refresh Console: per-attempt event buffer + status vocabulary --------
+// The observability layer every shipped defect asked for: one event per fetch
+// ATTEMPT, with a fixed human vocabulary (the mockup's status contract).
+//
+// classifyProviderFailure is the single source of the status→detail mapping —
+// pure and exported so the tests can pin the exact strings. detail NEVER
+// contains key material (NFR-009): INVALID_KEY maps to a fixed string, the key
+// value/prefix is never read here.
+function classifyProviderFailure(code, cause) {
+  switch (code) {
+    case "INVALID_KEY":
+      return { status: "error", detail: "key rejected (401) — re-enter/rotate" };
+    case "NOT_FOUND":
+      return { status: "error", detail: "not found on provider" };
+    case "TIMEOUT":
+    case "TRANSIENT":
+      return { status: "error", detail: "timeout / transient" };
+    case "RATE_LIMITED":
+      return { status: "retry", detail: "rate-limited → retry" };
+    case "NO_KEY":
+      return { status: "skip", detail: "awaiting data source" };
+    default:
+      // "other → short cause string": a non-echoed, provider-supplied cause.
+      return { status: "error", detail: String(cause || code || "error") };
+  }
+}
+
+// One event per fetch ATTEMPT: a transient/rate-limited attempt that WILL be
+// retried is a "retry" line; the same code on the terminal (last) attempt is an
+// "error". Everything else maps straight through classifyProviderFailure.
+function classifyAttempt(code, cause, willRetry) {
+  if (code === "RATE_LIMITED") return { status: "retry", detail: "rate-limited → retry" };
+  if (code === "TRANSIENT") {
+    return { status: willRetry ? "retry" : "error", detail: "timeout / transient" };
+  }
+  return classifyProviderFailure(code, cause);
+}
+
+// The service is a single worker with one shared ctx, so the buffer lives on
+// ctx (created lazily) and is reachable from both the pipeline (startRefresh /
+// doRefresh) and the HTTP endpoint (GET /api/refresh/log). Persistence is
+// wired to data/refresh/log.jsonl at creation.
+function getBuffer(ctx) {
+  if (!ctx.refreshBuffer) {
+    ctx.refreshBuffer = createRefreshBuffer(
+      (event) => appendEvent(ctx.dataDir, event),
+      (msg) => {
+        if (typeof ctx.log === "function") ctx.log(msg);
+      }
+    );
+  }
+  return ctx.refreshBuffer;
+}
+
+// The ONE emit helper: every per-attempt outcome (ok / retry / deferred / error
+// / skip) flows through here. `keyed` is derived uniformly from the instrument
+// (a key-gated symbol renders the "keyed" tag in the console).
+function emitEvent(ctx, inst, providerId, status, detail, extra) {
+  const event = {
+    symbol: inst.symbol,
+    name: inst.name || inst.symbol,
+    provider: providerId,
+    status,
+    detail,
+    keyed: isKeyGated(ctx.registry, inst)
+  };
+  if (extra && extra.probeEnabled) event.probeEnabled = true;
+  return getBuffer(ctx).push(event);
+}
+
 async function fetchViaChain(ctx, inst, range, events, manifest, dailyCreditBudget) {
   const dataDir = ctx.dataDir;
   const chain = ctx.registry.chainFor(inst);
@@ -80,6 +159,7 @@ async function fetchViaChain(ctx, inst, range, events, manifest, dailyCreditBudg
     }
     if (adapter.id === "twelvedata" && manifest.creditsUsedToday >= dailyCreditBudget) {
       events.push("deferred — credit budget (" + inst.symbol + ")");
+      emitEvent(ctx, inst, adapter.id, "deferred", "deferred — credit budget");
       return { ok: false, deferred: true };
     }
     const maxAttempts = 3;
@@ -101,37 +181,58 @@ async function fetchViaChain(ctx, inst, range, events, manifest, dailyCreditBudg
         failedProvider = adapter.id;
         if (pe.code === "NOT_FOUND") {
           events.push(adapter.id + " NOT_FOUND (" + inst.symbol + ")");
+          const c = classifyProviderFailure(pe.code, pe.cause);
+          emitEvent(ctx, inst, adapter.id, c.status, c.detail);
           fellThrough = true; // fall through to the next provider
         } else if (pe.code === "NO_KEY") {
           sawNoKey = true;
+          const c = classifyProviderFailure(pe.code, pe.cause);
+          emitEvent(ctx, inst, adapter.id, c.status, c.detail);
           fellThrough = true;
         } else if (pe.code === "INVALID_KEY") {
           // Fix A: a PRESENT key the provider rejected (HTTP 401/403) — the
           // user has a key but it is expired/rotated. Distinct from NO_KEY.
           sawInvalidKey = true;
           events.push(adapter.id + " INVALID_KEY (" + inst.symbol + ")");
+          const c = classifyProviderFailure(pe.code, pe.cause);
+          emitEvent(ctx, inst, adapter.id, c.status, c.detail);
           fellThrough = true;
         } else if (pe.code === "UNAUTHORIZED") {
           events.push(adapter.id + " UNAUTHORIZED (" + inst.symbol + ")");
+          const c = classifyProviderFailure(pe.code, pe.cause);
+          emitEvent(ctx, inst, adapter.id, c.status, c.detail);
           fellThrough = true;
         } else if (pe.code === "RATE_LIMITED") {
           events.push(
             adapter.id + " 429" + (pe.retryAfterMs ? " retry-after " + Math.round(pe.retryAfterMs / 1000) + "s" : "") +
               " (" + inst.symbol + ")"
           );
-          if (adapter.id === "nasdaq") {
-            // back off 5 s, retry once, then fall through
-            if (attempt === 0) await sleep(5000);
-            else fellThrough = true;
+          // willRetry mirrors the backoff below: nasdaq retries once; others
+          // retry until the last attempt. The line says "retry" either way
+          // (RATE_LIMITED is a retry-class outcome, never an error).
+          const willRetry = adapter.id === "nasdaq" ? attempt === 0 : attempt < maxAttempts - 1;
+          const c = classifyAttempt(pe.code, pe.cause, willRetry);
+          emitEvent(ctx, inst, adapter.id, c.status, c.detail);
+          if (willRetry) {
+            await sleepFn(
+              adapter.id === "nasdaq" ? 5000 : pe.retryAfterMs !== undefined ? pe.retryAfterMs : 5000 * Math.pow(2, attempt)
+            );
           } else {
-            if (attempt < maxAttempts - 1) await sleep(pe.retryAfterMs !== undefined ? pe.retryAfterMs : 5000 * Math.pow(2, attempt));
-            else fellThrough = true;
+            fellThrough = true;
           }
         } else if (pe.code === "TRANSIENT") {
-          if (attempt < maxAttempts - 1) await sleep(5000 * Math.pow(2, attempt)); // base 5 s × 2^attempt
+          // A transient that will be retried is a "retry" line; the LAST
+          // attempt's transient is the terminal failure ("timeout / transient"
+          // error). Both carry the same detail; only the status differs.
+          const willRetry = attempt < maxAttempts - 1;
+          const c = classifyAttempt(pe.code, pe.cause, willRetry);
+          emitEvent(ctx, inst, adapter.id, c.status, c.detail);
+          if (willRetry) await sleepFn(5000 * Math.pow(2, attempt)); // base 5 s × 2^attempt
           else fellThrough = true;
         } else {
           events.push(adapter.id + " " + pe.code + " (" + inst.symbol + "): " + (pe.cause || ""));
+          const c = classifyProviderFailure(pe.code, pe.cause);
+          emitEvent(ctx, inst, adapter.id, c.status, c.detail);
           fellThrough = true;
         }
       }
@@ -214,6 +315,16 @@ async function doRefresh(ctx, scope, refreshId) {
         unavailable: true,
         reason: notFound ? NOT_FOUND_REASON : UNAVAILABLE_REASON
       };
+      // Refresh Console: surface WHY this symbol produced no fetch this cycle.
+      // A permanent notFound (Fix B) is a known 404 -> an error line; a
+      // key-gated symbol with no key configured -> "awaiting data source"
+      // (skip); a user-disabled no-key symbol is intentionally off (no line).
+      if (notFound) {
+        const c = classifyProviderFailure("NOT_FOUND", null);
+        emitEvent(ctx, inst, chain.length ? chain[0].id : "nasdaq", c.status, c.detail);
+      } else if (gated && !hasKeyInChain) {
+        emitEvent(ctx, inst, chain.length ? chain[0].id : "nasdaq", "skip", "awaiting data source");
+      }
       continue;
     }
     const range = neededRange(dataDir, inst, new Date());
@@ -228,6 +339,10 @@ async function doRefresh(ctx, scope, refreshId) {
         enableInstrument(dataDir, inst.symbol);
         events.push("enabled " + inst.symbol + " (first successful fetch)");
       }
+      // Refresh Console: one ok line per successfully fetched symbol. A probe
+      // that auto-enabled carries probeEnabled:true (the app renders the
+      // "probe → enabled" tag).
+      emitEvent(ctx, inst, result.providerUsed, "ok", "ok", probe ? { probeEnabled: true } : undefined);
       const bars = upsertBars(dataDir, inst, result.bars, thresholds); // atomic, per-symbol
       fetchStatus[key] = { ok: true, providerUsed: result.providerUsed };
       manifest.lastOkFetch[key] = nowIso;
@@ -356,12 +471,17 @@ function startRefresh(ctx, scope) {
   }
   ctx.state.refreshing = true;
   const refreshId = "r" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+  // "Reset each run" (the approved default): a new refresh starts a fresh
+  // buffer so the console never mixes two runs' attempts. The endpoint reads
+  // this buffer, so opening the drawer mid-refresh shows the live run.
+  getBuffer(ctx).reset(refreshId, new Date().toISOString());
   const done = doRefresh(ctx, scope, refreshId)
     .catch((err) => {
       ctx.log("refresh " + refreshId + " failed: " + String((err && err.stack) || err));
     })
     .finally(() => {
       ctx.state.refreshing = false;
+      getBuffer(ctx).finish(new Date().toISOString());
     });
   return { started: true, refreshId, done };
 }
@@ -378,5 +498,10 @@ module.exports = {
   isKeyGated,
   isDisplayInstrument,
   enableInstrument,
-  markInstrumentNotFound
+  markInstrumentNotFound,
+  // Refresh Console: the per-attempt status vocabulary + buffer access.
+  classifyProviderFailure,
+  classifyAttempt,
+  getBuffer,
+  _setSleepForTests
 };

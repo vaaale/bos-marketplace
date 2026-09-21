@@ -14,7 +14,7 @@ const configMod = require("../config/config.js");
 const { readBars } = require("../storage/bars.js");
 const { readSignal, readRegionRollup, readPulse } = require("../storage/signals.js");
 const { readRecords, latestByProvider } = require("../storage/refreshlog.js");
-const { startRefresh, REGION_ORDER, UNAVAILABLE_REASON, NOT_FOUND_REASON, PENDING_PROBE_REASON, isKeyGated, isDisplayInstrument } = require("../pipeline/refresh.js");
+const { startRefresh, getBuffer, REGION_ORDER, UNAVAILABLE_REASON, NOT_FOUND_REASON, PENDING_PROBE_REASON, isKeyGated, isDisplayInstrument } = require("../pipeline/refresh.js");
 const { nextRefreshAt } = require("../pipeline/scheduler.js");
 
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -340,6 +340,22 @@ function createServer(ctx) {
 
       if (method === "GET" && p === "/api/universe") {
         sendJSON(res, 200, buildUniverse(ctx));
+        return;
+      }
+
+      // Refresh Console: the per-attempt log for the current (or most recent
+      // completed) refresh. `?since=<seq>` tails only newer events; counts always
+      // describe the whole current refresh. The bound service ALWAYS answers
+      // this, so a 404 on the app side is mis-addressed/offline (core route) —
+      // never a real "no such thing".
+      if (method === "GET" && p === "/api/refresh/log") {
+        const sinceRaw = url.searchParams.get("since");
+        let since;
+        if (sinceRaw !== null && sinceRaw !== "") {
+          const n = Number(sinceRaw);
+          if (Number.isFinite(n)) since = n;
+        }
+        sendJSON(res, 200, getBuffer(ctx).snapshot(since));
         return;
       }
 

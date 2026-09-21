@@ -225,6 +225,36 @@ export interface RefreshRecord {
   events: string[];
 }
 
+// ---- Refresh Console (GET /api/refresh/log) ----
+// One event per fetch ATTEMPT for the current (or most recent completed)
+// refresh. `detail` is a fixed human vocabulary (see the mockup contract) and
+// NEVER contains key material (NFR-009). `seq` is the monotonic tail cursor.
+export type RefreshEventStatus = "ok" | "retry" | "deferred" | "error" | "skip";
+
+export interface RefreshLogEvent {
+  seq: number;
+  ts: string;
+  symbol: string;
+  name: string;
+  provider: string;
+  status: RefreshEventStatus;
+  detail: string;
+  keyed: boolean;
+  // A disabled keyed symbol that auto-enabled on this successful fetch — the
+  // app renders the "probe → enabled" tag.
+  probeEnabled?: boolean;
+}
+
+export interface RefreshLog {
+  inProgress: boolean;
+  refreshId: string | null;
+  startedAt: string | null;
+  asOf: string | null;
+  okCount: number;
+  issueCount: number;
+  events: RefreshLogEvent[];
+}
+
 // PATCH /api/config op object (partial, idempotent, independent ops)
 export interface ConfigOps {
   // Key ops are PER PROVIDER (NFR-008): providerId from the provider registry

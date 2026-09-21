@@ -60,11 +60,26 @@ Instrument deep-dive. `region` optional (cross-region symbol lookup when omitted
 
 `{ instruments: [ Instrument … ] }` — merged defaults + user instruments, each with an added `availability ∈ { ok, stale, unavailable, disabled, pending }` for the config-drawer picker.
 
+### `GET /api/refresh/log?since=<seq>`
+
+The **Refresh Console** feed — one event per fetch **attempt** for the current (or most recent completed) refresh. `since` is optional; with it, only events with `seq > since` are returned (a log-tail), while `okCount`/`issueCount` always describe the whole current run. Without `since`, the whole current/most-recent run's buffer is returned.
+
+```json
+{ "inProgress": false, "refreshId": "rm…", "startedAt": "…", "asOf": "…",
+  "okCount": 7, "issueCount": 3,
+  "events": [
+    { "seq": 1, "ts": "…", "symbol": "EFA", "name": "iShares MSCI EAFE", "provider": "nasdaq", "status": "ok", "detail": "ok", "keyed": false },
+    { "seq": 2, "ts": "…", "symbol": "^GDAXI", "name": "DAX (Deutsche Börse)", "provider": "twelvedata", "status": "skip", "detail": "awaiting data source", "keyed": true },
+    { "seq": 3, "ts": "…", "symbol": "EQNR.OL", "name": "Equinor (Oslo)", "provider": "twelvedata", "status": "ok", "detail": "ok", "keyed": true, "probeEnabled": true } ] }
+```
+
+`status ∈ { ok, retry, deferred, error, skip }`. `detail` is a **fixed human vocabulary** (mockup contract) and **never contains key material** (NFR-009): `ok` → `"ok"` (a probe that auto-enabled adds `probeEnabled: true`); `retry` → `"rate-limited → retry"` (or the transient cause); `deferred` → `"deferred — credit budget"`; `error` → `"key rejected (401) — re-enter/rotate"` / `"not found on provider"` / `"timeout / transient"` / a short cause; `skip` → `"awaiting data source"`. The bound service always answers this, so a **404 on the app side means mis-addressed/offline** (core-route semantics), never "no such thing". The in-memory ring is capped at **200** events; each event is also appended to the bounded `data/refresh/log.jsonl` (no cap change).
+
 ## Write endpoints
 
 ### `POST /api/refresh`
 
-Body `{ "scope"?: "all" | "US" | "Europe" | "Norway" | "Asia" }` (default `all`). Starts the pipeline respecting the `refreshing` guard. → `{ "started": true, "refreshId": "…" }` (HTTP 202), or `{ "started": false, "refreshId": null, "reason": "refresh already running" }`.
+Body `{ "scope"?: "all" | "US" | "Europe" | "Norway" | "Asia" }` (default `all`). Starts the pipeline respecting the `refreshing` guard. → `{ "started": true, "refreshId": "…" }` (HTTP 202), or `{ "started": false, "refreshId": null, "reason": "refresh already running" }`. A started refresh **resets the per-attempt buffer** (the "reset each run" default), so `GET /api/refresh/log` shows only this run's attempts from then on.
 
 ### `GET /api/config`
 

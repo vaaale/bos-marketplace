@@ -28,6 +28,17 @@ function appendRecord(dataDir, record) {
   store.writeText(logPath(dataDir), bounded.join("\n") + "\n");
 }
 
+// Append ONE per-attempt event line (Refresh Console). Shares the same file and
+// the same 500-line trim as the per-provider summary records (no cap change).
+// Event lines are tagged kind:"event" so summary readers can skip them — see
+// latestByProvider.
+function appendEvent(dataDir, event) {
+  const lines = readLines(dataDir);
+  lines.push(JSON.stringify(Object.assign({}, event, { kind: "event" })));
+  const bounded = lines.slice(-MAX_LINES);
+  store.writeText(logPath(dataDir), bounded.join("\n") + "\n");
+}
+
 function readRecords(dataDir, limit) {
   const lines = readLines(dataDir);
   const take = limit ? lines.slice(-limit) : lines;
@@ -38,12 +49,17 @@ function readRecords(dataDir, limit) {
   return records;
 }
 
-// Latest record per provider id.
+// Latest SUMMARY record per provider id. Per-attempt event lines (kind:"event")
+// are skipped — they carry a `provider` field too and would otherwise clobber
+// the per-provider summary the health endpoint reads.
 function latestByProvider(dataDir) {
   const records = readRecords(dataDir);
   const latest = {};
-  for (const r of records) latest[r.provider] = r;
+  for (const r of records) {
+    if (r && r.kind === "event") continue;
+    latest[r.provider] = r;
+  }
   return latest;
 }
 
-module.exports = { appendRecord, readRecords, latestByProvider };
+module.exports = { appendRecord, appendEvent, readRecords, latestByProvider };

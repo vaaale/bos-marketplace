@@ -8,6 +8,7 @@ import React, { useEffect, useState } from "react";
 import type { Health, Instrument, Region, ServiceConfig } from "../lib/types";
 import { patchConfig, postRefresh } from "../lib/serviceClient";
 import { fmtAsOf } from "../lib/format";
+import RefreshConsole from "./RefreshConsole";
 
 interface Props {
   open: boolean;
@@ -125,6 +126,9 @@ export default function ConfigDrawer({ open, onClose, health, config, universe, 
               );
             })}
           </div>
+
+          {/* Refresh Console — the live per-attempt fetch log (observability). */}
+          <RefreshConsole open={open} health={health} toast={toast} />
 
           {(() => {
             // Fix B: the keyed-only symbols (provider "fallback" = the 9 T10-gated
