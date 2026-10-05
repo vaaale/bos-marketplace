@@ -10,11 +10,19 @@
 //     user means by "this document";
 //   * edits hit the internal buffer only — nothing here writes to disk except
 //     the two explicit save tools (FR-012).
+//
+// DOCUMENT tools live here. The app's other surface — the custom-style registry
+// (v4) — is `./style-tools`, because it answers to a different owner: app
+// settings rather than the user's files, with no buffer, no dirty state and no
+// save. Both are exported from this module as ONE declaration list and ONE
+// handler map, which is what `registry.ts` asserts the pairing of.
 
 import { useEditorStore } from "../state/document-store";
 import { isDirty, normalizePath, searchContent } from "../services/file-service";
 import { get as getFormat } from "../services/format-service";
 import type { EditorDocument, ToolDeclaration, ToolHandler } from "../types";
+import { fail, guarded, ok, str, truncate } from "./result";
+import { STYLE_TOOL_DECLARATIONS, STYLE_TOOL_HANDLERS } from "./style-tools";
 
 /** Prefix every tool shares — also how the chat service recognises its own. */
 export const TOOL_PREFIX = "agentic_editor_";
@@ -23,11 +31,6 @@ export const TOOL_PREFIX = "agentic_editor_";
 export const CONTEXT_PREVIEW_CHARS = 2000;
 
 // ------------------------------------------------------------------ helpers
-
-function str(args: Record<string, unknown>, key: string): string | undefined {
-  const v = args[key];
-  return typeof v === "string" && v.trim() ? v : undefined;
-}
 
 function describe(doc: EditorDocument): Record<string, unknown> {
   const state = useEditorStore.getState();
@@ -41,14 +44,6 @@ function describe(doc: EditorDocument): Record<string, unknown> {
     characters: doc.content.length,
     lines: doc.content ? doc.content.split("\n").length : 0,
   };
-}
-
-function ok(payload: Record<string, unknown>): string {
-  return JSON.stringify({ ok: true, ...payload });
-}
-
-function fail(message: string, extra?: Record<string, unknown>): string {
-  return JSON.stringify({ ok: false, error: message, ...extra });
 }
 
 /** The open documents, described — used both as a tool result and in errors. */
@@ -98,17 +93,6 @@ async function resolveDocument(args: Record<string, unknown>, required = false):
   );
 }
 
-/** Run a handler, turning any throw into a structured error result. */
-function guarded(handler: ToolHandler): ToolHandler {
-  return async (args) => {
-    try {
-      return await handler(args);
-    } catch (err) {
-      return fail((err as Error).message);
-    }
-  };
-}
-
 // ------------------------------------------------------------------ declarations
 
 const OPTIONAL_DOC = {
@@ -118,7 +102,7 @@ const OPTIONAL_DOC = {
   },
 } as const;
 
-export const TOOL_DECLARATIONS: ToolDeclaration[] = [
+const DOCUMENT_TOOL_DECLARATIONS: ToolDeclaration[] = [
   // ---- file operations -------------------------------------------------
   {
     name: "agentic_editor_open_file",
@@ -246,7 +230,7 @@ export const TOOL_DECLARATIONS: ToolDeclaration[] = [
 
 // ------------------------------------------------------------------ handlers
 
-export const TOOL_HANDLERS: Record<string, ToolHandler> = {
+const DOCUMENT_TOOL_HANDLERS: Record<string, ToolHandler> = {
   // ---- file operations (T028–T031) -------------------------------------
   agentic_editor_open_file: guarded(async (args) => {
     const path = str(args, "path");
@@ -383,9 +367,15 @@ export const TOOL_HANDLERS: Record<string, ToolHandler> = {
   }),
 };
 
-function truncate(s: string, max: number): string {
-  return s.length <= max ? s : `${s.slice(0, max)}…`;
-}
+// ------------------------------------------------------------------ the surface
+//
+// One list and one map, so `registerAppCapabilities` can assert that every
+// declaration has a handler and every handler a declaration across BOTH
+// modules — the check is worthless if a module can be left out of it.
+
+export const TOOL_DECLARATIONS: ToolDeclaration[] = [...DOCUMENT_TOOL_DECLARATIONS, ...STYLE_TOOL_DECLARATIONS];
+
+export const TOOL_HANDLERS: Record<string, ToolHandler> = { ...DOCUMENT_TOOL_HANDLERS, ...STYLE_TOOL_HANDLERS };
 
 /** True when a tool_call belongs to this app. */
 export function isEditorTool(name: string): boolean {

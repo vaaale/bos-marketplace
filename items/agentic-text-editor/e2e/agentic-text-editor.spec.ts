@@ -28,6 +28,18 @@ test.describe.configure({ mode: "serial" });
 test.use({ video: "off" });
 
 const APP_ID = "agentic-text-editor";
+/** The app-storage key holding open tabs, the active tab and the view mode
+ *  (state/document-store.ts) — cleared before this suite runs, restored after. */
+const STATE_KEY = "agentic-text-editor.state";
+/** That key as found, so the user's own open tabs survive a test run. */
+let originalState: string | null = null;
+
+async function readStateKey(request: APIRequestContext): Promise<string | null> {
+  const res = await request.post("/api/app-storage", { data: { app: APP_ID, op: "get", key: STATE_KEY } });
+  if (!res.ok()) return null;
+  const body = (await res.json()) as { result?: string | null };
+  return typeof body.result === "string" ? body.result : null;
+}
 const LOCAL_MARKETPLACE = "user-apps";
 const FIXTURE_PATH = "/Documents/e2e-agentic-editor.md";
 const FIXTURE_BODY = ["# Fixture Heading", "", "First paragraph from disk.", ""].join("\n");
@@ -55,6 +67,16 @@ async function setup(request: APIRequestContext): Promise<void> {
     installedByThisRun = true;
   }
 
+  // START FROM NO OPEN DOCUMENTS. The app restores its tabs, the active tab AND
+  // the view mode from this key, so a suite that inherits them is testing a
+  // surface it did not set up: this file's first test typed into a tab that was
+  // already open with the same text ("No changes" instead of "Unsaved
+  // changes"), and before that found Preview mode and no textarea at all. It
+  // showed up as the suite failing on its OWN second run.
+  // The user's snapshot is put back in afterAll.
+  originalState = await readStateKey(request);
+  await request.post("/api/app-storage", { data: { app: APP_ID, op: "remove", key: STATE_KEY } });
+
   // Rendering the desktop is what builds an app project's dist/ (ensureBuilt in
   // src/lib/apps/store.ts), so ask for it once before any test navigates.
   await request.get("/");
@@ -73,6 +95,12 @@ test.afterAll(async () => {
     baseURL: process.env.BOS_E2E_BASE_URL || "http://localhost:3000",
   });
   await ctx.post("/api/fs", { data: { op: "delete", path: FIXTURE_PATH } }).catch(() => undefined);
+  await ctx.post("/api/app-storage", {
+    data:
+      originalState === null
+        ? { app: APP_ID, op: "remove", key: STATE_KEY }
+        : { app: APP_ID, op: "set", key: STATE_KEY, value: originalState },
+  });
   if (installedByThisRun) {
     await ctx.post("/api/marketplace", { data: { op: "uninstall-item", itemId: APP_ID } }).catch(() => undefined);
   }
@@ -84,7 +112,11 @@ async function openEditor(page: Page, request: APIRequestContext): Promise<Frame
   await ensureReady(request);
   // The desktop was rendered before the install, so reload to pick up the icon.
   await page.reload();
-  await page.getByText("Editor", { exact: true }).first().dblclick();
+  // The DOCK, not the desktop icon: the icon's caption is the app's display
+  // name ("Agentic Text Editor") elided to the icon width, so matching it by
+  // text matches a CSS truncation — which is what it did, until the app was
+  // renamed and every suite here stopped reaching the app at all.
+  await page.getByTestId(`dock-${APP_ID}`).click();
   const app = page.frameLocator(`iframe[title="App: ${APP_ID}"]`);
   // The shell only renders once the persisted snapshot has been merged in.
   await expect(app.getByTestId("ate-status-bar")).toBeVisible({ timeout: 30_000 });

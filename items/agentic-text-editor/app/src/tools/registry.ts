@@ -11,11 +11,13 @@
 //     SC-007), which is why `registerFormat` is re-exported rather than making
 //     callers reach into the service.
 //
-//   * ASSISTANT TOOLS — the twelve `agentic_editor_*` declarations are handed to
-//     BOS as the run's `surfaceTools` when the chat starts a turn, which is how
-//     an app-owned tool surface is registered with assistant v2 (the server
-//     merges them into the run's tool table as `execution: "frontend"` and
-//     dispatches calls back over the event stream).
+//   * ASSISTANT TOOLS — the `agentic_editor_*` declarations (twelve for
+//     documents, five for the custom-style registry) are handed to BOS as the
+//     run's `surfaceTools` when the chat starts a turn, which is how an
+//     app-owned tool surface is registered with assistant v2 (the server merges
+//     them into the run's tool table as `execution: "frontend"` and dispatches
+//     calls back over the event stream). `assistant-tools.ts` composes both
+//     modules into the one list and map asserted below.
 //
 //     Deliberately NOT added to BOS's own `src/lib/agent/capabilities-registry.ts`:
 //     an agent's `tools` allowlist is a persisted snapshot of the registry taken
@@ -23,7 +25,7 @@
 //     NOT in the allowlist is hidden from the model (`visibleTools` in
 //     src/lib/assistant/tools.ts). Adding these ids to BOS source would
 //     therefore hide the editor's own tools from every already-existing agent
-//     until the user re-ticked twelve boxes in Settings — and would make a
+//     until the user re-ticked every one of those boxes in Settings — and would make a
 //     marketplace app require a BOS build to work, which is the opposite of what
 //     installing one is for. Tools outside the registry bypass the allowlist, so
 //     the surface-tool route gives this app its Tier 1 behaviour with no BOS

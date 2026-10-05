@@ -6,7 +6,7 @@
 
 **Created**: 2026-05-21
 
-**Status**: Installed — incremental v3 in progress: (1) register the Editor as a file handler for markdown + text (in addition to HTML); (2) fix markdown table rendering in preview; (3) support pandoc fenced-div custom styles. Builds on v1 (document tabs + agentic chat) and v2 (agent/conversation management + tool-call visibility).
+**Status**: Installed — v5 delivered: Mermaid diagrams render in preview (US14, FR-036). v4 delivered: the agent can manage custom styles (US12, FR-030→FR-034) and the item bundles a skill teaching its tool surface (US13). Builds on v1 (document tabs + agentic chat), v2 (agent/conversation management + tool-call visibility) and v3 (file-handler registration, GFM tables, pandoc fenced-div custom styles).
 
 **Input**: User description: "An app to edit text and markdown documents with an embedded AI chat. Left pane is a tabbed document list, right pane is the chat. The agent can write/edit/update document contents. Agent edits the internal buffer — content is not persisted until the user explicitly saves."
 
@@ -205,6 +205,77 @@ The markdown renderer supports pandoc `fenced_div` syntax — `::: {custom-style
 
 ---
 
+### User Story 12 - The agent manages custom styles (Priority: P1)
+
+The user asks the agent, in the chat pane, to create, change, rename, delete or reset a named style, and it happens — the same five operations the Settings "Custom Styles" panel performs, over the same registry, with the result visible in Settings and in every open preview immediately.
+
+**Why this priority**: v3 gave the user styles and the agent documents, so "write me a document with a callout box in your house style" was two tasks with a context switch in the middle. The agent could describe CSS but not apply it.
+
+**Independent Test**: In the chat, ask for a new style by name and appearance → the style appears in Settings → Custom Styles, and a document using `::: {custom-style="<Name>"}` renders with it. Ask to change a built-in's colour → the "modified" pill appears on it; ask to put it back → the pill goes.
+
+**Acceptance Scenarios**:
+
+1. **Given** a registry with the four built-ins and the user's own styles, **When** the agent calls `agentic_editor_list_styles`, **Then** it receives every name with the CSS currently in effect, which built-ins are overridden, and the fenced-div syntax to reference them.
+2. **Given** a name that is not taken, **When** the agent calls `agentic_editor_add_style`, **Then** the style is created, persists across restarts, and renders in any open preview without a reload or a save step.
+3. **Given** a name that IS taken (built-in or user), **When** the agent calls `agentic_editor_add_style`, **Then** the call is refused, the registry is unchanged, and the refusal names the tool that applies instead.
+4. **Given** a user style, **When** the agent calls `agentic_editor_update_style` with `css`, `newName`, or both, **Then** the CSS is replaced and/or the style is renamed, carrying its CSS across; renaming a built-in is refused.
+5. **Given** a built-in style, **When** the agent calls `agentic_editor_update_style` with `css`, **Then** the CSS is recorded as an override (not as a new style), and `agentic_editor_reset_style` restores the shipped CSS — reporting whether anything actually changed.
+6. **Given** a built-in style, **When** the agent calls `agentic_editor_remove_style`, **Then** it is refused and the built-in survives; a user style is removed, and documents still naming it render as neutral containers.
+7. **Given** any style tool call, **When** the underlying registry action would be a no-op, **Then** the tool reports a failure rather than success — it verifies the registry after dispatching, never assumes.
+
+---
+
+### User Story 13 - The agent knows how to use the Editor (Priority: P2)
+
+The item bundles a skill describing its whole capability surface, so an agent that has never seen this app behaves correctly on the first message instead of discovering the rules by failing.
+
+**Why this priority**: The tool declarations say what each call does; they cannot say that edits are buffer-only and must not be saved uninvited, that `css` replaces rather than merges, or how to edit the middle of a document without an insert-at-line tool. Those are exactly the mistakes that cost the user a document or a turn.
+
+**Independent Test**: Install the item → the skill appears in BOS's skill library (read-only, since it lives in the marketplace clone) and in an agent's skills index, and `skill_load` returns instructions covering every `agentic_editor_*` tool and the fenced-div syntax.
+
+**Acceptance Scenarios**:
+
+1. **Given** the item is installed, **When** BOS reconciles its bundled assets, **Then** `skills/agentic-text-editor/` is linked into the skill library as a read-only skill.
+2. **Given** an agent whose skill allowlist admits it, **When** instructions are composed, **Then** the skill is listed by name and description, and its body is loadable on demand.
+3. **Given** the skill's body, **When** an agent reads it, **Then** it covers the buffer-vs-disk rule, default-to-active, every document and style tool, the fenced-div syntax, and the CSS-replaces-not-merges rule.
+
+---
+
+### User Story 14 - Mermaid diagrams render in preview (Priority: P1)
+
+A fenced code block tagged `mermaid` renders as the diagram it describes, instead of as a picture of its own source.
+
+**Why this priority**: Diagrams are the one thing markdown cannot express as text, and the agent writes them readily — so the editor was answering "draw me the release flow" with a code block the user had to paste somewhere else to see.
+
+**Independent Test**: Open a `.md` file containing a ```` ```mermaid ```` block with `graph TD` and two nodes → Preview → an SVG with both node labels, laid out. Break the syntax → the error and the source are shown, not a blank gap.
+
+**Acceptance Scenarios**:
+
+1. **Given** a markdown document with a ```` ```mermaid ```` fence, **When** it renders in preview, **Then** the block is replaced by the rendered diagram (an `<svg>` that occupies space), and the fence's source is no longer shown as a code block.
+2. **Given** a fenced block tagged with any other language, **When** it renders, **Then** it is still a verbatim code block — only `mermaid` is upgraded.
+3. **Given** a mermaid block the parser rejects, **When** it renders, **Then** the pane shows the parser's reason AND the block's source verbatim; content is never dropped and nothing throws.
+4. **Given** a document being edited, **When** the buffer changes, **Then** the preview shows the diagram for the CURRENT source, not a cached picture of the previous one.
+5. **Given** a fenced-div or edit-mode view, **When** the user looks at the source, **Then** the ```` ```mermaid ```` text is unmodified — the syntax is plain markdown.
+
+---
+
+### Edge Cases (v5 — diagrams)
+
+- **What happens when mermaid cannot be loaded at all?** → The block stays a code block. The rendered diagram is an upgrade of what is already correct markup, never a replacement for it, so a failure to load costs the picture and nothing else.
+- **What happens while the user is mid-keystroke inside a diagram?** → Most intermediate states are parse errors; each is shown as the error-plus-source rendering and cached by source text, so typing does not re-lay-out the page's other diagrams.
+- **What happens to a diagram when the preview re-renders for an unrelated reason (a style edit, a tab switch)?** → It is re-applied by the same effect that writes the pane's markup. The pane has ONE owner; see the React `dangerouslySetInnerHTML` note in `docs/dev/Editor/markdown-rendering.md`.
+
+---
+
+### Edge Cases (v4 — agent-managed styles)
+
+- **What happens when the agent sends only the one property it wants to change (`background: red;`)?** → That is the whole declaration block now; the rest of the style's CSS is gone. The tool descriptions and the bundled skill both state it, and `agentic_editor_list_styles` returns the current CSS precisely so the agent can send it back amended.
+- **What happens when a style is renamed while documents still reference the old name?** → Those documents keep their content and render as neutral containers (US11.3). The tool says so in its result rather than rewriting documents behind the user's back.
+- **What happens when the agent proposes a name containing a quote or brace?** → Refused: `::: {custom-style="…"}` could never reference it, so the style would silently never apply.
+- **What happens when the `assistant` capability has not been granted to the app?** → No run starts at all and the chat reports it; the style tools are unreachable by construction, since they are dispatched over the run's event stream.
+
+---
+
 ### Edge Cases (v3 — file handlers, tables, custom styles)
 
 - **What happens when the Editor becomes the default (double-click) handler for `.md`/`.txt`, replacing the in-app generic text-editor fallback?** → The agentic Editor takes over double-click for those types (intended — it *is* the markdown/text editor). Other types (e.g. `.html`) are unaffected; the user can still change the selected handler per type via the existing "Open with" → always-use behavior (spec 036).
@@ -244,6 +315,16 @@ The app exposes the following assistant tools (Tier 1 — installed-app tools). 
 | `agentic_editor_get_active_document` | Returns the currently active document's id, filename, and first N characters of content (for context). | None |
 | `agentic_editor_get_document_content` | Returns the full content of a specific document. | `documentId` (string): Target document |
 | `agentic_editor_search_document` | Searches within a document for a query string. Returns matching line numbers and surrounding context. | `documentId` (string): Target document; `query` (string): Search text |
+
+#### Custom Styles (v4)
+
+| Tool ID | Description | Parameters |
+|---------|-------------|------------|
+| `agentic_editor_list_styles` | Lists every style in the registry with the CSS it currently resolves to, marking which are built-in and which built-ins are overridden. | None |
+| `agentic_editor_add_style` | Creates a new user style. Refuses a name that is already taken (built-in or user) and a name no fenced div could reference. | `name` (string): The style name; `css` (string): A CSS declaration block |
+| `agentic_editor_update_style` | Replaces a style's CSS, renames it, or both. A built-in's CSS is recorded as an override; a built-in's name cannot be changed. | `name` (string): The style to change; `css` (string, optional): Replacement declaration block; `newName` (string, optional): New name (user styles only) |
+| `agentic_editor_remove_style` | Deletes a user style. Refuses a built-in, pointing at `agentic_editor_reset_style`. | `name` (string): The user style to delete |
+| `agentic_editor_reset_style` | Discards a built-in's override, restoring the shipped CSS. Reports `changed: false` when there was no override. | `name` (string): The built-in style to reset |
 
 #### Context Awareness
 
@@ -407,6 +488,15 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - **FR-028**: The markdown renderer (preview mode) MUST support pandoc `fenced_div` syntax (`::: {attrs} … :::`). A fenced div's `custom-style="Name"` attribute (and the equivalent `.Name` class) MUST map to a **named style** from a style registry, where a named style is a CSS definition. The registry MUST contain a built-in set of named styles and MUST allow the user to create/edit named styles. Fenced divs MUST support nesting. A fenced div referencing a name not in the registry MUST still render the enclosed content (as a neutral generic container) without dropping content or throwing.
 - **FR-029**: The Settings panel MUST expose a "Custom Styles" section where the user can add, edit, and remove named styles, each defined as a name plus a CSS declaration block. User-defined styles MUST take effect in the preview immediately on save and MUST persist across app restarts (via the app's storage). Built-in named styles MUST remain present (the user may override their CSS but not remove the built-in names).
 
+- **FR-030**: The app MUST expose assistant tools over the style registry covering the same operations as the Settings "Custom Styles" section: list, add, update (CSS and/or name), remove, and reset. They MUST write through the same registry actions the Settings surface uses — there MUST NOT be a second writer path.
+- **FR-031**: A style tool MUST verify the registry after dispatching and report a failure when nothing changed. It MUST NOT report success for an action the registry declined.
+- **FR-032**: Built-in style names MUST be structurally protected from the agent exactly as they are from the user: `add_style` and `remove_style` MUST refuse them, `update_style` MUST refuse to rename one, and a built-in's CSS MUST be changed only as a reversible override. Every refusal MUST name the tool that does apply.
+- **FR-033**: A style name that a fenced div could not reference (containing a quote, brace or newline) MUST be refused at creation and at rename.
+- **FR-034**: The item MUST bundle a skill describing its tool surface and operating rules — buffer-vs-disk, default-to-active, the fenced-div syntax, and that a style's `css` replaces rather than merges — discoverable through BOS's skill library when the item is installed.
+- **FR-035**: The app's `app.json` MUST declare the `assistant` capability it needs to run its chat pane, so the grant can be made (BOS gates that capability on the declaration).
+
+- **FR-036**: The markdown renderer's preview MUST render a fenced code block tagged `mermaid` as the diagram it describes. A block in any other language MUST remain a verbatim code block. A diagram that fails to parse MUST show the parser's message together with the block's source — the escaped code block is the fallback, so nothing is hidden behind a render that may not arrive. Edit mode MUST show the raw fence unmodified, and the preview MUST follow the current buffer rather than a cached render of an earlier one.
+
 ### Key Entities
 
 - **Document**: Represents an open file or new untitled document. Attributes: id (unique), filename, path (if from disk), content (internal buffer), format (markdown, plaintext, or extensible), isDirty (has unsaved changes), lastSaved (timestamp), isActive (current tab).
@@ -416,6 +506,7 @@ Open the file in a browser to inspect exact styles, spacing, and hover/focus sta
 - **EditorSettings**: User-configurable appearance settings. Attributes: fontFamily, fontSize, headingColors, codeBlockBackground, codeBlockForeground, linkColor, etc.
 - **Conversation**: A distinct chat thread. Attributes: id, agentId (the agent it runs on), messages[], createdAt, lastActiveAt, isActive. The app stores a list of conversations; exactly one is active at a time. The chat surface displays the active conversation only.
 - **NamedStyle (StyleDefinition)**: A named custom style from the style registry. Attributes: name (unique, e.g. "Note"), css (a CSS declaration block), builtin (true for shipped styles, false for user-defined). The registry is the map of name → NamedStyle; built-in entries ship with the item, user-defined entries persist in the app's storage.
+- **Bundled skill**: `skills/agentic-text-editor/SKILL.md` — the item's own instructions for an agent driving it (tool surface, buffer-vs-disk, the fenced-div syntax, the CSS-replaces rule). Carried by the item, linked read-only into BOS's skill library on install, updated by `git pull` rather than edited in place.
 - **fileHandlers (manifest)**: The Editor's `AppManifest.fileHandlers` declarations for `text/html`, `text/markdown`, and `text/plain` (each with `render` + `edit`), consumed by the 036 file-handler registry at boot.
 
 ## Success Criteria *(mandatory)*

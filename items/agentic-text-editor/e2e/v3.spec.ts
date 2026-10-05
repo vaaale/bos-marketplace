@@ -223,7 +223,11 @@ test.afterAll(async () => {
 async function openEditor(page: Page, request: APIRequestContext): Promise<FrameLocator> {
   await ensureReady(request);
   await page.reload();
-  await page.getByText("Editor", { exact: true }).first().dblclick();
+  // The DOCK, not the desktop icon: the icon's caption is the app's display
+  // name ("Agentic Text Editor") elided to the icon width, so matching it by
+  // text matches a CSS truncation — which is what it did, until the app was
+  // renamed and every suite here stopped reaching the app at all.
+  await page.getByTestId(`dock-${APP_ID}`).click();
   const app = page.frameLocator(`iframe[title="App: ${APP_ID}"]`);
   await expect(app.getByTestId("ate-status-bar")).toBeVisible({ timeout: 30_000 });
   return app;

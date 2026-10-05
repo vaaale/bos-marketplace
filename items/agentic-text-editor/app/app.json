@@ -3,5 +3,13 @@
   "name": "Agentic Text Editor",
   "icon": "FileText",
   "createdAt": 1789147976246,
-  "entry": "src/main.tsx"
+  "entry": "src/main.tsx",
+  "capabilities": [
+    "fs:read",
+    "fs:write",
+    "storage",
+    "window:title",
+    "notify",
+    "assistant"
+  ]
 }

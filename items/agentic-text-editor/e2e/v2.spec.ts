@@ -187,7 +187,11 @@ async function openEditor(page: Page, request: APIRequestContext): Promise<Frame
   // The desktop may have been rendered before the install (or before a seed
   // landed), so reload to pick up the icon and a freshly-read index.
   await page.reload();
-  await page.getByText("Editor", { exact: true }).first().dblclick();
+  // The DOCK, not the desktop icon: the icon's caption is the app's display
+  // name ("Agentic Text Editor") elided to the icon width, so matching it by
+  // text matches a CSS truncation — which is what it did, until the app was
+  // renamed and every suite here stopped reaching the app at all.
+  await page.getByTestId(`dock-${APP_ID}`).click();
   const app = page.frameLocator(`iframe[title="App: ${APP_ID}"]`);
   // The shell only renders once the persisted snapshot has been merged in.
   await expect(app.getByTestId("ate-status-bar")).toBeVisible({ timeout: 30_000 });

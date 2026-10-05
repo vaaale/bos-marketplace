@@ -21,8 +21,26 @@
 // preview live: the frame is fed the unsaved buffer, so it re-renders as the
 // user types or an agent tool rewrites the document.
 
-import { useMemo } from "react";
+// Mermaid (v5, FR-036) rides on the inline path as a second, ASYNCHRONOUS pass:
+// `render()` emits a ```mermaid fence as the escaped code block it is, and
+// `upgradeMermaidBlocks` swaps each one for its diagram once mermaid has laid it
+// out. The invariant above is therefore unchanged — what `render()` produces is
+// still markup the handler built — and the code block is what the user keeps if
+// a diagram never renders. See services/mermaid.ts.
+//
+// WHY THE INLINE PANE IS WRITTEN IMPERATIVELY, not with dangerouslySetInnerHTML.
+// That prop takes a NEW object (`{ __html }`) on every render, so React commits
+// it on every re-render — re-setting innerHTML even when the string is
+// identical, which silently threw away every diagram this component had already
+// swapped in. The effect that owns the diagrams did not re-run (its `html`
+// dependency had not changed), so the preview reverted to code blocks and
+// stayed there. Writing the markup and upgrading it from ONE effect makes that
+// impossible: the subtree has a single owner, and the two steps cannot be
+// re-ordered by a render that has nothing to do with either.
+
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useEditorStore } from "../../state/document-store";
+import { upgradeMermaidBlocks } from "../../services/mermaid";
 import type { FormatHandler } from "../../types";
 
 export function PreviewView({ content, format }: { content: string; format: FormatHandler }) {
@@ -53,6 +71,32 @@ export function PreviewView({ content, format }: { content: string; format: Form
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, format, customStylesVersion]);
 
+  // The inline pane. React renders it empty; everything inside it is ours.
+  const inlineRef = useRef<HTMLDivElement>(null);
+
+  // Before paint, so the rendered markdown appears in the same frame it would
+  // have with dangerouslySetInnerHTML — no flash of an empty pane.
+  useLayoutEffect(() => {
+    const el = inlineRef.current;
+    if (isDocument || !el) return;
+    // Safe: `format.render` HTML-escapes all content and only emits the element
+    // set the handler itself constructs (see services/formats/).
+    el.innerHTML = html;
+  }, [html, isDocument]);
+
+  // Then the diagrams, asynchronously. Cancelled on re-render: a diagram that
+  // finishes laying out after the user has typed on belongs to markup that is
+  // no longer on screen, and the node it would replace is already detached.
+  useEffect(() => {
+    const el = inlineRef.current;
+    if (isDocument || !el) return;
+    let cancelled = false;
+    void upgradeMermaidBlocks(el, () => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [html, isDocument]);
+
   if (!content.trim()) {
     return (
       <div className="ate-preview" data-testid="ate-preview">
@@ -75,13 +119,8 @@ export function PreviewView({ content, format }: { content: string; format: Form
     );
   }
 
-  return (
-    <div
-      className="ate-preview"
-      data-testid="ate-preview"
-      // Safe: `format.render` HTML-escapes all content and only emits the
-      // element set the handler itself constructs (see services/formats/).
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  // No children and no dangerouslySetInnerHTML: the layout effect above fills
+  // this element, so React has nothing here to reconcile — and therefore nothing
+  // to overwrite behind the mermaid pass's back.
+  return <div ref={inlineRef} className="ate-preview" data-testid="ate-preview" />;
 }

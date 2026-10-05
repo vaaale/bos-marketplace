@@ -482,6 +482,46 @@ button {
   line-height: 1.65;
 }
 
+/* Mermaid (v5) — the figure that replaces a ```mermaid code block once the
+   diagram has been laid out (services/mermaid.ts). */
+.ate-mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--ate-code-bg);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.ate-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* A diagram mermaid could not parse: the reason, then the source — never a gap
+   where the user's content used to be. */
+.ate-mermaid-error {
+  margin: 16px 0;
+  padding: 12px 16px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.32);
+  border-left: 3px solid #ef4444;
+  border-radius: 8px;
+}
+
+.ate-mermaid-error-msg {
+  margin: 0 0 8px;
+  color: #fca5a5;
+  font-size: calc(var(--ate-font-size) - 1px);
+  white-space: pre-wrap;
+}
+
+.ate-mermaid-error pre {
+  margin: 0;
+}
+
 .ate-preview ul,
 .ate-preview ol {
   padding-left: 24px;

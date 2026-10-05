@@ -3,15 +3,16 @@
 How the Editor item (`agentic-text-editor`) renders Markdown in preview mode,
 as of v3 (FR-027/FR-028/FR-029). This page covers the renderer's architecture,
 the two v3 block passes (GFM tables and pandoc fenced divs), and the
-custom-style registry those fenced divs resolve against. File handling and the
-launch contract are `file-handling.md`; the end-user view is
-`docs/usage/Editor/`.
+custom-style registry those fenced divs resolve against, plus the v5 Mermaid
+pass. File handling and the launch contract are `file-handling.md`; the agent's five style tools over this
+same registry are `agent-tools.md`; the end-user view is `docs/usage/Editor/`.
 
 Layout of the relevant source:
 
 ```
 app/src/
 ├── services/formats/markdown.ts    # the renderer — one module, no dependencies
+├── services/mermaid.ts             # the async ```mermaid upgrade pass (v5)
 ├── config/custom-styles.ts         # the style registry (built-ins + KV persistence)
 ├── state/document-store.ts         # style CRUD actions + customStylesVersion
 ├── components/editor/preview-view.tsx  # injects render() output; version in memo deps
@@ -191,7 +192,9 @@ interface CustomStylesPersistence {
 Every affordance in the Settings surface falls out of this one function: the
 "modified" pill is `overrides[name] != null`, "Reset to default" deletes the
 override, the "Your styles" group is the keys of `user`, and the neutral
-fallback is the else-branch.
+fallback is the else-branch. The agent's `agentic_editor_*_style` tools (v4)
+read the same four predicates and dispatch the same store actions — there is one
+writer path, not a UI one and an agent one (`agent-tools.md` §4).
 
 **Degradation.** If the `storage` capability is revoked,
 `services/bos.ts`'s `storageGet`/`storageSet` fall back to localStorage /
@@ -210,11 +213,80 @@ effect in the preview immediately on save": Settings saves a style → version
 bumps → any open preview re-runs `render()` → the fenced divs resolve the new
 CSS. The Settings list re-reads the registry off the same subscription.
 
-## 6. Extending
+## 6. Mermaid (v5, FR-036)
+
+A ```` ```mermaid ```` fence renders as a diagram. The renderer does **not** know
+about it: the fence pass already emits `<pre data-lang="mermaid"><code>…</code></pre>`,
+escaped like any other code block, and `services/mermaid.ts` upgrades those nodes
+in the DOM afterwards. Mermaid's `render()` is async — it parses, lays out and
+measures text — and this renderer is a synchronous string builder, so the two
+cannot be one pass.
+
+```
+format.render(content)            # sync, escaped — unchanged
+  → preview-view useLayoutEffect  # writes the markup into the pane
+  → preview-view useEffect        # upgradeMermaidBlocks(pane)
+        → import("mermaid")       # once, lazily: no diagram, no load
+        → mermaid.render(id, src) # per block, memoised by SOURCE TEXT
+        → block.replaceWith(<figure class="ate-mermaid">…svg…</figure>)
+```
+
+Four things make it behave:
+
+- **The code block is the fallback.** If mermaid never loads or never finishes,
+  the user is looking at their own source. Nothing is hidden pending a render.
+- **A failure is a result, not an exception.** A half-typed diagram is the normal
+  state of a document being written, so `renderDiagram` returns
+  `{ok: false, message}` and the pane shows mermaid's reason above the source
+  (`.ate-mermaid-error`). Both outcomes are cached, keyed by the source text —
+  otherwise every keystroke inside a fence re-lays-out every diagram on the page.
+- **Mermaid leaves orphans behind.** It renders into a detached element it
+  appends to the document and, on a parse error, throws before removing it —
+  one stray node per keystroke, each carrying its own error graphic, at the end
+  of the page. `removeOrphan` runs in a `finally`.
+- **`securityLevel: "strict"`**, which is what makes injecting the returned SVG
+  acceptable: HTML labels are off and mermaid sanitises its own output. This is
+  the one place in the preview where markup not built by a format handler is
+  injected.
+
+### The trap: React re-applies `dangerouslySetInnerHTML`
+
+The inline pane used to be `<div dangerouslySetInnerHTML={{ __html: html }} />`.
+That prop is a **new object on every render**, so React commits it on every
+re-render — re-setting `innerHTML` even when the string is byte-identical. Every
+diagram already swapped into the pane was silently thrown away, and the effect
+that would have put them back did not re-run, because its `html` dependency had
+not changed. The symptom was precise and misleading: diagrams rendered when a
+document was opened by hand, and never when the same document was restored from
+the persisted snapshot (where a second render follows hydration).
+
+So the inline pane is now written imperatively — `useLayoutEffect` sets
+`innerHTML` (before paint, so there is no empty frame), `useEffect` upgrades the
+diagrams, and the element React renders has no children and no
+`dangerouslySetInnerHTML` at all. One owner for that subtree. **Do not reintroduce
+the prop**: any DOM the preview grows after render would start disappearing again,
+intermittently.
+
+### Cost
+
+Mermaid is a BOS dependency, so esbuild bundles it from BOS's `node_modules` with
+no per-app install — but the app build is `format: "iife"`, which cannot code-split,
+so the whole library lands in `bundle.js`: **292 KB → 3.6 MB**, and app open goes
+from ~690 ms to ~1.0 s on loopback. The `import("mermaid")` is still lazy in the
+sense that matters for *execution* (esbuild defers the module factory, so a
+document with no diagram never runs it); what is paid upfront is parse. Splitting
+it out would mean emitting ESM from BOS's app build (`src/lib/apps/build.ts`) —
+a BOS-wide change, not an item one.
+
+## 7. Extending
 
 - **A new built-in style** is one entry in `BUILTIN_STYLES` (plus
   `BUILTIN_ORDER` for the Settings list). It is immediately renderable,
-  overridable and resettable — no other module changes.
+  overridable and resettable — from Settings AND from the agent's style tools —
+  with no other module changes.
+- **Another async block upgrade** (KaTeX, say) follows the mermaid shape: leave
+  the renderer emitting an escaped block, and upgrade those nodes from the
+  preview's effect. Keep the original block as the fallback.
 - **A new block construct** in the renderer is another recognizer in the line
   loop. Keep it *after* the fenced-code check (that ordering is the literalness
   guarantee) and make it emit escaped markup only.

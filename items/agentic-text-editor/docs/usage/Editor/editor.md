@@ -94,14 +94,21 @@ Where the appearance comes from:
   using `::: {custom-style="PinkBox"}` renders with it. The live preview in the
   editor updates as you type, your styles persist across restarts, and you can
   rename, edit or remove them freely.
+- **Or just ask the agent.** "Make me a style for terminal output", "the Note
+  boxes are too purple, tone them down", "drop the PinkBox style" — the agent
+  has the same five operations the Settings panel does, and the change shows up
+  in Settings and in every open preview straight away. Built-in styles behave
+  the same way for it as for you: their CSS can be changed and reset, their
+  names cannot.
 - **Unknown names never lose content.** A fenced div whose name isn't in the
   registry — a typo, or a document authored elsewhere — still renders, in a
   neutral container. Nothing is dropped and nothing breaks.
 
 A few more behaviours:
 
-- Saving a style in Settings restyles any open preview **immediately** — no
-  reload, no save.
+- Saving a style — in Settings or through the agent — restyles any open preview
+  **immediately**. Styles are a setting, not document content: there is nothing
+  to save afterwards, and the change applies to every document you open.
 - Fenced divs **nest**: a `Note` can contain a `Warning`, and each keeps its
   own style.
 - A `:::` inside a fenced ``` code block is literal code, never a container
@@ -109,6 +116,29 @@ A few more behaviours:
 - Tables render properly too: GitHub-style pipe tables get real headers, body
   rows and per-column alignment (`:---`, `:---:`, `---:`) in the preview,
   including inline markdown inside cells and escaped pipes (`\|`).
+
+## Diagrams
+
+A code block tagged `mermaid` renders as a diagram in Preview:
+
+````markdown
+```mermaid
+graph TD
+  Idea --> Draft --> Review --> Published
+```
+````
+
+Anything [Mermaid](https://mermaid.js.org) understands works — flowcharts,
+sequence diagrams, state diagrams, class diagrams, Gantt charts, pie charts. In
+**Edit** mode you keep the plain text you typed; the diagram is drawn only in
+Preview, and it redraws as you type.
+
+- **A diagram with a syntax error doesn't disappear.** You get Mermaid's
+  complaint and your source underneath it, so you can see what to fix.
+- **Code blocks in other languages are untouched** — only a block tagged
+  `mermaid` is drawn.
+- The agent can write these too: "add a flowchart of the release process" leaves
+  a `mermaid` block in the document, and the preview draws it.
 
 ## How the HTML preview works
 
@@ -151,6 +181,16 @@ this list into a `<table>`". Its edits land in the buffer, so they are
 previewable immediately and yours to save or discard. Tool calls the agent made
 are shown as chips under its reply, and an edit that came from the agent is
 flashed in the status bar so it is never mistaken for something you typed.
+
+It can also manage the custom styles above — listing them, adding one, changing
+or renaming one, deleting a style of yours, and resetting a built-in to how it
+shipped. Those are settings rather than text, so they take effect at once and
+there is nothing to save.
+
+**If the chat answers "Capability assistant not granted"**, the Editor has not
+been allowed to drive the agent yet: open **Settings → Apps**, find *Agentic
+Text Editor* and turn on **Assistant**. A fresh install asks for it up front; an
+Editor installed before this existed needs it switched on once.
 
 Conversations are picked in the chat header, along with which agent you are
 talking to; the transcript belongs to the conversation, not to a tab, so
