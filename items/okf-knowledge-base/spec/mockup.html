@@ -1196,12 +1196,13 @@ function setGraphHover(id){
 function attachGraphInteractions(svg){
   if(!svg) return;
   svg.addEventListener('mousedown',e=>{
+    G.downX=e.clientX; G.downY=e.clientY; G.moved=false;
     const gEl=e.target.closest('.g-node');
     if(gEl){
       const n=G.byId[gEl.getAttribute('data-id')]; const p=screenToWorld(svg,e.clientX,e.clientY);
-      G.drag={id:n.id, ox:p.x-n.x, oy:p.y-n.y}; n.fixed=true; n.fx=n.x; n.fy=n.y; G.moved=false;
+      G.drag={id:n.id, ox:p.x-n.x, oy:p.y-n.y}; n.fixed=true; n.fx=n.x; n.fy=n.y;
     } else {
-      G.pan={sx:e.clientX, sy:e.clientY, vx:G.view.x, vy:G.view.y}; svg.classList.add('panning'); G.moved=false;
+      G.pan={sx:e.clientX, sy:e.clientY, vx:G.view.x, vy:G.view.y}; svg.classList.add('panning');
     }
     e.preventDefault();
   });
