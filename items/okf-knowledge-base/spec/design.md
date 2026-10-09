@@ -964,9 +964,13 @@ level:
 frontmatter, FR-024), `okf_attest`/`okf_provenance` (→ `sources` frontmatter),
 `okf_remove_link`/`okf_list_links`/`okf_neighbors`/`okf_shortest_path`/`okf_export_graph`
 (graph power-tools dropped — retrieval is index-based; the app renders the graph, ADR-004).
-That's the 31 → 18 reduction: **3 added** (`okf_search`, `okf_read_toc`,
-`okf_merge_concepts`), **15 kept**, **13 of the listed removed** (the two field-setter
-families collapse into `okf_upsert_concept`, so the arithmetic nets to 18).
+Net arithmetic: 31 declared → 18 declared = **13 fewer**. Per FR-037 that's **3 added**
+(`okf_search`, `okf_read_toc`, `okf_merge_concepts`) and **15 kept**. The **removed** list
+names 15–16 tools (the spec's "16 removed" vs. the 31→18 net of 13 differ by exactly the
+folding: the field-setter family `okf_set_status`/`okf_set_trust`/`okf_add_source` — and
+the `okf_attest`/`okf_provenance` pair — keep their *capability* inside `okf_upsert_concept`
+frontmatter and `sources` rather than vanishing, so they're "removed" tools, not removed
+features).
 
 ### 8.3 App-facing REST routes (ADR-003) — what the app actually calls
 
