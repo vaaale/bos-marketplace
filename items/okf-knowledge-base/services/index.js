@@ -1,5 +1,12 @@
 // index.js — the OKF Knowledge Base service worker entrypoint.
 //
+// Retained unchanged in shape from the pre-redesign item (spec Assumptions):
+// the bind-then-handshake-first ordering, the loopback VFS bridge, and the
+// 039 tool_declare loop. What changed around it: DECLARATIONS is now the
+// 18-tool surface, and createRequestHandler now serves the standalone app's
+// REST routes (bundles/toc/concept/search/graph/jobs) instead of the old
+// settings config-app's.
+//
 // This file is also `import()`ed from BOS's MAIN thread (parentPort === null)
 // during manifest validation (validateManifestAtStart, CH-011) — every use of
 // parentPort below MUST stay inside the `if (parentPort)` guard so that
@@ -12,7 +19,7 @@ const path = require("path");
 const http = require("http");
 
 const core = require("./lib/okf-core");
-const { DECLARATIONS, makeHandlers } = require("./lib/tools");
+const { DECLARATIONS, makeHandlers, planIngest } = require("./lib/tools");
 const { createRequestHandler } = require("./lib/http-bridge");
 const vfsBridge = require("./lib/vfs-bridge");
 
@@ -26,7 +33,7 @@ if (parentPort) {
   let server = null;
   let boundPort = null;
   // bundleRoot is a BOS VFS path (e.g. "/KnowledgeBase") — this is what the
-  // config UI and okf_* tool results report back, AND what's actually passed
+  // app and okf_* tool results report back, AND what's actually passed
   // to okf-core's storage functions. okf-core never touches the host
   // filesystem itself: every read/write/mkdir goes through ./lib/vfs-bridge's
   // loopback calls to BOS's own /api/fs route, which is the only sanctioned
@@ -40,7 +47,7 @@ if (parentPort) {
   // (dataDir()/vfs/KnowledgeBase): every bundle got written inside BOS's
   // internal system/ control directory, invisible to the Files app and to
   // every other consumer of the real /KnowledgeBase VFS path, even though the
-  // service itself (and the config UI, which only ever talks to this same
+  // service itself (and its app, which only ever talks to this same
   // service) looked like it was working fine.
   let bundleRoot = DEFAULT_BUNDLE_ROOT;
   let ingestDefaults = { maxDepth: DEFAULT_MAX_DEPTH, maxWorkers: DEFAULT_MAX_WORKERS };
@@ -160,7 +167,18 @@ if (parentPort) {
         // demoted to a best-effort background step exactly as their own
         // "non-fatal" comments already assumed (listBundles() already retries
         // the mkdir lazily on every /bundles request).
-        server = http.createServer(createRequestHandler({ core, bundleRoot, serviceId, getRuntime }));
+        server = http.createServer(
+          createRequestHandler({
+            core,
+            bundleRoot,
+            serviceId,
+            getRuntime,
+            declarations: DECLARATIONS,
+            vfs: vfsBridge,
+            getIngestDefaults: () => ingestDefaults,
+            planIngest: (args, ingestCtx) => planIngest(core, args, ingestCtx),
+          }),
+        );
         server.on("error", (err) => {
           parentPort.postMessage({ type: "crash", error: err.message, stack: err.stack });
         });
@@ -192,6 +210,19 @@ if (parentPort) {
             } catch (err) {
               log("warn", `legacy bundle migration check failed (non-fatal): ${err.message}`);
             }
+
+            // Warm the global job store from disk. Ingest runs are
+            // service-level operational state (okf-core's `.jobs/jobs.json`
+            // under the bundle root), so the Jobs tab still shows yesterday's
+            // completed and failed runs after a service restart. Non-fatal:
+            // an unreadable store just starts empty rather than blocking the
+            // tool surface that was already declared above.
+            try {
+              const jobs = await core.listJobs(bundleRoot);
+              log("info", `job store loaded: ${jobs.length} ingest run(s) on record`);
+            } catch (err) {
+              log("warn", `could not load the ingest job store yet (non-fatal): ${err.message}`);
+            }
           })();
         });
       } else if (msg.type === "dispose" || msg.type === "restart") {
@@ -208,7 +239,7 @@ if (parentPort) {
           return;
         }
         try {
-          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults });
+          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, getRuntime, serviceId });
           parentPort.postMessage({ type: "tool_result", payload: { callId, result } });
         } catch (err) {
           parentPort.postMessage({

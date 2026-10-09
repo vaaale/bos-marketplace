@@ -1,0 +1,108 @@
+// JobDetail.tsx — the expanded run: summary cells (chapters / concepts /
+// assets / refs skipped / refs failed), the written-chapter chips, the error
+// card, and the live progress bar — the four states the mockup specifies, one
+// per lifecycle status.
+
+import React from "react";
+import { Icon } from "../lib/icons";
+import type { Job } from "../lib/types";
+
+function SummaryCell({ icon, value, label }: { icon: string; value: number; label: string }) {
+  return (
+    <div className="js-cell">
+      <span className="js-ic">
+        <Icon name={icon} size={15} />
+      </span>
+      <span className="js-num">{value}</span>
+      <span className="js-lbl">{label}</span>
+    </div>
+  );
+}
+
+export default function JobDetail({ job }: { job: Job }) {
+  return (
+    <>
+      <div className="jd-top">
+        Source: <code>{job.source}</code> · into <b>{job.bundleId}</b> · run <code>{job.id}</code>
+      </div>
+
+      {job.status === "completed" && job.summary ? (
+        <>
+          <div className="job-summary" data-testid={`job-summary-${job.id}`}>
+            <SummaryCell icon="list" value={job.summary.chapters} label="chapters written" />
+            <SummaryCell icon="layers" value={job.summary.concepts} label="concepts assigned" />
+            <SummaryCell icon="image" value={job.summary.assets} label="assets interpreted" />
+            <SummaryCell icon="import" value={job.summary.refsSkipped} label="references skipped" />
+            <SummaryCell icon="alert" value={job.summary.refsFailed} label="references failed" />
+          </div>
+          {job.summary.written?.length ? (
+            <>
+              <div className="jd-sub">Chapters written</div>
+              <div className="job-written" data-testid={`job-written-${job.id}`}>
+                {job.summary.written.map((w) => (
+                  <span className="wj" key={w}>
+                    <Icon name="check" size={12} /> {w}
+                  </span>
+                ))}
+              </div>
+            </>
+          ) : null}
+        </>
+      ) : null}
+
+      {job.status === "completed" && !job.summary ? (
+        <div className="job-queued">
+          <Icon name="info" size={15} />
+          <div>
+            This run completed but reported no summary — the ingest agent finished without posting one. The bundle's
+            Overview tab shows what actually landed.
+          </div>
+        </div>
+      ) : null}
+
+      {job.status === "failed" ? (
+        <>
+          <div className="job-error" data-testid={`job-error-${job.id}`}>
+            <Icon name="alert" size={15} />
+            <div>
+              <b>Run failed.</b> {job.error || "No reason was reported."}
+            </div>
+          </div>
+          <div className="jd-foot">
+            <Icon name="import" size={13} /> Retry by asking the assistant to re-run <code>okf_ingest</code> for this
+            source. Chapter files and the concept index were not left half-written — each write is atomic and the
+            derived index rebuilds from content.
+          </div>
+        </>
+      ) : null}
+
+      {job.status === "running" ? (
+        <div className="job-progress" data-testid={`job-progress-${job.id}`}>
+          {job.progress ? (
+            <>
+              <div className="prog-bar">
+                <span className="prog-fill" />
+              </div>
+              <div className="prog-txt">{job.progress}</div>
+            </>
+          ) : (
+            <div className="prog-txt">Running — the ingest agent has not reported a progress step yet.</div>
+          )}
+          <div className="prog-sub">
+            Live · updates as the agent decomposes and writes chapters. The run reflects its status as it changes.
+          </div>
+        </div>
+      ) : null}
+
+      {job.status === "queued" ? (
+        <div className="job-queued" data-testid={`job-queued-${job.id}`}>
+          <Icon name="clock" size={15} />
+          <div>
+            Waiting for the <b>okf-ingest</b> agent to pick this up. No bundle content has been modified yet — a run
+            only writes once decomposition begins.
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
