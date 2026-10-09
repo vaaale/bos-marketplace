@@ -64,7 +64,7 @@
 **Independent Test**: `okf_ingest({bundle, url})` → returns `jobId` + callback URLs + the `agent_delegate` guidance → sub-agent reads `raw/`, writes chapters → job reaches `completed` with a summary.
 
 ### Tests for User Story 2 ⚠️
-- [ ] T013 [P] [US2] Playwright e2e in `e2e/okf-kb-redesign.spec.ts`: US2 acceptance — ingest a URL, assert the raw source is registered, the job lifecycle reaches `completed` (or `failed` on the error path), a summary is recorded, and the full source did NOT appear as calling-context output (spec US2, SC-007, FR-044).
+- [ ] T013 [P] [US2] Playwright e2e in `e2e/okf-knowledge-base.spec.ts`: US2 acceptance — ingest a URL, assert the raw source is registered, the job lifecycle reaches `completed` (or `failed` on the error path), a summary is recorded, and the full source did NOT appear as calling-context output (spec US2, SC-007, FR-044).
 
 ### Implementation for User Story 2
 - [ ] T014 [US2] Make `okf_ingest` a **dispatcher** in `services/lib/tools.js`: validate the raw source is registered (or guide `okf_add_raw_source` first), record a job (`queued`, T007), return `{jobId, callbackUrls, delegate:{agent:"okf-ingest", task}}` — the task names the `raw/` path to read. (Depends on T007, T008)
@@ -82,7 +82,7 @@
 **Independent Test**: ingest a multi-section PDF → each section becomes a linked chapter; ingest an image-bearing doc → the chapter contains `![](raw/assets/…)` + a `> **Interpretation:** …` blockquote; query the chapter → the interpretation is returned as text (no re-vision).
 
 ### Tests for User Story 3 ⚠️
-- [ ] T018 [P] [US3] Playwright e2e in `e2e/okf-kb-redesign.spec.ts`: US3 acceptance — `file_to_markdown` converts a staged doc; an inline image is downloaded to `raw/assets/<docId>/` and the chapter carries the link + interpretation blockquote; `okf_read_concept` returns the stored interpretation (no re-run of vision) (spec US3, FR-029–032, SC-006).
+- [ ] T018 [P] [US3] Playwright e2e in `e2e/okf-knowledge-base.spec.ts`: US3 acceptance — `file_to_markdown` converts a staged doc; an inline image is downloaded to `raw/assets/<docId>/` and the chapter carries the link + interpretation blockquote; `okf_read_concept` returns the stored interpretation (no re-run of vision) (spec US3, FR-029–032, SC-006).
 
 ### Implementation for User Story 3
 - [ ] T019 [US3] Extend the `okf-ingest` sub-agent flow (`agents/okf-ingest/AGENT.md` + `skills/okf-bundle-schema/SKILL.md` conventions) with the **inline-asset pipeline** (design.md §7.5): extract non-HTML asset URLs from the source → download each to `raw/assets/<docId>/` via the `/api/fs/raw` bridge → `view_image` (images) / `video_keyframes` (video) → write `![title](raw/assets/<docId>/file)` + `> **Interpretation:** …` into the chapter body. HTML links stay as remote references. (Depends on T015)
@@ -98,7 +98,7 @@
 **Independent Test**: `okf_search({bundle, query})` returns TOC rows; `okf_read_toc`/`okf_read_concept` return the **full** document/chapter (never a snippet); `okf_backlinks`/`okf_add_link` for traversal/linking.
 
 ### Tests for User Story 4 ⚠️
-- [ ] T021 [P] [US4] Playwright e2e in `e2e/okf-kb-redesign.spec.ts`: US4 acceptance — `okf_search` is deterministic (same query → same rows), returns full chapters (not chunks), and the app `POST /search` route returns **identical** rows to the tool (spec US4, FR-008–010, FR-036, NFR-004/005, SC-001/002/005).
+- [ ] T021 [P] [US4] Playwright e2e in `e2e/okf-knowledge-base.spec.ts`: US4 acceptance — `okf_search` is deterministic (same query → same rows), returns full chapters (not chunks), and the app `POST /search` route returns **identical** rows to the tool (spec US4, FR-008–010, FR-036, NFR-004/005, SC-001/002/005).
 
 ### Implementation for User Story 4
 - [ ] T022 [US4] Wire the Retrieval tools in `services/lib/tools.js` → `okf-core.js`: `okf_search` (T006), `okf_read_toc` (return the per-doc `toc/*.md` or its rows), `okf_read_concept` (full chapter markdown incl. inline-asset blocks), `okf_list_concepts` (with `conceptIndex`/`toc` derived fields per design.md §8.2), `okf_backlinks`, `okf_add_link`. Confirm read paths never truncate to a snippet. (Depends on T006, T008)
@@ -113,7 +113,7 @@
 **Independent Test**: `okf_delete_concept` leaves the bundle intact (optionally rewriting backlinks); `okf_delete_bundle` removes only that bundle; deleting a missing target → clear "not found."
 
 ### Tests for User Story 5 ⚠️
-- [ ] T023 [P] [US5] Playwright e2e in `e2e/okf-kb-redesign.spec.ts`: US5 acceptance — delete a concept (bundle intact, `rewrite_backlinks` honored), delete a bundle (only that dir removed), delete a missing target (graceful "not found"), and confirm the derived index regenerates after each (spec US5, FR-018, NFR-006/007).
+- [ ] T023 [P] [US5] Playwright e2e in `e2e/okf-knowledge-base.spec.ts`: US5 acceptance — delete a concept (bundle intact, `rewrite_backlinks` honored), delete a bundle (only that dir removed), delete a missing target (graceful "not found"), and confirm the derived index regenerates after each (spec US5, FR-018, NFR-006/007).
 
 ### Implementation for User Story 5
 - [ ] T024 [US5] Wire `okf_delete_concept` (non-destructive default + `rewrite_backlinks` option, FR-018) and `okf_delete_bundle` (FR-028) in `services/lib/tools.js` → `okf-core.js`; ensure each triggers the T005 index regeneration and a path-guarded remove (only within the bundle root). (Depends on T005, T008)
@@ -128,7 +128,7 @@
 **Independent Test**: export a bundle → re-import it → concepts queryable and the export is spec-conformant; pre-existing bundle (no `parent`/`concepts`/`summary`) imports with a **best-effort** derived index reported as "needs regeneration" (design.md Risk #9); the app Overview renders list + detail + concept index + documents + health.
 
 ### Tests for User Story 6 ⚠️
-- [ ] T025 [P] [US6] Playwright e2e in `e2e/okf-kb-redesign.spec.ts`: US6 acceptance — export→import round-trips with concepts/links/frontmatter intact (SC-003); a pre-existing bundle imports with best-effort index (non-destructive, reported) — spec US6, FR-024/026, design.md §7.4.
+- [ ] T025 [P] [US6] Playwright e2e in `e2e/okf-knowledge-base.spec.ts`: US6 acceptance — export→import round-trips with concepts/links/frontmatter intact (SC-003); a pre-existing bundle imports with best-effort index (non-destructive, reported) — spec US6, FR-024/026, design.md §7.4.
 
 ### Implementation for User Story 6
 - [ ] T026 [US6] Wire `okf_import_bundle` (spec-conformant dir/git/tarball → `/KnowledgeBase/`, then **best-effort** index derivation: flat doc→chapter, no `parent`, naive/empty concepts; health reports "index needs regeneration"; a re-ingest or `okf_upsert_concept` pass completes it) and `okf_export_bundle` (spec-conformant) in `services/lib/tools.js` → `okf-core.js` (FR-024, FR-026). (Depends on T005)
@@ -145,7 +145,7 @@
 **Independent Test**: install → edit the installed agent → update the item → a keep-vs-replace prompt appears (not a silent overwrite); reinstall unchanged → no prompt.
 
 ### Tests for User Story 7 ⚠️
-- [ ] T029 [P] [US7] Playwright e2e in `e2e/okf-kb-redesign.spec.ts`: US7 acceptance — copy-install + provenance (`installedFrom {itemId, version, contentHash}` covering the whole asset dir); untouched → silent replace; diverged/unknown → prompt, never silent overwrite (spec US7, FR-030–034, NFR-016).
+- [ ] T029 [P] [US7] Playwright e2e in `e2e/okf-knowledge-base.spec.ts`: US7 acceptance — copy-install + provenance (`installedFrom {itemId, version, contentHash}` covering the whole asset dir); untouched → silent replace; diverged/unknown → prompt, never silent overwrite (spec US7, FR-030–034, NFR-016).
 
 ### Implementation for User Story 7
 - [ ] T030 [US7] Confirm the item **declares** `agents/okf-ingest/AGENT.md` and `skills/okf-bundle-schema/SKILL.md` in its directory so the BOS install pipeline (copy-on-install + provenance, a **bos-core dependency assumed shipped** — design.md ADR-005) picks them up. Do NOT implement the install mechanism here; verify the item's layout is what that mechanism consumes, and flag a dependency gap if the shipped mechanism isn't present. (Depends on T015)
@@ -160,7 +160,7 @@
 **Independent Test**: set `trust: human-reviewed` / `status: deprecated` + `stale_after` on a concept via `okf_upsert_concept`; `okf_stale_report` surfaces it; `okf_lint` reports it.
 
 ### Tests for User Story 8 ⚠️
-- [ ] T031 [P] [US8] Playwright e2e in `e2e/okf-kb-redesign.spec.ts`: US8 acceptance — frontmatter field-set via `okf_upsert_concept` round-trips with unknown keys preserved; `okf_stale_report` returns a past-`stale_after` concept; `okf_lint` surfaces it (spec US8, FR-022, FR-018, NFR-003).
+- [ ] T031 [P] [US8] Playwright e2e in `e2e/okf-knowledge-base.spec.ts`: US8 acceptance — frontmatter field-set via `okf_upsert_concept` round-trips with unknown keys preserved; `okf_stale_report` returns a past-`stale_after` concept; `okf_lint` surfaces it (spec US8, FR-022, FR-018, NFR-003).
 
 ### Implementation for User Story 8
 - [ ] T032 [US8] Ensure `okf_upsert_concept` in `services/lib/tools.js` accepts and merges the provenance/trust/lifecycle frontmatter (`sources`, `trust`/`verified`, `status`/`stale_after`, actors) — merge-on-fields, never dropping unknown keys (FR-021) — and that `okf_stale_report`/`okf_lint` read these fields. (Depends on T005, T008)
@@ -175,7 +175,7 @@
 **Independent Test**: type a query → the Table filters rows AND the Graph highlights matching nodes (rest dimmed); click a chapter → the resizable pane renders the full chapter + "Open source" (original URL else `raw/` path); the graph fills its pane (viewBox from real dimensions).
 
 ### Tests for User Story 9 ⚠️
-- [ ] T033 [P] [US9] Playwright e2e in `e2e/okf-kb-redesign.spec.ts`: US9 acceptance — shared search reflects in both views (Table filter + Graph highlight/dim); graph is force-directed with category colors + labeled directed edges + fills the pane; node/row click opens the full chapter in the resizable reader pane; "Open source" targets the original URL else `raw/` path (spec US9, FR-036–040, FR-041–045, NFR-004, SC-004/010/011/012).
+- [ ] T033 [P] [US9] Playwright e2e in `e2e/okf-knowledge-base.spec.ts`: US9 acceptance — shared search reflects in both views (Table filter + Graph highlight/dim); graph is force-directed with category colors + labeled directed edges + fills the pane; node/row click opens the full chapter in the resizable reader pane; "Open source" targets the original URL else `raw/` path (spec US9, FR-036–040, FR-041–045, NFR-004, SC-004/010/011/012).
 
 ### Implementation for User Story 9
 - [ ] T034 [US9] Implement the app **Query** tab from `mockup.html`: shared search field (top) + **Graph/Table** toggle; **Table** = the node list (type dot, name, description, rows from `GET /bundles/:id` + concept index) filtered by search; **Graph** = force-directed SVG of category-colored circular nodes (document/chapter/concept-term) with **labeled directed edges** (contains / covers / related) from `GET /bundles/:id/graph`, viewBox from the real container dimensions (fills the pane, re-lays-out on show + divider drag); search reflects in both (Table filter, Graph highlight + dim). (Depends on T009)
