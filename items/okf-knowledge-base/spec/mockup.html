@@ -3,31 +3,47 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OKF Knowledge Base — Service Config (redesign)</title>
+<title>OKF Knowledge Base — Standalone App (Overview · Jobs · Query)</title>
 <style>
   :root {
     --bg: #0e1116; --panel: #171b22; --panel2: #1d222b; --border: #2a313c;
     --text: #e6edf3; --muted: #8b98a5; --accent: #4f8cff; --green: #3fb950;
     --amber: #d29922; --red: #f85149; --violet: #8b7cf6; --radius: 8px;
+    --pane-w: 430px;
   }
   * { box-sizing: border-box; margin: 0; }
-  body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; padding: 24px; }
-  .wrap { max-width: 1000px; margin: 0 auto; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; height:100vh; overflow:hidden; }
 
-  header h1 { font-size: 20px; font-weight: 600; display:flex; align-items:center; gap:10px; }
-  header .badge { font-size: 11px; color: var(--muted); border:1px solid var(--border); border-radius: 20px; padding: 2px 8px; }
-  header p { color: var(--muted); margin-top: 4px; font-size: 13px; }
-  .subhead { display:flex; align-items:center; gap:12px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); flex-wrap:wrap; }
-  .crumb { font-size: 12px; color: var(--muted); display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-  .crumb a { color: var(--muted); cursor:pointer; }
-  .crumb a:hover { color: var(--text); }
+  /* ================= APP SHELL ================= */
+  .app { display:flex; flex-direction:column; height:100vh; background:var(--bg); }
+  .titlebar { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid var(--border); background:linear-gradient(180deg,#12161d,#0f1319); }
+  .tb-left { display:flex; align-items:center; gap:12px; min-width:0; }
+  .tb-left .glyph { font-size:22px; }
+  .tb-title { font-size:16px; font-weight:600; }
+  .tb-sub { font-size:11.5px; color:var(--muted); margin-top:1px; }
+  .tb-right { display:flex; align-items:center; gap:12px; flex:0 0 auto; }
+  .badge { font-size:11px; color:var(--muted); border:1px solid var(--border); border-radius:20px; padding:2px 8px; white-space:nowrap; }
+  .tabbar { display:flex; gap:2px; padding:0 14px; border-bottom:1px solid var(--border); background:var(--panel); }
+  .app-tab { display:inline-flex; align-items:center; gap:7px; padding:11px 14px; font-size:13px; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; }
+  .app-tab:hover { color:var(--text); background:var(--panel2); }
+  .app-tab.active { color:var(--text); border-bottom-color:var(--accent); }
+  .app-tab-cnt { font-size:10.5px; background:var(--panel2); border:1px solid var(--border); border-radius:20px; padding:0 7px; margin-left:2px; color:var(--muted); }
+  .app-tab.active .app-tab-cnt { background:rgba(79,140,255,.18); border-color:rgba(79,140,255,.4); color:var(--text); }
+  .app-main { flex:1; min-height:0; position:relative; }
+  .app-view { position:absolute; inset:0; overflow:auto; }
+  #app-query { display:flex; flex-direction:row; overflow:hidden; }
+  .wrap { max-width:1000px; margin:0 auto; padding:20px 24px 28px; }
+  .crumb { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:0 0 14px; }
+  .crumb a { color:var(--muted); cursor:pointer; }
+  .crumb a:hover { color:var(--text); }
   .crumb .sep { opacity:.5; }
-  .crumb .cur { color: var(--text); }
-  .seg { margin-left:auto; display:flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
+  .crumb .cur { color:var(--text); }
+
+  .seg { display:flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
   .seg button { background:transparent; border:0; color:var(--muted); font-size:12px; padding:5px 12px; cursor:pointer; }
   .seg button.on { background: var(--panel2); color: var(--text); }
 
-  .toolbar { display:flex; gap:8px; margin: 18px 0 12px; align-items:center; }
+  .toolbar { display:flex; gap:8px; margin: 0 0 12px; align-items:center; }
   .toolbar .spacer { flex:1; }
   .btn { display:inline-flex; align-items:center; gap:6px; background: var(--panel2); color: var(--text); border:1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor:pointer; font-size: 13px; }
   .btn:hover { background:#232a35; }
@@ -43,6 +59,7 @@
   .empty { text-align:center; padding: 64px 20px; color: var(--muted); border:1px dashed var(--border); border-radius: var(--radius); }
   .empty h3 { color: var(--text); font-weight: 600; margin-bottom:6px; }
   .empty .btn { margin-top:14px; margin-left:8px; }
+  .pane-hint { margin-top:12px; font-size:12px; color:var(--muted); display:flex; gap:8px; align-items:center; }
 
   table { width:100%; border-collapse: collapse; background: var(--panel); border:1px solid var(--border); border-radius: var(--radius); overflow:hidden; }
   th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--border); }
@@ -56,7 +73,9 @@
   .count { color: var(--muted); font-size:12px; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; vertical-align:middle; }
   .dot.green { background: var(--green); } .dot.amber { background: var(--amber); } .dot.red { background: var(--red); }
-  .dot.violet { background: var(--violet); }
+  .dot.violet { background: var(--violet); } .dot.queued { background:#5b6675; }
+  .dot.running { background: var(--accent); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(79,140,255,.5)} 70%{box-shadow:0 0 0 7px rgba(79,140,255,0)} 100%{box-shadow:0 0 0 0 rgba(79,140,255,0)} }
 
   .modal { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:50; }
   .modal.hidden { display:none; }
@@ -85,16 +104,14 @@
   .note svg { flex:0 0 auto; margin-top:1px; }
   .note b { color: var(--text); font-weight:600; }
 
-  /* search */
+  /* search (overview concept index) */
   .search { position:relative; margin-bottom:14px; }
   .search svg { position:absolute; left:11px; top:50%; transform:translateY(-50%); color: var(--muted); }
   .search input { padding-left:34px; }
   .search .clear { position:absolute; right:8px; top:50%; transform:translateY(-50%); color:var(--muted); cursor:pointer; }
   .search .clear:hover { color: var(--text); }
 
-  /* concept index rows — term-led, violet-keyed */
   .term { background: var(--panel); border:1px solid var(--border); border-left:2px solid var(--violet); border-radius:7px; margin-bottom:8px; overflow:hidden; }
-  .term.open { border-left-width:2px; }
   .term .t-head { display:flex; align-items:center; gap:10px; padding:11px 13px; cursor:pointer; }
   .term .t-head:hover { background: var(--panel2); }
   .term .caret { color: var(--muted); transition: transform .12s; flex:0 0 auto; }
@@ -113,7 +130,6 @@
   .cover .c-go { grid-row:1 / span 2; align-self:center; color:var(--muted); font-size:11px; }
   .cover:hover .c-go { color: var(--accent); }
 
-  /* document list + TOC — document-led, blue, ordered */
   .doc-list { border:1px solid var(--border); border-radius: var(--radius); overflow:hidden; background: var(--panel); }
   .doc-row { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--border); cursor:pointer; }
   .doc-row:last-child { border-bottom:0; }
@@ -138,7 +154,6 @@
   .toc-go { grid-row:1 / span 3; align-self:center; color:var(--muted); font-size:11px; display:inline-flex; align-items:center; gap:3px; }
   .toc-item:hover .toc-go { color: var(--accent); }
 
-  /* concept-term chips (secondary, in TOC) */
   .chip { display:inline-flex; align-items:center; gap:5px; font-size:11px; padding:1px 8px; border-radius:20px; border:1px solid var(--border); color:var(--muted); background: var(--panel2); cursor:pointer; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .chip .cdot { width:6px; height:6px; border-radius:50%; background: var(--violet); }
   .chip:hover { color: var(--text); border-color: var(--violet); background: rgba(139,124,246,.1); }
@@ -156,7 +171,6 @@
   .chap-card { background: var(--panel); border:1px solid var(--border); border-radius: var(--radius); overflow:hidden; }
   .chap-bar { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--border); background: var(--panel2); }
   .chap-bar .cb-title { font-weight:600; font-size:13.5px; }
-  .chap-bar .src-toggle { margin-left:auto; }
   .md-body { padding:16px 18px; font-size:13.5px; line-height:1.65; color: var(--text); }
   .md-body h3, .md-body h4 { margin:16px 0 8px; font-size:14px; }
   .md-body h3:first-child, .md-body h4:first-child { margin-top:0; }
@@ -169,9 +183,7 @@
   .md-body a.mdlink { color: var(--accent); text-decoration:none; border-bottom:1px solid rgba(79,140,255,.4); }
   .src-view { padding:14px 16px; }
   .src-view pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; line-height:1.6; color:var(--muted); white-space:pre-wrap; word-break:break-word; background:#0b0e13; border:1px solid var(--border); border-radius:6px; padding:14px; }
-  .src-view .hint { font-size:11px; color:var(--muted); margin-bottom:8px; display:flex; align-items:center; gap:6px; }
 
-  /* inline asset block */
   .asset { margin:16px 0; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:#0b0e13; }
   .asset .a-thumb { position:relative; height:190px; display:flex; align-items:center; justify-content:center; color:var(--muted); background:
     repeating-linear-gradient(45deg,#0d1016 0 12px,#0b0e13 12px 24px); }
@@ -200,15 +212,136 @@
   .ok-line:last-child { border-bottom:0; }
   .ok-line .m { color:var(--muted); font-size:12px; margin-left:auto; font-variant-numeric:tabular-nums; }
   .hidden { display:none !important; }
+
+  /* ================= JOBS ================= */
+  .jobs-list { border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--panel); }
+  .job { border-bottom:1px solid var(--border); }
+  .job:last-child { border-bottom:0; }
+  .job-row { display:flex; align-items:center; gap:12px; padding:11px 14px; cursor:pointer; font-size:13px; }
+  .job-row:hover { background:var(--panel2); }
+  .job .jobcaret { color:var(--muted); transition:transform .12s; flex:0 0 auto; }
+  .job.open .jobcaret { transform:rotate(90deg); }
+  .job-status { font-size:11px; text-transform:uppercase; letter-spacing:.4px; width:78px; flex:0 0 auto; }
+  .job-status.completed { color:var(--green); } .job-status.failed { color:var(--red); }
+  .job-status.running { color:var(--accent); } .job-status.queued { color:var(--muted); }
+  .job-bundle { display:flex; align-items:center; gap:6px; font-weight:500; min-width:0; flex:0 1 auto; }
+  .job-src { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; min-width:0; flex:1; overflow:hidden; }
+  .job-src span.txt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .job-time { color:var(--muted); font-size:12px; flex:0 0 auto; }
+  .job-dur { color:var(--muted); font-size:12px; flex:0 0 auto; min-width:54px; text-align:right; font-variant-numeric:tabular-nums; }
+  .run-elapsed { color:var(--accent); animation:blink 1.6s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.5} }
+  .job-detail { padding:6px 16px 16px 40px; background:#141922; border-top:1px solid var(--border); }
+  .jd-top { font-size:12.5px; color:var(--muted); margin:10px 0 14px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .jd-top code { font-family:ui-monospace,Menlo,monospace; font-size:12px; background:var(--panel2); border:1px solid var(--border); padding:1px 6px; border-radius:4px; word-break:break-all; }
+  .job-summary { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:6px; }
+  .js-cell { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px; text-align:center; }
+  .js-ic { display:block; color:var(--muted); margin-bottom:4px; }
+  .js-num { font-size:20px; font-weight:600; display:block; }
+  .js-lbl { font-size:11px; color:var(--muted); }
+  .jd-sub { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin:14px 0 8px; }
+  .job-written { display:flex; gap:8px; flex-wrap:wrap; }
+  .wj { display:inline-flex; align-items:center; gap:6px; font-size:12px; background:var(--panel2); border:1px solid var(--border); border-radius:20px; padding:3px 10px; }
+  .wj svg { color:var(--green); }
+  .job-error { display:flex; gap:10px; align-items:flex-start; background:rgba(248,81,73,.08); border:1px solid rgba(248,81,73,.3); border-radius:8px; padding:12px 14px; font-size:12.5px; line-height:1.55; }
+  .job-error>svg { color:var(--red); flex:0 0 auto; margin-top:1px; }
+  .job-error b { color:var(--text); }
+  .jd-foot { font-size:12px; color:var(--muted); margin-top:12px; display:flex; gap:6px; align-items:center; }
+  .job-progress { margin-top:6px; }
+  .prog-bar { height:8px; border-radius:20px; background:var(--panel); border:1px solid var(--border); overflow:hidden; }
+  .prog-fill { display:block; height:100%; width:55%; background:linear-gradient(90deg,var(--accent),#7db0ff); border-radius:20px; animation:prog 2.2s ease-in-out infinite; }
+  @keyframes prog { 0%{width:30%} 50%{width:64%} 100%{width:30%} }
+  .prog-txt { margin-top:10px; font-size:12.5px; color:var(--text); }
+  .prog-sub { margin-top:4px; font-size:11.5px; color:var(--muted); }
+  .job-queued { display:flex; gap:10px; align-items:flex-start; font-size:12.5px; color:var(--muted); background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; }
+  .job-queued svg { flex:0 0 auto; color:var(--muted); margin-top:1px; }
+
+  /* ================= QUERY ================= */
+  .q-main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .q-head { display:flex; align-items:center; gap:12px; padding:10px 14px; border-bottom:1px solid var(--border); flex-wrap:wrap; background:var(--panel); }
+  .q-bundle { display:inline-flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
+  .q-bundle select { width:auto; min-width:210px; padding:5px 8px; }
+  .q-subtabs { display:flex; gap:2px; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
+  .q-subtab { display:inline-flex; align-items:center; gap:6px; padding:5px 12px; font-size:12px; color:var(--muted); cursor:pointer; background:transparent; }
+  .q-subtab:hover { color:var(--text); background:var(--panel2); }
+  .q-subtab.active { background:var(--panel2); color:var(--text); }
+  .q-content { flex:1; overflow:auto; padding:14px; }
+  .resizer { flex:0 0 6px; cursor:col-resize; background:var(--border); position:relative; z-index:5; transition:background .1s; }
+  .resizer:hover, .resizer:active { background:var(--accent); }
+  .resizer::after { content:""; position:absolute; inset:0 -3px; }
+  .q-pane { flex:0 0 var(--pane-w); width:var(--pane-w); display:flex; flex-direction:column; border-left:1px solid var(--border); background:var(--panel); min-width:300px; max-width:72%; }
+  .q-pane-head { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--border); background:var(--panel2); flex-wrap:wrap; }
+  .q-pane-kind { font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; }
+  .q-pane-kind.concept { color:var(--violet); }
+  .q-pane-term { font-weight:600; font-family:ui-monospace,Menlo,monospace; font-size:13px; color:var(--violet); }
+  .q-pane-src { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px; flex-wrap:wrap; min-width:0; flex:1 1 auto; }
+  .q-pane-src a { color:var(--accent); text-decoration:none; border-bottom:1px solid rgba(79,140,255,.4); word-break:break-all; }
+  .q-pane-anch { color:var(--muted); }
+  .q-pane-sub { font-size:11.5px; color:var(--muted); }
+  .q-pane-head .ibtn { margin-left:auto; flex:0 0 auto; }
+  .qpane-empty-h { font-weight:600; font-size:12px; color:var(--muted); display:flex; align-items:center; gap:8px; width:100%; }
+  .q-pane-body { flex:1; overflow:auto; padding:14px; }
+  .qpane-foot { padding:4px 14px 16px; }
+
+  /* knowledge graph */
+  .g-legend { display:flex; gap:14px; align-items:center; flex-wrap:wrap; padding:10px 14px; font-size:11.5px; color:var(--muted); border:1px solid var(--border); border-bottom:0; border-radius:var(--radius) var(--radius) 0 0; background:var(--panel2); }
+  .lg-item { display:inline-flex; align-items:center; gap:6px; }
+  .lg-sw { width:11px; height:11px; border-radius:3px; display:inline-block; border:1.5px solid; }
+  .lg-sw.doc { border-color:var(--border); background:var(--panel); }
+  .lg-sw.chap { border-color:var(--accent); background:rgba(79,140,255,.18); }
+  .lg-sw.concept { border-color:var(--violet); background:rgba(139,124,246,.18); border-radius:50%; }
+  .lg-line { width:20px; height:0; display:inline-block; vertical-align:3px; }
+  .lg-line.contain { border-top:2px solid rgba(255,255,255,.3); }
+  .lg-line.cover { border-top:2px dashed rgba(139,124,246,.6); }
+  .lg-line.link { border-top:2px solid var(--amber); }
+  .lg-sep { width:1px; height:16px; background:var(--border); }
+  .graph-stage { position:relative; border:1px solid var(--border); border-top:0; border-radius:0 0 var(--radius) var(--radius);
+    background: radial-gradient(circle at 18% 8%, rgba(79,140,255,.06), transparent 45%), radial-gradient(circle at 82% 92%, rgba(139,124,246,.06), transparent 45%), #0b0e13; }
+  .g-edges { position:absolute; inset:0; pointer-events:none; }
+  .g-edge { fill:none; stroke-width:1.4; }
+  .g-edge.contain { stroke:rgba(255,255,255,.15); }
+  .g-edge.cover { stroke:rgba(139,124,246,.28); stroke-dasharray:3 3; }
+  .g-edge.link { stroke:rgba(210,153,34,.55); }
+  .g-node { position:absolute; display:flex; align-items:center; gap:6px; padding:0 9px; height:40px; border-radius:8px; border:1.5px solid var(--border); background:var(--panel); cursor:pointer; font-size:12px; white-space:nowrap; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.4); }
+  .g-node:hover { background:var(--panel2); }
+  .g-node .gn-lbl { overflow:hidden; text-overflow:ellipsis; }
+  .g-node.doc { font-weight:600; }
+  .g-node.doc .gn-ic { color:var(--muted); }
+  .g-node.chap { border-color:rgba(79,140,255,.5); background:rgba(79,140,255,.1); }
+  .g-node.chap .gn-ic { color:var(--accent); }
+  .g-node.concept { border-color:rgba(139,124,246,.55); background:rgba(139,124,246,.12); border-radius:20px; }
+  .g-node.concept .gn-ic { color:var(--violet); }
+  .g-node.sel { outline:2px solid var(--text); outline-offset:1px; }
+
+  /* search results */
+  .q-suggest { font-size:12px; color:var(--muted); margin:0 0 12px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .sug { background:var(--panel2); border:1px solid var(--border); color:var(--text); border-radius:20px; padding:2px 10px; font-size:12px; cursor:pointer; }
+  .sug:hover { border-color:var(--accent); color:var(--accent); }
+  .srow-list { margin-top:4px; }
+  .srow { position:relative; background:var(--panel); border:1px solid var(--border); border-left:2px solid var(--violet); border-radius:8px; padding:11px 14px; margin-bottom:9px; cursor:pointer; }
+  .srow:hover { background:var(--panel2); }
+  .s-loc { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+  .s-loc .doc { color:var(--text); font-weight:500; }
+  .s-loc .arrow { opacity:.5; }
+  .s-desc { font-size:12.5px; color:var(--muted); margin-top:4px; }
+  .s-term { margin-top:9px; display:flex; align-items:center; gap:7px; font-size:12px; }
+  .s-term .st { font-family:ui-monospace,Menlo,monospace; color:var(--text); }
+  .s-go { position:absolute; right:14px; top:13px; color:var(--muted); font-size:11px; display:inline-flex; align-items:center; gap:3px; }
+  .srow:hover .s-go { color:var(--accent); }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <h1>🧠 OKF Knowledge Base <span class="badge">service config · 18 okf_* tools</span></h1>
-    <p>Open Knowledge Format bundles · a two-level, concept-anchored index (derived &amp; regenerable) · retrieval returns full documents or chapters, never snippets</p>
-    <div class="subhead">
-      <div class="crumb" id="crumb"></div>
+<div class="app">
+  <header class="titlebar">
+    <div class="tb-left">
+      <span class="glyph">🧠</span>
+      <div>
+        <div class="tb-title">OKF Knowledge Base</div>
+        <div class="tb-sub">Open Knowledge Format bundles · concept-anchored, chapter-granular retrieval · a dock-openable master-detail app</div>
+      </div>
+    </div>
+    <div class="tb-right">
+      <span class="badge">standalone app · 18 okf_* tools</span>
       <div class="seg" id="modeSeg">
         <button data-mode="populated" class="on">Populated</button>
         <button data-mode="empty">Empty</button>
@@ -216,35 +349,75 @@
     </div>
   </header>
 
-  <!-- ============ BUNDLE LIST ============ -->
-  <section id="view-list">
-    <div id="listEmpty" class="empty hidden">
-      <h3>No knowledge bases yet</h3>
-      <p>Create an OKF bundle to start building your knowledge base,<br>or import an existing one. Each bundle is a self-contained, exportable OKF directory.</p>
-      <button class="btn primary" onclick="openModal('new')">+ New Knowledge Base</button>
-      <button class="btn" onclick="openModal('import')">Import Bundle</button>
-    </div>
+  <nav class="tabbar" id="topTabs">
+    <div class="app-tab active" data-app="overview" onclick="setAppTab('overview')"><span id="tabIc-overview"></span>Overview</div>
+    <div class="app-tab" data-app="jobs" onclick="setAppTab('jobs')"><span id="tabIc-jobs"></span>Jobs <span class="app-tab-cnt" id="jobsBadge">5</span></div>
+    <div class="app-tab" data-app="query" onclick="setAppTab('query')"><span id="tabIc-query"></span>Query</div>
+  </nav>
 
-    <div id="listBody">
-      <div class="toolbar">
-        <button class="btn primary" onclick="openModal('new')">+ New Knowledge Base</button>
-        <button class="btn" onclick="openModal('import')">Import Bundle</button>
-        <div class="spacer"></div>
-        <span class="count" id="bundleCount"></span>
-      </div>
-      <table>
-        <thead><tr><th>Knowledge base</th><th>Docs</th><th>Chapters</th><th>Concepts</th><th>Stale / Deprecated</th><th>Status</th><th></th></tr></thead>
-        <tbody id="bundleRows"></tbody>
-      </table>
-      <div class="note" style="margin-top:14px">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
-        <span><b>Concepts</b> = distinct concept terms in the bundle's concept index (the O(V) routing table). <b>Stale / Deprecated</b> = chapters past their lifecycle threshold. Open a bundle to browse its concept index and document tables of contents.</span>
-      </div>
-    </div>
-  </section>
+  <div class="app-main">
+    <!-- ================= OVERVIEW (existing mockup, unchanged) ================= -->
+    <section id="app-overview" class="app-view">
+      <div class="wrap">
+        <div class="crumb" id="crumb"></div>
 
-  <!-- ============ BUNDLE DETAIL ============ -->
-  <section id="view-detail" class="hidden"></section>
+        <!-- ============ BUNDLE LIST ============ -->
+        <section id="view-list">
+          <div id="listEmpty" class="empty hidden">
+            <h3>No knowledge bases yet</h3>
+            <p>Create an OKF bundle to start building your knowledge base,<br>or import an existing one. Each bundle is a self-contained, exportable OKF directory.</p>
+            <button class="btn primary" onclick="openModal('new')">+ New Knowledge Base</button>
+            <button class="btn" onclick="openModal('import')">Import Bundle</button>
+          </div>
+          <div id="listBody">
+            <div class="toolbar">
+              <button class="btn primary" onclick="openModal('new')">+ New Knowledge Base</button>
+              <button class="btn" onclick="openModal('import')">Import Bundle</button>
+              <div class="spacer"></div>
+              <span class="count" id="bundleCount"></span>
+            </div>
+            <table>
+              <thead><tr><th>Knowledge base</th><th>Docs</th><th>Chapters</th><th>Concepts</th><th>Stale / Deprecated</th><th>Status</th><th></th></tr></thead>
+              <tbody id="bundleRows"></tbody>
+            </table>
+            <div class="note" style="margin-top:14px">
+              <span id="listNoteIc"></span>
+              <span><b>Concepts</b> = distinct concept terms in the bundle's concept index (the O(V) routing table). <b>Stale / Deprecated</b> = chapters past their lifecycle threshold. Open a bundle to browse its concept index and document tables of contents.</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ BUNDLE DETAIL ============ -->
+        <section id="view-detail" class="hidden"></section>
+      </div>
+    </section>
+
+    <!-- ================= JOBS ================= -->
+    <section id="app-jobs" class="app-view hidden">
+      <div class="wrap"><div id="jobs-content"></div></div>
+    </section>
+
+    <!-- ================= QUERY ================= -->
+    <section id="app-query" class="app-view hidden">
+      <div class="q-main">
+        <div class="q-head">
+          <label class="q-bundle">Bundle
+            <select id="qBundleSel" onchange="onQBundle(this.value)"></select>
+          </label>
+          <div class="q-subtabs">
+            <div class="q-subtab active" data-sub="graph" onclick="setQSub('graph')"><span id="subIc-graph"></span>Knowledge Graph</div>
+            <div class="q-subtab" data-sub="search" onclick="setQSub('search')"><span id="subIc-search"></span>Search</div>
+          </div>
+        </div>
+        <div class="q-content" id="q-content"></div>
+      </div>
+      <div class="resizer" id="resizer" title="Drag to resize the reader pane"></div>
+      <div class="q-pane" id="q-pane">
+        <div class="q-pane-head" id="q-pane-head"></div>
+        <div class="q-pane-body" id="q-pane-body"></div>
+      </div>
+    </section>
+  </div>
 </div>
 
 <!-- MODALS -->
@@ -270,7 +443,7 @@
 </div></div>
 
 <div id="modal-ingest" class="modal hidden"><div class="card">
-  <h3>Ingest document</h3><div class="desc">Decomposes the source into chapters (each with concept terms + a one-line summary), writes the document TOC, and updates the concept index. Runs via the bundled least-privilege <code style="font-family:monospace;font-size:11px">okf-ingest</code> agent.</div>
+  <h3>Ingest document</h3><div class="desc">Decomposes the source into chapters (each with concept terms + a one-line summary), writes the document TOC, and updates the concept index. Runs via the bundled least-privilege <code style="font-family:monospace;font-size:11px">okf-ingest</code> agent — the run is tracked in the Jobs tab.</div>
   <label>Source (URL, VFS path, or raw/ path)</label><input placeholder="https://…/article  or  /workspace/doc.pdf  or  raw/…">
   <label>Crawl depth (optional)</label><input placeholder="default" value="">
   <div class="row"><button class="btn" onclick="closeModal('ingest')">Cancel</button><button class="btn primary" onclick="closeModal('ingest')">Ingest</button></div>
@@ -279,7 +452,7 @@
 <div id="modal-delete" class="modal hidden"><div class="card">
   <h3>Delete knowledge base?</h3><div class="desc" style="margin-top:6px">This removes only this bundle's directory (<code id="delPath" style="font-family:monospace;font-size:11px"></code>). Documents, chapters, the concept index, TOCs, and raw sources are all removed.</div>
   <div class="confirm-ic" style="margin-top:14px;color:var(--red)">
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>
+    <span id="delIc"></span>
     <span id="delMsg" style="color:var(--text)">This action cannot be undone.</span>
   </div>
   <div class="row"><button class="btn" onclick="closeModal('delete')">Cancel</button><button class="btn danger" onclick="closeModal('delete')">Delete Bundle</button></div>
@@ -308,10 +481,32 @@ function I(name, size, cls){
     code:'<path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/>',
     alert:'<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/>',
     check:'<path d="M20 6L9 17l-5-5"/>',
-    x:'<path d="M6 6l12 12M18 6L6 18"/>'
+    x:'<path d="M6 6l12 12M18 6L6 18"/>',
+    clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    zap:'<path d="M13 2L4 14h6l-1 8 9-12h-6z"/>',
+    graph:'<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="10" cy="18" r="2.5"/><path d="M8 6.5l7.5 1M7 8l1.5 8M16.5 10l-5 5.5"/>'
   };
   return '<svg viewBox="0 0 24 24" width="'+s+'" height="'+s+'" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"'+c+'>'+(P[name]||'')+'</svg>';
 }
+
+/* ---------------- helpers ---------------- */
+function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function trunc(s,n){ n=n||18; s=String(s||''); return s.length>n? s.slice(0,n-1)+'…':s; }
+function shortSrc(s){ if(!s) return '—'; if(s.length<=44) return s; return s.slice(0,20)+'…'+s.slice(-20); }
+function statusPill(s){ if(s==='stale') return '<span class="pill stale">stale</span>'; if(s==='deprecated') return '<span class="pill deprecated">deprecated</span>'; return ''; }
+function fmRow(k,v){ return '<div class="fm-row"><span class="fm-k">'+k+'</span><span class="fm-v">'+v+'</span></div>'; }
+const SOURCES = {
+  'engineering/api-design':'https://engineering.example.com/handbook/api-design',
+  'engineering/code-review':'https://engineering.example.com/handbook/code-review',
+  'engineering/deployment':'https://engineering.example.com/handbook/deployment',
+  'engineering/error-handling':'https://engineering.example.com/handbook/error-handling',
+  'internal-policies/remote-work':'https://policies.example.net/remote-work',
+  'internal-policies/security':'https://policies.example.net/security',
+  'employee-handbook/onboarding':'raw/onboarding-playbook.pdf',
+  'employee-handbook/benefits':'https://hr.example.net/benefits'
+};
+function docSource(bundleId,docId){ return SOURCES[bundleId+'/'+docId] || ('raw/'+docId+'.source'); }
 
 /* ---------------- sample data ---------------- */
 const BUNDLES = {
@@ -441,6 +636,36 @@ const BUNDLES = {
   }
 };
 
+/* explicit okf_add_link edges (mockup: a few cross-chapter links the prose references) */
+const EXPLICIT_LINKS = {
+  engineering: [
+    ['error-handling/error-response','error-handling/logging'],
+    ['code-review/approvals','deployment/pre-deploy'],
+    ['deployment/pre-deploy','deployment/canary']
+  ]
+};
+
+/* ---------------- jobs (ingest runs) ---------------- */
+const JOBS = [
+  { id:'run-1042', status:'running',   bundleId:'engineering',       source:'https://engineering.example.com/docs/performance-budgets', started:'2026-10-09 11:58', elapsed:'02:14',
+    progress:'Interpreting inline asset raw/perf-budget-chart.png · writing 3 of 6 chapters' },
+  { id:'run-1041', status:'completed', bundleId:'internal-policies', source:'https://policies.example.net/security-incident-response', started:'2026-10-08 14:32', duration:'00:48',
+    summary:{chapters:4, concepts:5, assets:1, refsSkipped:2, refsFailed:0},
+    written:['Incident Severity Levels','Severity Response SLAs','Communication & Status Updates','Post-Incident Review'] },
+  { id:'run-1039', status:'completed', bundleId:'employee-handbook', source:'raw/onboarding-playbook.pdf', started:'2026-10-07 09:11', duration:'01:05',
+    summary:{chapters:3, concepts:3, assets:0, refsSkipped:0, refsFailed:1},
+    written:['First Week','Buddy Program','Probation Review'] },
+  { id:'run-1036', status:'failed',    bundleId:'engineering',       source:'https://engineering.example.com/blog/deprecation-notice', started:'2026-10-06 16:40', duration:'00:12',
+    error:'Source unreachable (HTTP 410 Gone) — raw fetch failed before decomposition. The chapter files and the concept index were not modified (the write is atomic; nothing is left half-written).' },
+  { id:'run-1033', status:'queued',    bundleId:'internal-policies', source:'https://policies.example.net/vendor-risk-assessment', started:null }
+];
+const STATUS = {
+  queued:{dot:'queued',    label:'queued'},
+  running:{dot:'running',  label:'running'},
+  completed:{dot:'green',  label:'completed'},
+  failed:{dot:'red',       label:'failed'}
+};
+
 /* ---------------- derived helpers ---------------- */
 function bundleStats(b){
   let chapters=0, stale=0; const set=new Set();
@@ -456,8 +681,6 @@ function conceptIndex(b){
 }
 function findDoc(b,id){ return b.docs.find(d=>d.id===id); }
 function findCh(b,docId,chId){ const d=findDoc(b,docId); return d&&d.chapters.find(c=>c.id===chId); }
-function statusPill(s){ if(s==='stale') return '<span class="pill stale">stale</span>'; if(s==='deprecated') return '<span class="pill deprecated">deprecated</span>'; return ''; }
-function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 /* ---------------- tiny markdown renderer ---------------- */
 function mdInline(t){
@@ -499,10 +722,30 @@ function assetBlock(a){
 }
 
 /* ---------------- state ---------------- */
-let state = { mode:'populated', view:'list', bundleId:'engineering', tab:'conceptIndex',
-  docId:null, chapterId:null, expandedTerm:null, termQuery:'', showSrc:{}, deleteId:null };
+let state = {
+  mode:'populated', view:'list', bundleId:'engineering', tab:'conceptIndex',
+  docId:null, chapterId:null, expandedTerm:null, termQuery:'', showSrc:{}, deleteId:null,
+  appTab:'overview', jobOpen:null,
+  qBundle:'engineering', qSubtab:'graph', qsearch:'', qsearchRun:false,
+  pane:{kind:null, bundleId:'engineering', docId:null, chId:null, term:null}, paneShowSrc:false
+};
 
-/* ---------------- rendering ---------------- */
+/* ---------------- app tab shell ---------------- */
+function setAppTab(name){
+  state.appTab=name;
+  document.querySelectorAll('.app-tab').forEach(t=>t.classList.toggle('active', t.dataset.app===name));
+  document.getElementById('app-overview').classList.toggle('hidden', name!=='overview');
+  document.getElementById('app-jobs').classList.toggle('hidden', name!=='jobs');
+  document.getElementById('app-query').classList.toggle('hidden', name!=='query');
+  renderCurrent();
+}
+function renderCurrent(){
+  if(state.appTab==='overview') render();
+  else if(state.appTab==='jobs') renderJobs();
+  else renderQuery();
+}
+
+/* ---------------- crumb + overview render ---------------- */
 function crumb(parts){
   let h='<div class="crumb">';
   parts.forEach((p,i)=>{
@@ -522,6 +765,11 @@ function renderCrumb(){
     if(state.chapterId){ parts.push({label:findCh(b,state.docId,state.chapterId).title}); }
   }
   el.innerHTML=crumb(parts);
+}
+
+function render(){
+  renderCrumb();
+  if(state.view==='list') renderList(); else renderDetail();
 }
 
 function renderList(){
@@ -623,10 +871,8 @@ function renderConceptIndex(b,idx){
 }
 
 function renderDocuments(b){
-  // drill: list -> toc -> chapter
   if(state.chapterId && state.docId) return renderChapter(b);
   if(state.docId) return renderDocToc(b);
-
   let h='<div class="note">'+I('info',14)+'<span><b>Documents</b> — the ingested sources in this bundle. Each has a stored <b>table of contents</b> (a level-2 drill-down an agent uses to fetch specific chapters). Click a document to open its TOC.</span></div>';
   h+='<div class="doc-list">'+b.docs.map(d=>{
     const cc=d.chapters.length; const tc=d.chapters.reduce((n,c)=>n+c.concepts.length,0);
@@ -672,11 +918,11 @@ function renderChapter(b){
     + '</div>';
   if(!src){
     h+='<div class="fm">'
-      + '<div class="fm-row"><span class="fm-k">type</span><span class="fm-v"><code>section</code></span></div>'
-      + '<div class="fm-row"><span class="fm-k">parent</span><span class="fm-v"><code>'+state.docId+'</code> · '+escapeHtml(d.title)+'</span></div>'
-      + '<div class="fm-row"><span class="fm-k">concepts</span><span class="fm-v">'+c.concepts.map(t=>'<code>'+t+'</code>').join(' ')+'</span></div>'
-      + '<div class="fm-row"><span class="fm-k">summary</span><span class="fm-v">'+escapeHtml(c.summary)+'</span></div>'
-      + (c.status!=='ok'?'<div class="fm-row"><span class="fm-k">status</span><span class="fm-v">'+statusPill(c.status)+'</span></div>':'')
+      + fmRow('type','<code>section</code>')
+      + fmRow('parent','<code>'+state.docId+'</code> · '+escapeHtml(d.title))
+      + fmRow('concepts', c.concepts.map(t=>'<code>'+t+'</code>').join(' '))
+      + fmRow('summary', escapeHtml(c.summary))
+      + (c.status!=='ok'? fmRow('status', statusPill(c.status)):'')
       + '</div>';
   }
   if(src){ h+='<div class="chap-bar" style="background:transparent;border-left:0;border-right:0"><span class="hint" style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px">'+I('code',13)+' Raw chapter markdown — exactly what <code style="font-family:monospace">okf_read_concept</code> returns (full text, not a snippet)</span></div>'; }
@@ -717,17 +963,13 @@ function renderIO(b){
       + '<label>Path / URL</label><input placeholder="/KnowledgeBase/…">'
       + '<div class="row"><button class="btn primary" onclick="openModal(\'import\')">'+I('import',14)+' Import</button></div></div>'
     + '</div>'
-    + '<div class="io-card" style="margin-top:14px"><h4>'+I('import',16)+' Ingest a document into this bundle</h4><div class="io-sub">The ingest agent decomposes the source into chapters, assigns concept terms, writes summaries, creates the TOC, and updates the concept index. Inline non-HTML assets are downloaded, interpreted, and preserved.</div>'
+    + '<div class="io-card" style="margin-top:14px"><h4>'+I('import',16)+' Ingest a document into this bundle</h4><div class="io-sub">The ingest agent decomposes the source into chapters, assigns concept terms, writes summaries, creates the TOC, and updates the concept index. Inline non-HTML assets are downloaded, interpreted, and preserved. The run is tracked in the <b>Jobs</b> tab.</div>'
       + '<label>Source (URL, VFS path, or raw/ path)</label><input placeholder="https://…  ·  /workspace/doc.pdf  ·  raw/…">'
       + '<label>Crawl depth (optional)</label><input placeholder="bundle default">'
       + '<div class="row"><button class="btn primary" onclick="openModal(\'ingest\')">'+I('import',14)+' Ingest</button></div></div>';
 }
 
-/* ---------------- actions ---------------- */
-function render(){
-  renderCrumb();
-  if(state.view==='list') renderList(); else renderDetail();
-}
+/* ---------------- overview actions ---------------- */
 function goList(){ state.view='list'; state.docId=null; state.chapterId=null; render(); }
 function openBundle(id){ state.view='detail'; state.bundleId=id; state.tab='conceptIndex'; state.docId=null; state.chapterId=null; state.expandedTerm=null; state.termQuery=''; render(); }
 function setTab(t){ state.tab=t; state.docId=null; state.chapterId=null; state.expandedTerm=null; render(); }
@@ -740,14 +982,304 @@ function toggleSrc(docId,chId,on){ state.showSrc[docId+':'+chId]=on; renderDetai
 function askDelete(id){ state.deleteId=id; document.getElementById('delPath').textContent='/KnowledgeBase/'+BUNDLES[id].name+'/'; document.getElementById('delMsg').textContent='Deleting “'+BUNDLES[id].name+'” removes '+bundleStats(BUNDLES[id]).chapters+' chapters across '+bundleStats(BUNDLES[id]).docs+' documents.'; openModal('delete'); }
 function openModal(id){ document.getElementById('modal-'+id).classList.remove('hidden'); }
 function closeModal(id){ document.getElementById('modal-'+id).classList.add('hidden'); }
+
+/* ================= JOBS ================= */
+function renderJobs(){
+  const host=document.getElementById('jobs-content');
+  document.getElementById('jobsBadge').textContent=JOBS.length;
+  if(state.mode==='empty'){
+    host.innerHTML='<div class="empty"><h3>No ingest runs</h3><p>Ingest a document from the Overview tab (or an agent calls <b>okf_ingest</b>) and the run appears here with a live status — queued → running → completed / failed.</p><button class="btn primary" onclick="openModal(\'ingest\')">'+I('import',14)+' Ingest document</button></div>';
+    return;
+  }
+  const active=JOBS.filter(j=>j.status==='running'||j.status==='queued').length;
+  let h='<div class="toolbar"><button class="btn primary" onclick="openModal(\'ingest\')">'+I('import',15)+' Ingest document</button><div class="spacer"></div><span class="count">'+JOBS.length+' runs · '+active+' active</span></div>';
+  h+='<div class="note">'+I('info',14)+'<span><b>Ingest runs (jobs)</b> — each is one delegated invocation of the <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf-ingest</code> agent against a bundle. Statuses: <span class="dot queued" style="margin:0 4px"></span>queued <span class="dot running" style="margin:0 4px"></span>running <span class="dot green" style="margin:0 4px"></span>completed <span class="dot red"></span>failed. The list reflects a run\'s status as it changes. Click a run to expand its detail.</span></div>';
+  h+='<div class="jobs-list">'+JOBS.map(jobRow).join('')+'</div>';
+  host.innerHTML=h;
+}
+function jobRow(j){
+  const s=STATUS[j.status]; const b=BUNDLES[j.bundleId];
+  const open=state.jobOpen===j.id;
+  let h='<div class="job'+(open?' open':'')+'">';
+  h+='<div class="job-row" onclick="toggleJob(\''+j.id+'\')">'+I('caret',14,'jobcaret')
+    +'<span class="dot '+s.dot+'" style="width:9px;height:9px;margin-right:0"></span>'
+    +'<span class="job-status '+j.status+'">'+s.label+'</span>'
+    +'<span class="job-bundle"><span class="glyph" style="font-size:14px">'+b.glyph+'</span>'+b.name+'</span>'
+    +'<span class="job-src">'+I('export',12)+'<span class="txt">'+escapeHtml(shortSrc(j.source))+'</span></span>'
+    +'<span class="job-time">'+(j.started||'—')+'</span>'
+    +'<span class="job-dur">'+(j.status==='running'? '<span class="run-elapsed">'+j.elapsed+'</span>' : (j.duration||'—'))+'</span>'
+    +'</div>';
+  if(open) h+='<div class="job-detail">'+jobDetail(j)+'</div>';
+  h+='</div>';
+  return h;
+}
+function jobDetail(j){
+  const b=BUNDLES[j.bundleId];
+  let h='<div class="jd-top">Source: <code>'+escapeHtml(j.source)+'</code> · into <b>'+b.name+'</b></div>';
+  if(j.status==='completed'){
+    h+='<div class="job-summary">'
+      + sumCell('list', j.summary.chapters, 'chapters written')
+      + sumCell('layers', j.summary.concepts, 'concepts assigned')
+      + sumCell('image', j.summary.assets, 'assets interpreted')
+      + sumCell('import', j.summary.refsSkipped, 'references skipped')
+      + sumCell('alert', j.summary.refsFailed, 'references failed')
+      +'</div>';
+    h+='<div class="jd-sub">Chapters written</div><div class="job-written">'+j.written.map(w=>'<span class="wj">'+I('check',12)+' '+escapeHtml(w)+'</span>').join('')+'</div>';
+  } else if(j.status==='failed'){
+    h+='<div class="job-error">'+I('alert',15)+'<div><b>Run failed.</b> '+escapeHtml(j.error)+'</div></div>';
+    h+='<div class="jd-foot">'+I('import',13)+' Retry from the Overview tab (Ingest) or by re-calling <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_ingest</code>.</div>';
+  } else if(j.status==='running'){
+    h+='<div class="job-progress"><div class="prog-bar"><span class="prog-fill"></span></div><div class="prog-txt">'+escapeHtml(j.progress)+'</div><div class="prog-sub">Live · updates as the agent decomposes and writes chapters. The run reflects its status as it changes.</div></div>';
+  } else if(j.status==='queued'){
+    h+='<div class="job-queued">'+I('clock',15)+'<div>Waiting for the <b>okf-ingest</b> agent to pick this up. No bundle content has been modified yet — a run only writes once decomposition succeeds.</div></div>';
+  }
+  return h;
+}
+function sumCell(ic,val,lab){ return '<div class="js-cell"><span class="js-ic">'+I(ic,15)+'</span><span class="js-num">'+val+'</span><span class="js-lbl">'+lab+'</span></div>'; }
+function toggleJob(id){ state.jobOpen = state.jobOpen===id? null : id; renderJobs(); }
+
+/* ================= QUERY ================= */
+const L = { stageW:880, stageH:744, top:74, pitch:52, docX:34, docW:156, chapX:300, chapW:178, concX:636, concW:178, nodeH:40 };
+
+function graphData(bundleId){
+  const b=BUNDLES[bundleId];
+  const docs=b.docs.map(d=>({id:d.id,label:d.title,type:'doc'}));
+  const chaps=[];
+  b.docs.forEach(d=>d.chapters.forEach(c=>chaps.push({id:d.id+'/'+c.id,docId:d.id,chId:c.id,label:c.title,type:'chap'})));
+  const concepts=conceptIndex(b).map(t=>({id:t.name,label:t.name,type:'concept',count:t.count}));
+  const containment=chaps.map(c=>({from:c.docId,to:c.id,kind:'contain'}));
+  const coverage=[];
+  b.docs.forEach(d=>d.chapters.forEach(c=>c.concepts.forEach(t=>coverage.push({from:d.id+'/'+c.id,to:t,kind:'cover'}))));
+  const links=(EXPLICIT_LINKS[bundleId]||[]).map(l=>({from:l[0],to:l[1],kind:'link'}));
+  return {docs,chaps,concepts,containment,coverage,links};
+}
+function renderGraph(g){
+  const pos={};
+  g.chaps.forEach((c,i)=>{ pos[c.id]={x:L.chapX,y:L.top+i*L.pitch,w:L.chapW,h:L.nodeH,type:'chap',node:c}; });
+  g.docs.forEach(d=>{
+    const kids=g.chaps.filter(c=>c.docId===d.id);
+    const lys=kids.map(k=>pos[k.id].y+L.nodeH/2);
+    const avg=lys.length? lys.reduce((a,b)=>a+b,0)/lys.length : L.top;
+    pos[d.id]={x:L.docX,y:avg-L.nodeH/2,w:L.docW,h:L.nodeH,type:'doc',node:d};
+  });
+  g.concepts.forEach((t,i)=>{ pos[t.id]={x:L.concX,y:L.top+i*L.pitch,w:L.concW,h:L.nodeH,type:'concept',node:t}; });
+  const curve=(x1,y1,x2,y2)=>{ const mx=(x1+x2)/2; return 'M'+x1.toFixed(1)+' '+y1.toFixed(1)+' C'+mx.toFixed(1)+' '+y1.toFixed(1)+' '+mx.toFixed(1)+' '+y2.toFixed(1)+' '+x2.toFixed(1)+' '+y2.toFixed(1); };
+  let edges='';
+  g.containment.forEach(e=>{ const a=pos[e.from],b2=pos[e.to]; if(a&&b2) edges+='<path class="g-edge contain" d="'+curve(a.x+a.w,a.y+a.h/2,b2.x,b2.y+b2.h/2)+'"/>'; });
+  g.coverage.forEach(e=>{ const a=pos[e.from],b2=pos[e.to]; if(a&&b2) edges+='<path class="g-edge cover" d="'+curve(a.x+a.w,a.y+a.h/2,b2.x,b2.y+b2.h/2)+'"/>'; });
+  g.links.forEach(e=>{ const a=pos[e.from],b2=pos[e.to]; if(a&&b2){ const bx=a.x+a.w+86; edges+='<path class="g-edge link" d="M'+(a.x+a.w).toFixed(1)+' '+(a.y+a.h/2).toFixed(1)+' C'+bx.toFixed(1)+' '+(a.y+a.h/2).toFixed(1)+' '+bx.toFixed(1)+' '+(b2.y+b2.h/2).toFixed(1)+' '+(b2.x+b2.w).toFixed(1)+' '+(b2.y+b2.h/2).toFixed(1)+'"/>'; } });
+  let nodes='';
+  Object.keys(pos).forEach(id=>{ const p=pos[id]; nodes+=nodeHtml(p,p.node,isNodeSelected(id)); });
+  return '<div class="graph-stage" style="width:'+L.stageW+'px;height:'+L.stageH+'px">'
+    + '<svg class="g-edges" width="'+L.stageW+'" height="'+L.stageH+'">'+edges+'</svg>'
+    + nodes + '</div>';
+}
+function nodeHtml(p,n,sel){
+  const ic = p.type==='doc'? I('book',14) : p.type==='concept'? I('layers',13) : I('list',13);
+  const attr = p.type==='doc' ? "openPane('doc','"+n.id+"')"
+    : p.type==='concept' ? "openPane('concept',null,null,'"+n.id+"')"
+    : "openPane('chap','"+n.docId+"','"+n.chId+"')";
+  return '<div class="g-node '+p.type+(sel?' sel':'')+'" style="left:'+p.x+'px;top:'+p.y+'px;width:'+p.w+'px" onclick="'+attr+'" title="'+escAttr(n.label)+'"><span class="gn-ic">'+ic+'</span><span class="gn-lbl">'+escapeHtml(trunc(n.label,18))+'</span></div>';
+}
+function isNodeSelected(id){
+  const p=state.pane;
+  if(p.kind==='doc') return id===p.docId;
+  if(p.kind==='concept') return id===p.term;
+  if(p.kind==='chap') return id===(p.docId+'/'+p.chId);
+  return false;
+}
+function legendHtml(){
+  return '<span class="lg-item"><span class="lg-sw doc"></span>Document</span>'
+    +'<span class="lg-item"><span class="lg-sw chap"></span>Chapter</span>'
+    +'<span class="lg-item"><span class="lg-sw concept"></span>Concept term</span>'
+    +'<span class="lg-sep"></span>'
+    +'<span class="lg-item"><span class="lg-line contain"></span>containment</span>'
+    +'<span class="lg-item"><span class="lg-line cover"></span>concept coverage</span>'
+    +'<span class="lg-item"><span class="lg-line link"></span>explicit link</span>';
+}
+
+/* concept-anchored search — mirrors okf_search over the concept index (terms + stored descriptions) */
+function searchBundle(bundleId,q){
+  const b=BUNDLES[bundleId]; const idx=conceptIndex(b);
+  const tokens=String(q||'').toLowerCase().split(/[^\w-]+/).filter(Boolean);
+  if(!tokens.length) return [];
+  const rows=[]; const seen=new Set();
+  for(const term of idx){
+    const termHit=tokens.some(tok=>term.name.toLowerCase().includes(tok));
+    for(const cov of term.covers){
+      const descHit=tokens.some(tok=>cov.desc.toLowerCase().includes(tok));
+      if(termHit||descHit){
+        const key=cov.docId+'/'+cov.chId;
+        if(!seen.has(key)){ seen.add(key); rows.push({docId:cov.docId,docTitle:cov.docTitle,chId:cov.chId,chTitle:cov.chTitle,desc:cov.desc,status:cov.status,matched:term.name}); }
+      }
+    }
+  }
+  return rows;
+}
+function renderSearchHost(){
+  let h='<div class="search">'+I('search',15)
+    +'<input id="qsearchInput" placeholder="Search this knowledge base (concept-anchored)…" value="'+escapeHtml(state.qsearch)+'" oninput="onQSearchInput(this.value)" onkeydown="if(event.key===\'Enter\'){runQSearch();}">'
+    +(state.qsearch?'<span class="clear" onclick="clearQSearch()">'+I('x',14)+'</span>':'')
+    +'</div>';
+  h+='<div class="q-suggest">Try a concept term: '+['rollback','idempotency','versioning','monitoring','logging'].map(s=>'<button class="sug" onclick="runQSearch(\''+s+'\')">'+s+'</button>').join(' ')+'</div>';
+  h+='<div class="note">'+I('info',14)+'<span><b>Concept-anchored</b> — this runs the same deterministic <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_search</code> pass the agent uses: it matches the bundle\'s <span style="color:var(--violet)">concept vocabulary</span> and the one-line descriptions in the index, <b>not full text</b>. Each result is a TOC row (document › chapter) with the concept term that matched. Click a result to open the full chapter in the reader pane.</span></div>';
+  if(!state.qsearchRun){
+    h+='<div class="empty" style="padding:36px"><h3 style="font-size:15px">Run a search</h3><p>Type a concept term or a phrase from a stored description. Results mirror exactly what the agent gets from <b>okf_search</b>.</p></div>';
+    return h;
+  }
+  const rows=searchBundle(state.qBundle,state.qsearch);
+  if(!rows.length){
+    h+='<div class="empty" style="padding:36px"><h3 style="font-size:15px">No concept terms matched</h3><p>The search is concept-anchored (it matches the vocabulary + stored descriptions, not full text). Widen the query, or read the bundle\'s concept index in Overview.</p></div>';
+    return h;
+  }
+  h+='<div class="count" style="margin:0 0 10px">'+rows.length+' result'+(rows.length!==1?'s':'')+' for “'+escapeHtml(state.qsearch)+'”</div>';
+  h+='<div class="srow-list">'+rows.map(r=>
+    '<div class="srow" onclick="openPane(\'chap\',\''+r.docId+'\',\''+r.chId+'\')">'
+    +'<div class="s-loc"><span class="doc">'+escapeHtml(r.docTitle)+'</span><span class="arrow">›</span>'+escapeHtml(r.chTitle)+' '+statusPill(r.status)+'</div>'
+    +'<div class="s-desc">'+escapeHtml(r.desc)+'</div>'
+    +'<div class="s-term"><span class="t-key">matched concept</span><span class="st">'+escapeHtml(r.matched)+'</span></div>'
+    +'<span class="s-go">open '+I('back',12)+'</span>'
+    +'</div>'
+  ).join('')+'</div>';
+  return h;
+}
+function onQSearchInput(v){ state.qsearch=v; }
+function runQSearch(q){ state.qsearch=(q!=null? q : state.qsearch); state.qsearchRun=state.qsearch.trim()!==''; renderQuery(); }
+function clearQSearch(){ state.qsearch=''; state.qsearchRun=false; renderQuery(); }
+function onQBundle(v){ state.qBundle=v; state.pane={kind:null,bundleId:v,docId:null,chId:null,term:null}; state.paneShowSrc=false; renderQuery(); }
+function setQSub(s){ state.qSubtab=s; state.paneShowSrc=false; renderQuery(); }
+
+function openPane(kind,a,b,term){
+  state.pane={kind, bundleId:state.qBundle, docId:a||null, chId:b||null, term:term||null};
+  state.paneShowSrc=false;
+  renderQuery();
+}
+function closePane(){ state.pane={kind:null,bundleId:state.qBundle,docId:null,chId:null,term:null}; state.paneShowSrc=false; renderQuery(); }
+
+function renderQuery(){
+  const sel=document.getElementById('qBundleSel');
+  sel.innerHTML=Object.keys(BUNDLES).map(id=>'<option value="'+id+'"'+(id===state.qBundle?' selected':'')+'>'+BUNDLES[id].name+'</option>').join('');
+  document.querySelectorAll('#app-query .q-subtab').forEach(t=>t.classList.toggle('active', t.dataset.sub===state.qSubtab));
+  const content=document.getElementById('q-content');
+  if(state.mode==='empty'){
+    content.innerHTML='<div class="empty" style="margin:0"><h3>No knowledge base selected</h3><p>Create or import a bundle in the <b>Overview</b> tab to explore its knowledge graph and search it. The reader pane on the right opens the full chapter for any node or search result.</p></div>';
+  } else if(state.qSubtab==='graph'){
+    const g=graphData(state.qBundle);
+    content.innerHTML='<div class="g-legend">'+legendHtml()+'</div>'+renderGraph(g)
+      +'<div class="note" style="margin-top:14px">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>containment</b> edges (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>concept-coverage</b> edges (chapter → the terms it covers, via the concept index), and <b>explicit links</b> (via stored okf_add_link edges). Click any node to open it in the reader pane. Layout is a static clustered view (not a force simulation) for this mockup.</span></div>';
+  } else {
+    content.innerHTML=renderSearchHost();
+  }
+  renderPane();
+}
+
+function renderPane(){
+  const head=document.getElementById('q-pane-head');
+  const body=document.getElementById('q-pane-body');
+  const p=state.pane;
+  if(!p.kind){
+    head.innerHTML='<div class="qpane-empty-h">'+I('eye',15)+' Reader</div>';
+    body.innerHTML=paneEmpty();
+    return;
+  }
+  const b=BUNDLES[p.bundleId]||BUNDLES[state.qBundle];
+  if(p.kind==='concept'){
+    const idx=conceptIndex(b); const term=idx.find(t=>t.name===p.term); const n=term?term.count:0;
+    head.innerHTML='<div class="q-pane-kind concept">'+I('layers',14)+' Concept term</div><div class="q-pane-term">'+escapeHtml(p.term)+'</div><div class="q-pane-sub">vocabulary term · covered by '+n+' chapter'+(n!==1?'s':'')+' · no single source document</div><button class="ibtn" onclick="closePane()" title="Close reader">'+I('x',15)+'</button>';
+    body.innerHTML=paneConcept(b,term);
+    return;
+  }
+  const d=findDoc(b,p.docId); const src=docSource(p.bundleId,p.docId);
+  const kindLabel=p.kind==='doc'?'Document':'Chapter';
+  const kindIcon=p.kind==='doc'?I('book',14):I('list',14);
+  const title=p.kind==='doc'? d.title : findCh(b,p.docId,p.chId).title;
+  head.innerHTML='<div class="q-pane-kind">'+kindIcon+' '+kindLabel+'</div>'
+    +'<div class="q-pane-src">'+I('export',13)+' Open source: <a href="'+escAttr(src)+'" target="_blank" rel="noopener">'+escapeHtml(src)+'</a>'
+    +(p.kind==='chap'?'<span class="q-pane-anch"> · chapter: '+escapeHtml(trunc(title,34))+'</span>':'')
+    +'</div><button class="ibtn" onclick="closePane()" title="Close reader">'+I('x',15)+'</button>';
+  body.innerHTML = p.kind==='doc'? paneDoc(b,d) : paneChapter(b,p.docId,p.chId);
+}
+function paneEmpty(){
+  return '<div class="empty" style="padding:40px 22px"><h3 style="font-size:15px">No selection</h3><p>Click a <b>graph node</b> or a <b>search result</b> to open the full chapter here — frontmatter, markdown body, and inline assets with their interpretations, plus a link to the original source at the top.</p><div class="pane-hint">'+I('eye',14)+'<span>This pane is <b>mouse-resizable</b> — drag the vertical divider between the graph/search area and this pane.</span></div></div>';
+}
+function paneChapter(b,docId,chId){
+  const d=findDoc(b,docId); const c=findCh(b,docId,chId);
+  let h='<div class="fm">'
+    + fmRow('type','<code>section</code>')
+    + fmRow('parent','<code>'+docId+'</code> · '+escapeHtml(d.title))
+    + fmRow('concepts', c.concepts.map(t=>'<code>'+t+'</code>').join(' '))
+    + fmRow('summary', escapeHtml(c.summary))
+    + (c.status!=='ok'? fmRow('status', statusPill(c.status)):'')
+    + '</div>';
+  if(state.paneShowSrc){
+    h+='<div class="src-view" style="padding:0 14px 14px"><pre>'+escapeHtml(chapterSource(c))+'</pre></div>';
+  } else {
+    h+='<div class="md-body" style="padding:16px 14px">'+c.blocks.map(bl=> bl.t==='md'? md(bl.v): assetBlock(bl)).join('')+'</div>';
+  }
+  h+='<div class="qpane-foot"><button class="btn" style="padding:5px 10px;font-size:12px" onclick="state.paneShowSrc=!state.paneShowSrc;renderPane()">'+I('code',13)+' '+(state.paneShowSrc?'Hide raw .md':'View raw .md')+'</button></div>';
+  return h;
+}
+function paneDoc(b,d){
+  let h='<div class="note" style="margin:0 14px 0">'+I('info',14)+'<span>This is the stored <b>document TOC</b> (<code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">toc/'+d.id+'.md</code>) — '+d.chapters.length+' chapters. Click a chapter to open it in full.</span></div>';
+  h+='<div class="toc" style="margin:12px 14px 0">'+d.chapters.map((c,i)=>
+    '<div class="toc-item" onclick="openPane(\'chap\',\''+d.id+'\',\''+c.id+'\')">'
+    +'<span class="toc-num">'+String(i+1).padStart(2,'0')+'</span>'
+    +'<span class="toc-title">'+escapeHtml(c.title)+' '+statusPill(c.status)+'</span>'
+    +'<span class="toc-desc">'+escapeHtml(c.summary)+'</span>'
+    +'<span class="toc-go">open '+I('back',12)+'</span>'
+    +'</div>'
+  ).join('')+'</div>';
+  return h;
+}
+function paneConcept(b,term){
+  if(!term) return '<div class="empty" style="margin:14px;padding:30px">Concept term not found in this bundle.</div>';
+  let h='<div class="note" style="margin:0 14px 0">'+I('layers',14)+'<span><b>'+escapeHtml(term.name)+'</b> is a concept-term in the bundle vocabulary (the O(V) routing table). It routes to the chapters below — concept-anchored. Click a chapter to open it in full.</span></div>';
+  h+='<div class="toc" style="margin:12px 14px 0">'+term.covers.map(c=>
+    '<div class="toc-item" onclick="openPane(\'chap\',\''+c.docId+'\',\''+c.chId+'\')">'
+    +'<span class="toc-num" style="color:var(--violet)">◆</span>'
+    +'<span class="toc-title"><span style="font-weight:500;color:var(--muted)">'+escapeHtml(c.docTitle)+'</span> › '+escapeHtml(c.chTitle)+'</span>'
+    +'<span class="toc-desc">'+escapeHtml(c.desc)+'</span>'
+    +'<span class="toc-go">open '+I('back',12)+'</span>'
+    +'</div>'
+  ).join('')+'</div>';
+  return h;
+}
+
+/* resizable pane divider */
+function bindResizer(){
+  const rz=document.getElementById('resizer');
+  const query=document.getElementById('app-query');
+  let dragging=false;
+  rz.addEventListener('mousedown',e=>{ dragging=true; document.body.style.userSelect='none'; document.body.style.cursor='col-resize'; e.preventDefault(); });
+  window.addEventListener('mousemove',e=>{
+    if(!dragging) return;
+    const rect=query.getBoundingClientRect();
+    let w=rect.right - e.clientX - 3;
+    w=Math.max(300, Math.min(w, rect.width*0.72));
+    query.style.setProperty('--pane-w', w+'px');
+  });
+  window.addEventListener('mouseup',()=>{ if(dragging){ dragging=false; document.body.style.userSelect=''; document.body.style.cursor=''; } });
+}
+
+/* ---------------- init ---------------- */
+document.getElementById('tabIc-overview').innerHTML=I('book',15);
+document.getElementById('tabIc-jobs').innerHTML=I('zap',15);
+document.getElementById('tabIc-query').innerHTML=I('graph',15);
+document.getElementById('subIc-graph').innerHTML=I('graph',14);
+document.getElementById('subIc-search').innerHTML=I('search',14);
+document.getElementById('listNoteIc').innerHTML=I('info',14);
+document.getElementById('delIc').innerHTML=I('alert',16);
+
 document.getElementById('modeSeg').addEventListener('click',e=>{
   const btn=e.target.closest('button'); if(!btn) return;
   state.mode=btn.dataset.mode;
   document.querySelectorAll('#modeSeg button').forEach(x=>x.classList.toggle('on',x===btn));
-  if(state.mode==='empty'){ state.view='list'; } render();
+  if(state.mode==='empty'){ state.view='list'; }
+  renderCurrent();
 });
 document.querySelectorAll('.modal').forEach(m=>m.addEventListener('click',e=>{ if(e.target===m) m.classList.add('hidden'); }));
 
+bindResizer();
 render();
 </script>
 </body>
