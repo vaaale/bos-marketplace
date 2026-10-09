@@ -1097,7 +1097,7 @@ function renderGraph(g){
   const W=stage? stage.clientWidth : 0;
   const H=stage? stage.clientHeight : 0;
   if(!W || !H){
-    if(!G.retry){ G.retry=true; requestAnimationFrame(()=>{ G.retry=false; renderGraph(g); }); }
+    if(!G.retry){ G.retry=true; requestAnimationFrame(()=>{ G.retry=false; renderGraph(g); applyGraphSearch(state.qsearch); }); }
     return;
   }
   G.retry=false;
