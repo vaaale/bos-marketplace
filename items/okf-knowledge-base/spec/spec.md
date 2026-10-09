@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**App Target**: **`marketplace-item`.** This is a redesign of the already-installed `okf-knowledge-base` item: its **service facet** (OKF storage + the `okf_*` tool surface + a new derived two-level index + re-scoped ingest) and its **config-app UI facet**, plus the item's bundled `okf-ingest` agent and bundle-schema skill. The prior `040` spec split the work as *mixed* (item + four `bos-core` prerequisites). Those prerequisites — the fixed `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`, the `ToolExecuteResult` attachment mechanism, `ffmpeg` in the Docker images, and marketplace-item agent/skill copy-install — remain **dependencies** (see Assumptions) and are *not re-scoped here*: this spec's deliverable is the item. If any prerequisite has not actually shipped, it is a separate BOS-source follow-up.
+**App Target**: **`marketplace-item`.** This is a redesign of the already-installed `okf-knowledge-base` item: its **service facet** (OKF storage + the `okf_*` tool surface + a new derived two-level index + re-scoped ingest) and a **standalone companion app facet** — a master-detail app (Overview / Jobs / Query), dock-openable, not a settings config page — plus the item's bundled `okf-ingest` agent and bundle-schema skill. The prior `040` spec split the work as *mixed* (item + four `bos-core` prerequisites). Those prerequisites — the fixed `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`, the `ToolExecuteResult` attachment mechanism, `ffmpeg` in the Docker images, and marketplace-item agent/skill copy-install — remain **dependencies** (see Assumptions) and are *not re-scoped here*: this spec's deliverable is the item. If any prerequisite has not actually shipped, it is a separate BOS-source follow-up.
 
 **Input**: User description: Re-design the OKF Knowledge Base into a general-purpose knowledge base that agents use to *organize* knowledge and *retrieve* it efficiently. Stay grounded in Andrej Karpathy's "LLM Wiki" principles (raw sources / LLM-maintained wiki / index; ingest–query–lint) and the Open Knowledge Format (v0.2). No vector database, no SQL database, no embeddings — unless we conclude they give substantial value. Retrieval returns **full documents or full chapters, never snippet chunks**.
 
@@ -42,7 +42,7 @@ This maps exactly onto Karpathy's three layers: the asset bytes live in **raw** 
 
 ### What this is *not* (the "less is more" reduction)
 
-The prior installed surface had **31 tools**, many shaped for the old model (one setter per frontmatter field; graph power-tools; index/log readers; find/list duplicates). The redesigned surface is **18 tools**: **3 added** (concept-anchored `okf_search`, document-TOC `okf_read_toc`, `okf_merge_concepts`), **15 kept**, **16 removed**. Field-setters collapse into `okf_upsert_concept` (frontmatter, merge-on-fields); graph power-tools drop out because retrieval is index-based, not path-based; the log becomes internal. The full before/after table is in FR-035.
+The prior installed surface had **31 tools**, many shaped for the old model (one setter per frontmatter field; graph power-tools; index/log readers; find/list duplicates). The redesigned surface is **18 tools**: **3 added** (concept-anchored `okf_search`, document-TOC `okf_read_toc`, `okf_merge_concepts`), **15 kept**, **16 removed**. Field-setters collapse into `okf_upsert_concept` (frontmatter, merge-on-fields); graph power-tools drop out because retrieval is index-based, not path-based; the log becomes internal. The full before/after table is in FR-037.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -145,19 +145,51 @@ As the vocabulary grows organically, near-duplicate terms accumulate. The user (
 
 ---
 
-### User Story 7 - I can browse the concept index and any document's TOC in the config-app (Priority: P2)
+### User Story 7 - I manage my knowledge bases from a dedicated app, and browse the index and TOCs (Priority: P2)
 
-The config-app lets the user see, in a readable form, a bundle's concept index (term → documents/chapters) and any document's stored table of contents — the human-facing window onto the structures agents retrieve against.
+The KB is a standalone master-detail app (not buried in settings). In its **Overview** tab the user lists knowledge bases (bundles), opens one, and browses its concept index and document TOCs — the human-facing window onto the structures agents retrieve against — and manages bundles (create/import/export/delete).
 
-**Why this priority**: The index and TOCs are the system's core artifacts; making them browsable is what makes the KB inspectable and trustworthy, not a black box.
+**Why this priority**: The index and TOCs are the system's core artifacts; a first-class app that makes them browsable is what makes the KB inspectable and trustworthy, not a black box.
 
-**Independent Test**: Open the config-app on a bundle; view its concept index; open a document and view its TOC; verify both match what the retrieval tools return.
+**Independent Test**: Open the app; see the bundle list with per-bundle health; open a bundle; view its concept index; open a document and view its TOC; verify both match what the retrieval tools return.
 
 **Acceptance Scenarios**:
 
-1. **Given** the config-app on a bundle, **When** the user opens the concept index view, **Then** it shows each concept term and the documents/chapters it covers, with the one-line descriptions.
+1. **Given** the app's Overview tab on a bundle, **When** the user opens the concept index, **Then** it shows each concept term and the documents/chapters it covers, with the one-line descriptions.
 2. **Given** a document in a bundle, **When** the user opens its TOC, **Then** the app renders the stored document TOC (chapters, descriptions, covered concepts).
-3. **Given** the config-app, **When** the user views a bundle's status, **Then** it shows document count, chapter count, concept-term count, and stale/deprecated items.
+3. **Given** the app's Overview tab, **When** the user views a bundle's status, **Then** it shows document count, chapter count, concept-term count, and stale/deprecated items.
+
+---
+
+### User Story 8 - I can watch ingest runs (jobs) and see if they finished or failed (Priority: P2)
+
+An agent triggers ingestion of a document into a bundle. The user opens the app's **Jobs** tab to see the run and its live status — still running, completed (with a summary of what was written), or failed (with the error).
+
+**Why this priority**: Ingest is the way knowledge gets in; without a way to see whether a triggered ingest actually completed, the user can't trust the pipeline or debug it.
+
+**Independent Test**: Trigger an ingest; open the Jobs tab; verify the run appears as running, then transitions to completed with a summary (chapters written, concepts assigned, assets interpreted) or failed with an error.
+
+**Acceptance Scenarios**:
+
+1. **Given** an in-flight ingest, **When** the user opens the Jobs tab, **Then** the run is listed with status running, its bundle, and its source.
+2. **Given** a completed ingest, **When** the user opens its run detail, **Then** it shows a summary (chapters written, concepts assigned, assets interpreted, references skipped/failed).
+3. **Given** a failed ingest, **When** the user opens its run detail, **Then** it shows the failure and the error.
+
+---
+
+### User Story 9 - I can explore the KB as a graph and search it, opening full chapters in a pane (Priority: P2)
+
+In the app's **Query** tab the user has two views: a **Knowledge Graph** (nodes and edges of the bundle) and a **Search** (the same concept-anchored search an agent uses). Selecting a node or a search result opens the corresponding chapter in a resizable side pane, rendered in full, with a link to the original source document at the top.
+
+**Why this priority**: This is the human-facing mirror of the agent's retrieval — it lets the user see and use exactly what the agents see, and trust the results.
+
+**Independent Test**: In the Query tab, switch to Knowledge Graph and navigate the nodes; switch to Search, run a concept-anchored query, click a result; verify the chapter opens in the resizable pane, rendered in full, with a source link at the top that opens the original document.
+
+**Acceptance Scenarios**:
+
+1. **Given** the Query tab's Knowledge Graph sub-tab, **When** the user views it, **Then** it renders the bundle's nodes (documents, chapters, concept terms) and typed edges; clicking a node opens the corresponding chapter/document.
+2. **Given** the Query tab's Search sub-tab, **When** the user runs a natural-language query, **Then** it returns the same concept-anchored TOC rows the agent's `okf_search` returns.
+3. **Given** a selected search result or graph node, **When** the user opens it, **Then** the chapter renders in full in a mouse-resizable side pane, with a link to the original source document at the top of the pane.
 
 ### Edge Cases
 
@@ -233,10 +265,10 @@ The config-app lets the user see, in a readable form, a bundle's concept index (
 - **FR-033**: The service MUST provide lint (`okf_lint`) — detect broken inline-asset links, orphan chapters, and concept-index / document-TOC drift from the underlying content.
 - **FR-034**: The service MUST provide a staleness report (`okf_stale_report`) for concepts past their lifecycle threshold.
 
-### Functional Requirements — config-app (UI)
+### Functional Requirements — standalone app (UI)
 
-- **FR-035**: The service MUST provide a management config-app page for bundle create / import / export / delete, and for browsing a bundle's concept index and a document's table of contents.
-- **FR-036**: The config-app MUST render, in a human-readable form, a bundle's concept index (term → documents/chapters, with descriptions) and any document's stored TOC, and a bundle's status (document / chapter / concept-term counts, stale items).
+- **FR-035**: The item MUST provide a **standalone companion app** — a master-detail application, dock-openable, with a top-level tab bar: **Overview**, **Jobs**, and **Query** — rather than a settings-embedded config page. The **Overview** tab is the bundle-management surface: bundle list (with per-bundle health) and bundle detail (concept index, documents/TOC, health, create/import/export/delete).
+- **FR-036**: The app's data access is via the service's HTTP API, and the app's search performs the **identical concept-anchored matching as the `okf_search` tool** (FR-001/FR-002) — one capability, two surfaces. Adding app-side views (Overview, Jobs, Query) MUST NOT add to the 18-tool agent surface (FR-037). The Overview tab MUST render a bundle's concept index (term → documents/chapters, with descriptions), any document's stored TOC, and a bundle's status (document / chapter / concept-term counts, stale items) in a human-readable form.
 
 ### Functional Requirements — tool surface
 
@@ -258,6 +290,14 @@ The config-app lets the user see, in a readable form, a bundle's concept index (
 
 - **FR-039**: The item MUST bundle the `okf-ingest` agent (`agents/okf-ingest/AGENT.md`) with a **least-privilege** tool allowlist that includes the acquisition tools needed for inline-artifact interpretation (`view_image`, `video_keyframes`, `web_fetch`, `file_to_markdown`) and the `okf_*` read/write tools it needs, and excludes destructive operations and unrestricted `run_command`.
 - **FR-040**: The item MUST bundle the bundle-schema skill (`skills/okf-bundle-schema/SKILL.md`) encoding the ingest/query conventions — chapter decomposition, concept assignment, summary writing, inline-artifact interpretation, and concept-index / document-TOC maintenance — attached to the `okf-ingest` agent.
+
+### Functional Requirements — standalone app: Jobs & Query (extends FR-035/FR-036)
+
+- **FR-041**: The app MUST provide a **Jobs** tab listing ingest runs, each showing its lifecycle status (queued / running / completed / failed), the bundle, the source, and either a per-run summary (chapters written, concepts assigned, assets interpreted, references skipped/failed) or the run's error. The app MUST reflect a run's status as it changes.
+- **FR-042**: The app's **Query** tab MUST include a **Knowledge Graph** sub-tab: a visual graph of the bundle's nodes (documents, chapters, concept terms) and typed edges (containment, concept-coverage, explicit links); selecting a node opens the corresponding chapter/document.
+- **FR-043**: The Query tab MUST include a **Search** sub-tab that runs the same concept-anchored search the agent uses (FR-001/FR-002). Selecting a search result (or a graph node) MUST open the corresponding chapter in a **mouse-resizable side pane** that renders the full document (markdown, including inline-asset links and interpretations) and shows a **link to the original source** at the top of the pane.
+- **FR-044**: The service MUST record each `okf_ingest` invocation as an observable run with a lifecycle (queued → running → completed | failed) and a summary, and MUST expose those runs to the app. Run-completion/failure detection is a design concern (see design.md); the mechanism MUST NOT require the calling agent to emit the full source, and MUST NOT add to the 18-tool agent surface.
+- **FR-045**: The service MUST expose a bundle's knowledge graph — nodes and typed edges (containment via `parent` frontmatter, concept-coverage via the concept index, explicit links via stored edges) — derived from stored content, for the app's graph view.
 
 ### Non-Functional Requirements
 
@@ -282,7 +322,8 @@ The config-app lets the user see, in a readable form, a bundle's concept index (
 - **ConceptIndex**: Bundle-level stored, derived artifact. Maps each concept term to `(document, chapter, one-line description)` pairs.
 - **DocumentTOC**: Per-document stored `.md`, derived artifact. Lists the document's chapters with one-line descriptions and covered concepts.
 - **InlineAsset**: A downloaded non-HTML source asset in `raw/` plus its interpretation written into the owning chapter's markdown.
-- **IngestRun**: One delegated invocation of the `okf-ingest` agent (source, chapters written, concepts assigned, assets interpreted, references followed/skipped).
+- **IngestRun**: One delegated invocation of the `okf-ingest` agent. Recorded as an observable run with a lifecycle (queued → running → completed | failed), a bundle, a source, timestamps, a summary (chapters written, concepts assigned, assets interpreted, references skipped/failed), and an error. Shown in the app's Jobs tab (FR-041/FR-044).
+- **GraphView**: The bundle's knowledge graph — nodes (documents, chapters, concept terms) and typed edges (containment, concept-coverage, explicit links) — derived from stored frontmatter / index / links, for the app's graph view (FR-042/FR-045).
 - **ServiceTool**: An `okf_*` tool declared per the 039 contract.
 - **BundleHealth**: Document / chapter / concept-term counts and stale/deprecated items, for the config-app.
 
@@ -300,10 +341,12 @@ The config-app lets the user see, in a readable form, a bundle's concept index (
 - **SC-008**: Merging two concept terms updates the concept index, all affected document TOCs, and all chapter `concepts` frontmatter that referenced either term, leaving a single canonical entry.
 - **SC-009**: Stopping/uninstalling the service removes all 18 `okf_*` tools immediately.
 - **SC-010**: `okf_lint` detects broken inline-asset links and concept-index / document-TOC drift from the underlying content.
+- **SC-011**: In the app's Jobs tab, a triggered ingest run is observable through its real lifecycle: it shows as running, then completed (with its summary) or failed (with its error).
+- **SC-012**: In the app's Query tab, selecting a Knowledge-Graph node or a search result opens the full chapter in a resizable side pane with a working link to the original source document.
 
 ## Assumptions
 
-- **The item already exists and is installed** (spec 040/041 consolidated): a service facet (worker thread, `okf-core` storage, `/KnowledgeBase` VFS, 039 tool exposure) and a config-app. This redesign reworks its retrieval model, index, ingest, tool surface, and config-app; it does not re-derive the service-facet shape.
+- **The item already exists and is installed** (spec 040/041 consolidated): a service facet (worker thread, `okf-core` storage, `/KnowledgeBase` VFS, 039 tool exposure) and a companion app (currently a settings config-app). This redesign reworks its retrieval model, index, ingest, tool surface, and turns the companion app into a **standalone master-detail app** (Overview / Jobs / Query); it does not re-derive the service-facet shape.
 - **The prior 040 `bos-core` prerequisites are present and unchanged**: the fixed `web_fetch` (clean markdown, links preserved, no silent truncation), `file_to_markdown` (markitdown), `view_image`, `video_keyframes`, the `ToolExecuteResult` mechanism (tool results can carry image/video content), `ffmpeg` in the Docker images, and marketplace-item agent/skill copy-install with provenance. If any has not actually shipped, it is a prerequisite BOS-source follow-up, not part of this item's deliverable.
 - **LLM-based retrieval over the derived index** (no embeddings / vector / SQL in v1), per the "substantial value" constraint (NFR-002).
 - **The bundled `okf-ingest` agent runs in-process** via the existing `agent_delegate` mechanism (the same one Build Studio → Developer uses); it is a new consumer, not new delegation infrastructure.
@@ -313,5 +356,6 @@ The config-app lets the user see, in a readable form, a bundle's concept index (
 
 ## UI Mockup Reference
 
-- **Baseline**: `040-okf-knowledge-base.html` (this item's spec directory) — bundle list, bundle detail, create / import / export dialogs, and the delete affordances carried over from the prior 041 work. Still the visual contract for these screens.
-- **New (not yet mocked)**: the **concept-index browser** and the **document-TOC viewer** are new config-app surfaces. They are required by FR-035/FR-036 and must be designed consistent with the existing visual language; produce them as a mockup at the design step (a single consolidated config-app mockup extending the baseline, not separate files).
+- **App**: the item's UI is a **standalone master-detail app** (Overview / Jobs / Query), not a settings config page. The visual language derives from the baseline `040-okf-knowledge-base.html` (bundle list/detail, create/import/export, delete).
+- **`mockup.html` (this item's spec directory)**: the current mockup implements the **Overview** tab (bundle list → bundle detail → concept index / documents → TOC → chapter, with inline-asset rendering). It is the visual contract for Overview and the seed for the whole app shell.
+- **To be added to `mockup.html` at the design step** (required by FR-041/FR-042/FR-043): the app shell (tab bar: Overview / Jobs / Query), the **Jobs** tab (run list with lifecycle status + run detail), and the **Query** tab with its two sub-tabs — **Knowledge Graph** (nodes + edges) and **Search** (concept-anchored) — both driving a **mouse-resizable side pane** that renders the full chapter with a source link at the top. Keep it one consolidated mockup file.
