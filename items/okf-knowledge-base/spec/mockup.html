@@ -74,6 +74,7 @@
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; vertical-align:middle; }
   .dot.green { background: var(--green); } .dot.amber { background: var(--amber); } .dot.red { background: var(--red); }
   .dot.violet { background: var(--violet); } .dot.queued { background:#5b6675; }
+  .dot-doc { background:#6b7688; } .dot-chap { background: var(--accent); } .dot-concept { background: var(--violet); }
   .dot.running { background: var(--accent); animation: pulse 1.6s infinite; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(79,140,255,.5)} 70%{box-shadow:0 0 0 7px rgba(79,140,255,0)} 100%{box-shadow:0 0 0 0 rgba(79,140,255,0)} }
 
@@ -258,13 +259,17 @@
 
   /* ================= QUERY ================= */
   .q-main { flex:1; min-width:0; display:flex; flex-direction:column; }
-  .q-head { display:flex; align-items:center; gap:12px; padding:10px 14px; border-bottom:1px solid var(--border); flex-wrap:wrap; background:var(--panel); }
+  .q-head { display:flex; flex-direction:column; gap:10px; padding:12px 14px; border-bottom:1px solid var(--border); background:var(--panel); }
+  .q-bundle-row { display:flex; align-items:center; gap:12px; }
+  .q-spacer { flex:1; }
+  .q-search { margin-bottom:0; }
+  .q-search .clear { display:none; }
+  .q-viewtoggle { display:inline-flex; align-self:flex-start; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
+  .q-viewtoggle button { display:inline-flex; align-items:center; gap:6px; background:transparent; border:0; color:var(--muted); font-size:12px; padding:5px 14px; cursor:pointer; }
+  .q-viewtoggle button.on { background:var(--panel2); color:var(--text); }
   .q-bundle { display:inline-flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
   .q-bundle select { width:auto; min-width:210px; padding:5px 8px; }
-  .q-subtabs { display:flex; gap:2px; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
-  .q-subtab { display:inline-flex; align-items:center; gap:6px; padding:5px 12px; font-size:12px; color:var(--muted); cursor:pointer; background:transparent; }
-  .q-subtab:hover { color:var(--text); background:var(--panel2); }
-  .q-subtab.active { background:var(--panel2); color:var(--text); }
+  /* (query sub-tabs replaced by the unified Graph/Table view toggle + shared search box) */
   .q-content { flex:1; overflow:auto; padding:14px; }
   .resizer { flex:0 0 6px; cursor:col-resize; background:var(--border); position:relative; z-index:5; transition:background .1s; }
   .resizer:hover, .resizer:active { background:var(--accent); }
@@ -326,6 +331,9 @@
   .g-node.doc .g-tx { font-weight:600; font-size:11px; }
   .g-node.sel .g-circ { stroke-width:2.6; filter:drop-shadow(0 0 6px rgba(255,255,255,.35)); }
   .g-node.dim { opacity:.24; }
+  .g-node.dimmed { opacity:.3; }
+  .g-node.match .g-ring { opacity:.95; }
+  .g-node.match .g-circ { filter: drop-shadow(0 0 7px rgba(255,255,255,.5)); }
   .q-content.graph-mode { display:flex; flex-direction:column; overflow:hidden; padding:12px; gap:0; }
   .q-content.graph-mode .g-legend { flex:0 0 auto; }
   .q-content.graph-mode .graph-stage { flex:1 1 auto; min-height:220px; }
@@ -419,12 +427,21 @@
     <section id="app-query" class="app-view hidden">
       <div class="q-main">
         <div class="q-head">
-          <label class="q-bundle">Bundle
-            <select id="qBundleSel" onchange="onQBundle(this.value)"></select>
-          </label>
-          <div class="q-subtabs">
-            <div class="q-subtab active" data-sub="graph" onclick="setQSub('graph')"><span id="subIc-graph"></span>Knowledge Graph</div>
-            <div class="q-subtab" data-sub="search" onclick="setQSub('search')"><span id="subIc-search"></span>Search</div>
+          <div class="q-bundle-row">
+            <label class="q-bundle">Bundle
+              <select id="qBundleSel" onchange="onQBundle(this.value)"></select>
+            </label>
+            <div class="q-spacer"></div>
+            <span class="count" id="q-match-count"></span>
+          </div>
+          <div class="search q-search">
+            <span id="q-search-ic"></span>
+            <input id="qsearchInput" placeholder="Search knowledge base…" oninput="onQSearchInput(this.value)">
+            <span class="clear" id="q-clear"></span>
+          </div>
+          <div class="q-viewtoggle" id="q-viewtoggle">
+            <button data-view="graph" class="on" onclick="setQView('graph')"><span id="vtIc-graph"></span>Graph</button>
+            <button data-view="table" onclick="setQView('table')"><span id="vtIc-table"></span>Table</button>
           </div>
         </div>
         <div class="q-content" id="q-content"></div>
@@ -744,7 +761,7 @@ let state = {
   mode:'populated', view:'list', bundleId:'engineering', tab:'conceptIndex',
   docId:null, chapterId:null, expandedTerm:null, termQuery:'', showSrc:{}, deleteId:null,
   appTab:'overview', jobOpen:null,
-  qBundle:'engineering', qSubtab:'graph', qsearch:'', qsearchRun:false,
+  qBundle:'engineering', qView:'graph', qsearch:'',
   pane:{kind:null, bundleId:'engineering', docId:null, chId:null, term:null}, paneShowSrc:false
 };
 
@@ -1058,7 +1075,7 @@ function toggleJob(id){ state.jobOpen = state.jobOpen===id? null : id; renderJob
 
 /* ================= QUERY ================= */
 const L = { k:5200, rest:120, center:0.02, damp:0.8, maxV:9, ticks:150 }; // force-sim params: Coulomb k, spring rest length, centering, damping, velocity cap, ticks
-let G = { nodes:[], byId:{}, edges:[], nbr:new Map(), view:{x:0,y:0,k:1}, raf:0, drag:null, pan:null, moved:false };
+let G = { nodes:[], byId:{}, edges:[], nbr:new Map(), view:{x:0,y:0,k:1}, raf:0, drag:null, pan:null, moved:false, center:{x:0,y:0}, lastW:0, lastH:0, retry:false, resizeObs:null };
 const GEDGE_META = { contain:{label:'contains'}, cover:{label:'covers'}, link:{label:'related'} };
 
 function graphData(bundleId){
@@ -1079,9 +1096,18 @@ function renderGraph(g){
   const svg=stage&&stage.querySelector('.g-svg');
   const W=stage? stage.clientWidth : 0;
   const H=stage? stage.clientHeight : 0;
-  if(!W || !H) return;
+  if(!W || !H){
+    if(!G.retry){ G.retry=true; requestAnimationFrame(()=>{ G.retry=false; renderGraph(g); }); }
+    return;
+  }
+  G.retry=false;
+  G.lastW=W; G.lastH=H; G.center={x:W/2,y:H/2};
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  svg.setAttribute('width','100%');
+  svg.setAttribute('height','100%');
+  if(G.resizeObs){ G.resizeObs.disconnect(); G.resizeObs=null; }
   const all=g.docs.concat(g.chaps).concat(g.concepts);
-  const center={x:W/2,y:H/2};
+  const center=G.center;
   const baseR=Math.max(120,Math.min(W,H)/2 - 74);
   const byType={doc:0,chap:0,concept:0};
   G.nodes=all.map(n=>{
@@ -1104,6 +1130,13 @@ function renderGraph(g){
   applyTransform();
   drawGraph();
   attachGraphInteractions(svg);
+  G.resizeObs=new ResizeObserver(()=>{
+    const w=stage.clientWidth, h=stage.clientHeight;
+    if(w===G.lastW && h===G.lastH) return;
+    renderGraph(g);
+    applyGraphSearch(state.qsearch);
+  });
+  G.resizeObs.observe(stage);
 }
 function stepGraph(){
   const ns=G.nodes; if(!ns.length) return;
@@ -1123,7 +1156,7 @@ function stepGraph(){
     a._fx+=f*ux; a._fy+=f*uy; b._fx-=f*ux; b._fy-=f*uy;
   });
   ns.forEach(n=>{
-    n._fx-=(n.x-cx)*L.center; n._fy-=(n.y-cy)*L.center;
+    n._fx-=(n.x-G.center.x)*L.center; n._fy-=(n.y-G.center.y)*L.center;
     if(n.fixed){ n.x=n.fx; n.y=n.fy; n.vx=0; n.vy=0; return; }
     n.vx=(n.vx+n._fx)*L.damp; n.vy=(n.vy+n._fy)*L.damp;
     const sp=Math.hypot(n.vx,n.vy); if(sp>L.maxV){ n.vx*=L.maxV/sp; n.vy*=L.maxV/sp; }
@@ -1194,6 +1227,8 @@ function setGraphHover(id){
 }
 function attachGraphInteractions(svg){
   if(!svg) return;
+  if(svg._gAttached) return;
+  svg._gAttached=true;
   svg.addEventListener('mousedown',e=>{
     G.downX=e.clientX; G.downY=e.clientY; G.moved=false;
     const gEl=e.target.closest('.g-node');
@@ -1258,7 +1293,77 @@ function legendHtml(){
     +'<span class="lg-item"><span class="lg-line link"></span>related</span>';
 }
 
-/* concept-anchored search — mirrors okf_search over the concept index (terms + stored descriptions) */
+/* unified query: shared search box + Graph/Table view toggle */
+function tableRows(bundleId){
+  const b=BUNDLES[bundleId];
+  const rows=[];
+  b.docs.forEach(d=>{
+    rows.push({type:'doc', name:d.title, desc:d.chapters.length+' chapters', kind:'doc', docId:d.id, chId:null, term:null});
+    d.chapters.forEach(c=>{
+      rows.push({type:'chap', name:c.title, desc:c.summary, kind:'chap', docId:d.id, chId:c.id, term:null});
+    });
+  });
+  conceptIndex(b).forEach(t=>{
+    rows.push({type:'concept', name:t.name, desc:'covers '+t.count+' chapter'+(t.count!==1?'s':''), kind:'concept', docId:null, chId:null, term:t.name});
+  });
+  return rows;
+}
+function nodeMatches(r,q){ const ql=(q||'').toLowerCase().trim(); return !ql || r.name.toLowerCase().includes(ql); }
+function renderTableView(bundleId, q){
+  const all=tableRows(bundleId);
+  const rows=all.filter(r=>nodeMatches(r,q));
+  const ql=(q||'').trim();
+  let h='<div class="count" style="margin:0 0 10px">'+(ql? rows.length+' of '+all.length+' nodes match “'+escapeHtml(ql)+'”' : all.length+' nodes · documents, chapters and concept terms')+'</div>';
+  if(!rows.length){
+    h+='<div class="empty" style="padding:36px"><h3 style="font-size:15px">No nodes match</h3><p>The filter matches node names/labels (case-insensitive). Try a broader term.</p></div>';
+    return h;
+  }
+  h+='<table><thead><tr><th style="width:128px">Type</th><th>Name</th><th>Description / Label</th></tr></thead><tbody>';
+  h+=rows.map(r=>{
+    const onClick = r.kind==='doc'? "openPane('doc','"+r.docId+"')"
+      : r.kind==='chap'? "openPane('chap','"+r.docId+"','"+r.chId+"')"
+      : "openPane('concept',null,null,'"+r.term+"')";
+    const dotClass = r.type==='doc'?'dot-doc':r.type==='chap'?'dot-chap':'dot-concept';
+    const typeLabel = r.type==='doc'?'Document':r.type==='chap'?'Chapter':'Concept';
+    return '<tr class="clickable" onclick="'+onClick+'">'
+      +'<td><span class="dot '+dotClass+'"></span><span style="color:var(--muted);font-size:12px">'+typeLabel+'</span></td>'
+      +'<td><span class="name" style="font-weight:'+(r.type==='doc'?'600':'500')+'">'+escapeHtml(r.name)+'</span></td>'
+      +'<td style="color:var(--muted)">'+escapeHtml(r.desc)+'</td>'
+      +'</tr>';
+  }).join('');
+  h+='</tbody></table>';
+  return h;
+}
+function applyGraphSearch(q){
+  const ql=(q||'').toLowerCase().trim();
+  G.nodes.forEach(n=>{
+    if(!n.el) return;
+    const match=!ql || n.label.toLowerCase().includes(ql);
+    n.el.classList.toggle('match', !!ql && match);
+    n.el.classList.toggle('dimmed', !!ql && !match);
+  });
+  G.edges.forEach(e=>{
+    if(!e.el) return;
+    if(!ql){ e.el.classList.remove('dim'); return; }
+    const a=G.byId[e.from], b=G.byId[e.to];
+    const am=a && a.label.toLowerCase().includes(ql);
+    const bm=b && b.label.toLowerCase().includes(ql);
+    e.el.classList.toggle('dim', !am && !bm);
+  });
+}
+function updateSearchClear(){
+  const clear=document.getElementById('q-clear');
+  if(clear) clear.style.display = state.qsearch? 'inline-flex':'none';
+}
+function updateMatchCount(){
+  const el=document.getElementById('q-match-count');
+  if(!el) return;
+  if(state.mode==='empty'){ el.textContent=''; return; }
+  const q=state.qsearch.trim().toLowerCase();
+  if(!q){ el.textContent=''; return; }
+  const n=tableRows(state.qBundle).filter(r=>r.name.toLowerCase().includes(q)).length;
+  el.textContent=n+' match'+(n!==1?'es':'');
+}
 function searchBundle(bundleId,q){
   const b=BUNDLES[bundleId]; const idx=conceptIndex(b);
   const tokens=String(q||'').toLowerCase().split(/[^\w-]+/).filter(Boolean);
@@ -1303,16 +1408,41 @@ function renderSearchHost(){
   ).join('')+'</div>';
   return h;
 }
-function onQSearchInput(v){ state.qsearch=v; }
+function onQSearchInput(v){
+  state.qsearch=v;
+  updateSearchClear();
+  if(state.mode!=='empty'){
+    if(state.qView==='table'){
+      document.getElementById('q-content').innerHTML=renderTableView(state.qBundle, state.qsearch);
+    } else {
+      applyGraphSearch(state.qsearch);
+    }
+  }
+  updateMatchCount();
+}
+function setQView(v){ if(state.qView===v) return; state.qView=v; state.paneShowSrc=false; renderQuery(); }
 function runQSearch(q){ state.qsearch=(q!=null? q : state.qsearch); state.qsearchRun=state.qsearch.trim()!==''; renderQuery(); }
-function clearQSearch(){ state.qsearch=''; state.qsearchRun=false; renderQuery(); }
+function clearQSearch(){
+  state.qsearch='';
+  updateSearchClear();
+  if(state.mode!=='empty'){
+    if(state.qView==='table'){
+      document.getElementById('q-content').innerHTML=renderTableView(state.qBundle, '');
+    } else {
+      applyGraphSearch('');
+    }
+  }
+  updateMatchCount();
+  const inp=document.getElementById('qsearchInput');
+  if(inp) inp.focus();
+}
 function onQBundle(v){ state.qBundle=v; state.pane={kind:null,bundleId:v,docId:null,chId:null,term:null}; state.paneShowSrc=false; renderQuery(); }
 function setQSub(s){ state.qSubtab=s; state.paneShowSrc=false; renderQuery(); }
 
 function refreshGraphSelection(){ G.nodes.forEach(n=>{ if(n.el) n.el.classList.toggle('sel', isNodeSelected(n.id)); }); }
 function onGraphPaneChanged(){
   // Light update: keep the settled force layout + pan/zoom intact, refresh only the reader + selection highlight.
-  if(state.qSubtab==='graph' && state.mode!=='empty' && G.nodes.length){ renderPane(); refreshGraphSelection(); }
+  if(state.qView==='graph' && state.mode!=='empty' && G.nodes.length){ renderPane(); refreshGraphSelection(); }
   else renderQuery();
 }
 function openPane(kind,a,b,term){
@@ -1325,19 +1455,24 @@ function closePane(){ state.pane={kind:null,bundleId:state.qBundle,docId:null,ch
 function renderQuery(){
   const sel=document.getElementById('qBundleSel');
   sel.innerHTML=Object.keys(BUNDLES).map(id=>'<option value="'+id+'"'+(id===state.qBundle?' selected':'')+'>'+BUNDLES[id].name+'</option>').join('');
-  document.querySelectorAll('#app-query .q-subtab').forEach(t=>t.classList.toggle('active', t.dataset.sub===state.qSubtab));
+  if(state.qView!=='graph' && G.resizeObs){ G.resizeObs.disconnect(); G.resizeObs=null; }
+  document.querySelectorAll('#q-viewtoggle button').forEach(b=>b.classList.toggle('on', b.dataset.view===state.qView));
+  const inp=document.getElementById('qsearchInput');
+  if(inp) inp.value=state.qsearch;
+  updateSearchClear();
   const content=document.getElementById('q-content');
-  content.classList.toggle('graph-mode', state.mode!=='empty' && state.qSubtab==='graph');
+  content.classList.toggle('graph-mode', state.mode!=='empty' && state.qView==='graph');
   if(state.mode==='empty'){
-    content.innerHTML='<div class="empty" style="margin:0"><h3>No knowledge base selected</h3><p>Create or import a bundle in the <b>Overview</b> tab to explore its knowledge graph and search it. The reader pane on the right opens the full chapter for any node or search result.</p></div>';
-  } else if(state.qSubtab==='graph'){
+    content.innerHTML='<div class="empty" style="margin:0"><h3>No knowledge base selected</h3><p>Create or import a bundle in the <b>Overview</b> tab to explore its knowledge graph or browse its node table. The reader pane on the right opens the full chapter for any node.</p></div>';
+  } else if(state.qView==='graph'){
     const g=graphData(state.qBundle);
     content.innerHTML='<div class="g-legend">'+legendHtml()+'</div>'
       +'<div id="graphStage" class="graph-stage"><svg class="g-svg"></svg></div>'
-      +'<div class="note">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>contains</b> (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>covers</b> (chapter → the concept term it covers, via the concept index), and <b>related</b> (explicit <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_add_link</code> edges). Force-directed layout — <b>drag</b> a node, <b>scroll</b> to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbors. Click any node to open it in the reader pane.</span></div>';
+      +'<div class="note">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>contains</b> (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>covers</b> (chapter → the concept term it covers, via the concept index), and <b>related</b> (explicit <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_add_link</code> edges). Force-directed layout — <b>drag</b> a node, <b>scroll</b> to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbors. Click any node to open it in the reader pane. Type in the search box above to highlight matching nodes (everything else dims to 30%).</span></div>';
     renderGraph(g);
+    applyGraphSearch(state.qsearch);
   } else {
-    content.innerHTML=renderSearchHost();
+    content.innerHTML=renderTableView(state.qBundle, state.qsearch);
   }
   renderPane();
 }
@@ -1434,8 +1569,10 @@ function bindResizer(){
 document.getElementById('tabIc-overview').innerHTML=I('book',15);
 document.getElementById('tabIc-jobs').innerHTML=I('zap',15);
 document.getElementById('tabIc-query').innerHTML=I('graph',15);
-document.getElementById('subIc-graph').innerHTML=I('graph',14);
-document.getElementById('subIc-search').innerHTML=I('search',14);
+document.getElementById('vtIc-graph').innerHTML=I('graph',13);
+document.getElementById('vtIc-table').innerHTML=I('list',13);
+document.getElementById('q-search-ic').innerHTML=I('search',15);
+document.getElementById('q-clear').innerHTML=I('x',14);
 document.getElementById('listNoteIc').innerHTML=I('info',14);
 document.getElementById('delIc').innerHTML=I('alert',16);
 
