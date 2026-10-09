@@ -48,7 +48,7 @@
 **Independent Test**: `okf_init_bundle("X")` → `okf_upsert_concept` a few chapters with `concepts`/`parent`/`summary` → verify `okf_list_concepts` lists them, `concept-index.md`/`toc/*.md` regenerated, and a search on a term returns the covering chapter.
 
 ### Tests for User Story 1 ⚠️ (write first, confirm FAIL)
-- [ ] T010 [P] [US1] Playwright e2e in `e2e/okf-kb-redesign.spec.ts` (feature-id `okf-kb-redesign`): US1 acceptance — init bundle, upsert 3 concepts, assert `okf_list_concepts` + index files exist + a term search returns the covering chapter (spec US1 scenarios 1–3).
+- [ ] T010 [P] [US1] Playwright e2e in `e2e/okf-knowledge-base.spec.ts` (item-local e2e dir, feature-id = item id `okf-knowledge-base`): US1 acceptance — init bundle, upsert 3 concepts, assert `okf_list_concepts` + index files exist + a term search returns the covering chapter (spec US1 scenarios 1–3).
 
 ### Implementation for User Story 1
 - [ ] T011 [US1] Wire the `okf_init_bundle`, `okf_upsert_concept`, `okf_read_concept`, `okf_list_concepts` tool handlers in `services/lib/tools.js` to `okf-core.js` (concept CRUD already present — verify + ensure `okf_upsert_concept` triggers the T005 index regeneration after write). (Depends on T005, T008)
