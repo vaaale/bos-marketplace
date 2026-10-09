@@ -1240,6 +1240,7 @@ window.addEventListener('mousemove',e=>{
 window.addEventListener('mouseup',()=>{
   if(G.drag){ const n=G.byId[G.drag.id]; if(n){ n.fixed=false; n.fx=null; n.fy=null; } G.drag=null; }
   if(G.pan){ G.pan=null; const svg=graphSVG(); if(svg) svg.classList.remove('panning'); }
+  G.downX=G.downY=null;
 });
 function isNodeSelected(id){
   const p=state.pane;
