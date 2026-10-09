@@ -1057,7 +1057,9 @@ function sumCell(ic,val,lab){ return '<div class="js-cell"><span class="js-ic">'
 function toggleJob(id){ state.jobOpen = state.jobOpen===id? null : id; renderJobs(); }
 
 /* ================= QUERY ================= */
-const L = { stageW:880, stageH:744, top:74, pitch:52, docX:34, docW:156, chapX:300, chapW:178, concX:636, concW:178, nodeH:40 };
+const L = { k:5200, rest:120, center:0.02, damp:0.8, maxV:9, ticks:150 }; // force-sim params: Coulomb k, spring rest length, centering, damping, velocity cap, ticks
+let G = { nodes:[], byId:{}, edges:[], nbr:new Map(), view:{x:0,y:0,k:1}, raf:0, drag:null, pan:null, moved:false };
+const GEDGE_META = { contain:{label:'contains'}, cover:{label:'covers'}, link:{label:'related'} };
 
 function graphData(bundleId){
   const b=BUNDLES[bundleId];
