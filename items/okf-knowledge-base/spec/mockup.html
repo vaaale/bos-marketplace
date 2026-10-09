@@ -679,7 +679,7 @@ function renderChapter(b){
       + (c.status!=='ok'?'<div class="fm-row"><span class="fm-k">status</span><span class="fm-v">'+statusPill(c.status)+'</span></div>':'')
       + '</div>';
   }
-  h+='<div class="chap-bar" style="background:transparent;border-left:0;border-right:0">'+(src?'<span class="hint" style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px">'+I('code',13)+' Raw chapter markdown — exactly what <code style="font-family:monospace">okf_read_concept</code> returns (full text, not a snippet)</span>':'')+'</div>';
+  if(src){ h+='<div class="chap-bar" style="background:transparent;border-left:0;border-right:0"><span class="hint" style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px">'+I('code',13)+' Raw chapter markdown — exactly what <code style="font-family:monospace">okf_read_concept</code> returns (full text, not a snippet)</span></div>'; }
   if(src){
     h+='<div class="src-view"><pre>'+escapeHtml(chapterSource(c))+'</pre></div>';
   } else {
