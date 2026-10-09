@@ -1164,11 +1164,10 @@ function renderGraphSVG(){
   G.nodes.forEach(n=>{
     const sel=isNodeSelected(n.id)?' sel':'';
     const ringCol=n.type==='doc'?'#5a6a82':n.type==='concept'?'var(--violet)':'var(--accent)';
-    const disp=n.label.length>16? n.label.slice(0,15)+'\u2026' : n.label;
     h+='<g class="g-node '+n.type+sel+'" data-id="'+n.id+'"><title>'+escapeHtml(n.label)+'</title>'
       +'<circle class="g-ring" r="'+(n.r+5)+'" stroke="'+ringCol+'"/>'
       +'<circle class="g-circ" r="'+n.r+'"/>'
-      +'<text class="g-tx" text-anchor="middle" dominant-baseline="central">'+escapeHtml(disp)+'</text></g>';
+      +'<text class="g-tx" text-anchor="middle" dominant-baseline="central">'+escapeHtml(n.label)+'</text></g>';
   });
   h+='</g></g>';
   svg.innerHTML=h;
