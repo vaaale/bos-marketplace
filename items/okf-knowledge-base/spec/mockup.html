@@ -1214,7 +1214,7 @@ function attachGraphInteractions(svg){
     applyTransform();
   },{passive:false});
   svg.addEventListener('click',e=>{
-    if(G.moved){ G.moved=false; return; }
+    if(G.moved) return;
     const gEl=e.target.closest('.g-node'); if(!gEl) return;
     const n=G.byId[gEl.getAttribute('data-id')];
     openPane(n.type==='doc'?'doc':n.type==='concept'?'concept':'chap',
