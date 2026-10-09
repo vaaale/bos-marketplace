@@ -1305,12 +1305,18 @@ function clearQSearch(){ state.qsearch=''; state.qsearchRun=false; renderQuery()
 function onQBundle(v){ state.qBundle=v; state.pane={kind:null,bundleId:v,docId:null,chId:null,term:null}; state.paneShowSrc=false; renderQuery(); }
 function setQSub(s){ state.qSubtab=s; state.paneShowSrc=false; renderQuery(); }
 
+function refreshGraphSelection(){ G.nodes.forEach(n=>{ if(n.el) n.el.classList.toggle('sel', isNodeSelected(n.id)); }); }
+function onGraphPaneChanged(){
+  // Light update: keep the settled force layout + pan/zoom intact, refresh only the reader + selection highlight.
+  if(state.qSubtab==='graph' && state.mode!=='empty' && G.nodes.length){ renderPane(); refreshGraphSelection(); }
+  else renderQuery();
+}
 function openPane(kind,a,b,term){
   state.pane={kind, bundleId:state.qBundle, docId:a||null, chId:b||null, term:term||null};
   state.paneShowSrc=false;
-  renderQuery();
+  onGraphPaneChanged();
 }
-function closePane(){ state.pane={kind:null,bundleId:state.qBundle,docId:null,chId:null,term:null}; state.paneShowSrc=false; renderQuery(); }
+function closePane(){ state.pane={kind:null,bundleId:state.qBundle,docId:null,chId:null,term:null}; state.paneShowSrc=false; onGraphPaneChanged(); }
 
 function renderQuery(){
   const sel=document.getElementById('qBundleSel');
