@@ -6,7 +6,7 @@
 
 **Organization**: tasks grouped by user story. **Story numbers map to the `spec.md` "User Story N" headings.** Each story is independently testable. Tests ARE requested (spec "User Scenarios & Testing" is mandatory; plan commits to Playwright e2e).
 
-**Path conventions** — all paths are relative to the **item staging directory root** (the Developer writes the item here, then `app_build` installs it into `data/user-apps/items/okf-knowledge-base/`). The service facet lives under `services/`, the app facet under `app/`, the bundled agent under `agents/`, docs under `docs/`, config under `config/`. `e2e/` is at the BOS repo root (the `buildstudio_run_tests` contract: `e2e/<feature-id>.spec.ts`).
+**Path conventions** — all paths are relative to the **item staging directory root** (the Developer writes the item here, then `app_build` installs it into `data/user-apps/items/okf-knowledge-base/`). The service facet lives under `services/`, the app facet under `app/`, the bundled agent under `agents/`, docs under `docs/`, config under `config/`. `e2e/` is **inside the item staging dir** (the established convention for installed items — see the existing `okf-knowledge-base/e2e/okf-knowledge-base.spec.ts` and `follow-the-money/e2e/follow-the-money.spec.ts`), run against the branch preview via `BOS_PREVIEW_URL` + `npx playwright test`. The `buildstudio_run_tests` contract's `e2e/<feature-id>.spec.ts` refers to this item-local path.
 
 ## Format: `[ID] [P?] [Story] Description`
 
