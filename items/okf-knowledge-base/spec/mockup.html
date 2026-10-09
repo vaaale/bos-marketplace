@@ -1073,34 +1073,169 @@ function graphData(bundleId){
   const links=(EXPLICIT_LINKS[bundleId]||[]).map(l=>({from:l[0],to:l[1],kind:'link'}));
   return {docs,chaps,concepts,containment,coverage,links};
 }
+function nodeRadius(n){ if(n.type==='doc') return 22; if(n.type==='concept') return 14+Math.min(9,(n.count||1)*2.2); return 15; }
 function renderGraph(g){
-  const pos={};
-  g.chaps.forEach((c,i)=>{ pos[c.id]={x:L.chapX,y:L.top+i*L.pitch,w:L.chapW,h:L.nodeH,type:'chap',node:c}; });
-  g.docs.forEach(d=>{
-    const kids=g.chaps.filter(c=>c.docId===d.id);
-    const lys=kids.map(k=>pos[k.id].y+L.nodeH/2);
-    const avg=lys.length? lys.reduce((a,b)=>a+b,0)/lys.length : L.top;
-    pos[d.id]={x:L.docX,y:avg-L.nodeH/2,w:L.docW,h:L.nodeH,type:'doc',node:d};
+  const stage=document.getElementById('graphStage');
+  const svg=stage&&stage.querySelector('.g-svg');
+  const W=stage? stage.clientWidth : 0;
+  const H=stage? stage.clientHeight : 0;
+  if(!W || !H) return;
+  const all=g.docs.concat(g.chaps).concat(g.concepts);
+  const center={x:W/2,y:H/2};
+  const baseR=Math.max(120,Math.min(W,H)/2 - 74);
+  const byType={doc:0,chap:0,concept:0};
+  G.nodes=all.map(n=>{
+    const total=g[n.type==='doc'?'docs':n.type==='chap'?'chaps':'concepts'].length;
+    const i=byType[n.type]++; const a=(i/total)*Math.PI*2+(n.type==='doc'?0:n.type==='chap'?1.2:2.3);
+    const rr=baseR*(n.type==='doc'?0.28:n.type==='chap'?0.58:0.9);
+    return Object.assign({},n,{r:nodeRadius(n),fixed:false,fx:null,fy:null,vx:0,vy:0,
+      x:center.x+Math.cos(a)*rr+(Math.random()-.5)*10, y:center.y+Math.sin(a)*rr*0.82+(Math.random()-.5)*10});
   });
-  g.concepts.forEach((t,i)=>{ pos[t.id]={x:L.concX,y:L.top+i*L.pitch,w:L.concW,h:L.nodeH,type:'concept',node:t}; });
-  const curve=(x1,y1,x2,y2)=>{ const mx=(x1+x2)/2; return 'M'+x1.toFixed(1)+' '+y1.toFixed(1)+' C'+mx.toFixed(1)+' '+y1.toFixed(1)+' '+mx.toFixed(1)+' '+y2.toFixed(1)+' '+x2.toFixed(1)+' '+y2.toFixed(1); };
-  let edges='';
-  g.containment.forEach(e=>{ const a=pos[e.from],b2=pos[e.to]; if(a&&b2) edges+='<path class="g-edge contain" d="'+curve(a.x+a.w,a.y+a.h/2,b2.x,b2.y+b2.h/2)+'"/>'; });
-  g.coverage.forEach(e=>{ const a=pos[e.from],b2=pos[e.to]; if(a&&b2) edges+='<path class="g-edge cover" d="'+curve(a.x+a.w,a.y+a.h/2,b2.x,b2.y+b2.h/2)+'"/>'; });
-  g.links.forEach(e=>{ const a=pos[e.from],b2=pos[e.to]; if(a&&b2){ const bx=a.x+a.w+86; edges+='<path class="g-edge link" d="M'+(a.x+a.w).toFixed(1)+' '+(a.y+a.h/2).toFixed(1)+' C'+bx.toFixed(1)+' '+(a.y+a.h/2).toFixed(1)+' '+bx.toFixed(1)+' '+(b2.y+b2.h/2).toFixed(1)+' '+(b2.x+b2.w).toFixed(1)+' '+(b2.y+b2.h/2).toFixed(1)+'"/>'; } });
-  let nodes='';
-  Object.keys(pos).forEach(id=>{ const p=pos[id]; nodes+=nodeHtml(p,p.node,isNodeSelected(id)); });
-  return '<div class="graph-stage" style="width:'+L.stageW+'px;height:'+L.stageH+'px">'
-    + '<svg class="g-edges" width="'+L.stageW+'" height="'+L.stageH+'">'+edges+'</svg>'
-    + nodes + '</div>';
+  G.byId={}; G.nodes.forEach(n=>G.byId[n.id]=n);
+  const mk=(from,to,kind)=>({from,to,kind,el:null,wrap:null});
+  G.edges=[].concat(g.containment.map(e=>mk(e.from,e.to,'contain')),
+                   g.coverage.map(e=>mk(e.from,e.to,'cover')),
+                   g.links.map(e=>mk(e.from,e.to,'link'))).filter(e=>G.byId[e.from]&&G.byId[e.to]);
+  G.nbr=new Map(); G.nodes.forEach(n=>G.nbr.set(n.id,new Set([n.id])));
+  G.edges.forEach(e=>{ G.nbr.get(e.from).add(e.to); G.nbr.get(e.to).add(e.from); });
+  G.view={x:0,y:0,k:1}; gHover=null;
+  for(let i=0;i<L.ticks;i++) stepGraph();
+  applyTransform();
+  drawGraph();
+  attachGraphInteractions(svg);
 }
-function nodeHtml(p,n,sel){
-  const ic = p.type==='doc'? I('book',14) : p.type==='concept'? I('layers',13) : I('list',13);
-  const attr = p.type==='doc' ? "openPane('doc','"+n.id+"')"
-    : p.type==='concept' ? "openPane('concept',null,null,'"+n.id+"')"
-    : "openPane('chap','"+n.docId+"','"+n.chId+"')";
-  return '<div class="g-node '+p.type+(sel?' sel':'')+'" style="left:'+p.x+'px;top:'+p.y+'px;width:'+p.w+'px" onclick="'+attr+'" title="'+escAttr(n.label)+'"><span class="gn-ic">'+ic+'</span><span class="gn-lbl">'+escapeHtml(trunc(n.label,18))+'</span></div>';
+function stepGraph(){
+  const ns=G.nodes; if(!ns.length) return;
+  let cx=0, cy=0; ns.forEach(n=>{ cx+=n.x; cy+=n.y; }); cx/=ns.length; cy/=ns.length;
+  for(let i=0;i<ns.length;i++){
+    const a=ns[i]; let fx=0, fy=0;
+    for(let j=0;j<ns.length;j++){ if(i===j) continue; const b=ns[j];
+      let dx=a.x-b.x, dy=a.y-b.y; let d2=dx*dx+dy*dy;
+      if(d2<0.01){ dx=Math.random()-.5; dy=Math.random()-.5; d2=dx*dx+dy*dy+0.01; }
+      const f=L.k/d2, d=Math.sqrt(d2); fx+=f*dx/d; fy+=f*dy/d;
+    }
+    a._fx=fx; a._fy=fy;
+  }
+  G.edges.forEach(e=>{ const a=G.byId[e.from], b=G.byId[e.to];
+    let dx=b.x-a.x, dy=b.y-a.y; const d=Math.max(1,Math.hypot(dx,dy));
+    const f=(d-L.rest)*0.02, ux=dx/d, uy=dy/d;
+    a._fx+=f*ux; a._fy+=f*uy; b._fx-=f*ux; b._fy-=f*uy;
+  });
+  ns.forEach(n=>{
+    n._fx-=(n.x-cx)*L.center; n._fy-=(n.y-cy)*L.center;
+    if(n.fixed){ n.x=n.fx; n.y=n.fy; n.vx=0; n.vy=0; return; }
+    n.vx=(n.vx+n._fx)*L.damp; n.vy=(n.vy+n._fy)*L.damp;
+    const sp=Math.hypot(n.vx,n.vy); if(sp>L.maxV){ n.vx*=L.maxV/sp; n.vy*=L.maxV/sp; }
+    n.x+=n.vx; n.y+=n.vy;
+  });
 }
+function drawGraph(){
+  const host=document.getElementById('graphStage'); const svg=host&&host.querySelector('.g-svg');
+  if(!svg) return;
+  const sel=svg.querySelector('.g-sel'); if(sel) sel.setAttribute('transform','translate('+G.view.x+','+G.view.y+') scale('+G.view.k+')');
+  G.edges.forEach(e=>{
+    const a=G.byId[e.from], b=G.byId[e.to];
+    let dx=b.x-a.x, dy=b.y-a.y; const d=Math.hypot(dx,dy)||1; const ux=dx/d, uy=dy/d;
+    const ax=a.x+ux*(a.r+3), ay=a.y+uy*(a.r+3);
+    const bx=b.x-ux*(b.r+9), by=b.y-uy*(b.r+9);
+    if(e.el) e.el.setAttribute('d','M'+ax.toFixed(1)+' '+ay.toFixed(1)+' L'+bx.toFixed(1)+' '+by.toFixed(1));
+    let ang=Math.atan2(dy,dx)*57.2958; if(ang>90) ang-=180; if(ang<-90) ang+=180;
+    if(e.wrap) e.wrap.setAttribute('transform','translate('+((ax+bx)/2).toFixed(1)+' '+((ay+by)/2).toFixed(1)+') rotate('+ang.toFixed(1)+')');
+  });
+  G.nodes.forEach(n=>{ if(n.el) n.el.setAttribute('transform','translate('+n.x.toFixed(1)+' '+n.y.toFixed(1)+')'); });
+}
+function renderGraphSVG(){
+  const host=document.getElementById('graphStage'); if(!host) return;
+  const svg=host.querySelector('.g-svg'); if(!svg) return;
+  const col={contain:'#aeb8c4', cover:'var(--violet)', link:'var(--amber)'};
+  let h='<defs>';
+  ['contain','cover','link'].forEach(kind=>{
+    h+='<marker id="g-arrow-'+kind+'" refX="6" refY="4" markerWidth="7" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L7 4 L0 8 z" fill="'+col[kind]+'"/></marker>';
+  });
+  h+='</defs><g class="g-sel"><g class="g-edges">';
+  G.edges.forEach(e=>{ h+='<path class="g-edge '+e.kind+'" marker-end="url(#g-arrow-'+e.kind+')"/>'; });
+  h+='</g><g class="g-elabels">';
+  G.edges.forEach(e=>{ const lbl=GEDGE_META[e.kind].label; const w=lbl.length*5.6+9;
+    h+='<g class="g-elab"><rect class="g-elbg" x="'+(-w/2).toFixed(1)+'" y="-7" width="'+w.toFixed(1)+'" height="14" rx="7" fill="rgba(8,10,14,.72)" stroke="rgba(255,255,255,.07)"/>'
+      +'<text class="g-elbl" text-anchor="middle" dominant-baseline="central">'+lbl+'</text></g>';
+  });
+  h+='</g><g class="g-nodes">';
+  G.nodes.forEach(n=>{
+    const sel=isNodeSelected(n.id)?' sel':'';
+    const ringCol=n.type==='doc'?'#5a6a82':n.type==='concept'?'var(--violet)':'var(--accent)';
+    const disp=n.label.length>16? n.label.slice(0,15)+'\u2026' : n.label;
+    h+='<g class="g-node '+n.type+sel+'" data-id="'+n.id+'"><title>'+escapeHtml(n.label)+'</title>'
+      +'<circle class="g-ring" r="'+(n.r+5)+'" stroke="'+ringCol+'"/>'
+      +'<circle class="g-circ" r="'+n.r+'"/>'
+      +'<text class="g-tx" text-anchor="middle" dominant-baseline="central">'+escapeHtml(disp)+'</text></g>';
+  });
+  h+='</g></g>';
+  svg.innerHTML=h;
+  const edgeEls=svg.querySelectorAll('.g-edges .g-edge');
+  const labEls=svg.querySelectorAll('.g-elabels .g-elab');
+  G.edges.forEach((e,i)=>{ e.el=edgeEls[i]; e.wrap=labEls[i]; });
+  G.nodes.forEach(n=>{ n.el=svg.querySelector('.g-nodes .g-node[data-id="'+n.id+'"]'); });
+  drawGraph();
+}
+function applyTransform(){ const host=document.getElementById('graphStage'); const svg=host&&host.querySelector('.g-svg'); if(!svg) return; const sel=svg.querySelector('.g-sel'); if(sel) sel.setAttribute('transform','translate('+G.view.x+','+G.view.y+') scale('+G.view.k+')'); }
+function graphSVG(){ const host=document.getElementById('graphStage'); return host?host.querySelector('.g-svg'):null; }
+function screenToWorld(svg,sx,sy){ const r=svg.getBoundingClientRect(); return { x:((sx-r.left)-G.view.x)/G.view.k, y:((sy-r.top)-G.view.y)/G.view.k }; }
+let gHover=null;
+function setGraphHover(id){
+  if(id===gHover) return; gHover=id;
+  if(!id){
+    G.nodes.forEach(n=>{ if(n.el) n.el.classList.remove('dim','hot'); });
+    G.edges.forEach(e=>{ if(e.el) e.el.classList.remove('dim','hot'); if(e.wrap) e.wrap.classList.remove('dim','hot'); });
+    return;
+  }
+  const near=G.nbr.get(id)||new Set();
+  G.nodes.forEach(n=>{ if(!n.el) return; const near2=near.has(n.id); n.el.classList.toggle('hot', n.id===id); n.el.classList.toggle('dim', !near2); });
+  G.edges.forEach(e=>{ const inc=(e.from===id||e.to===id); if(e.el) e.el.classList.toggle('hot',inc), e.el.classList.toggle('dim',!inc); if(e.wrap) e.wrap.classList.toggle('hot',inc), e.wrap.classList.toggle('dim',!inc); });
+}
+function attachGraphInteractions(svg){
+  if(!svg) return;
+  svg.addEventListener('mousedown',e=>{
+    const gEl=e.target.closest('.g-node');
+    if(gEl){
+      const n=G.byId[gEl.getAttribute('data-id')]; const p=screenToWorld(svg,e.clientX,e.clientY);
+      G.drag={id:n.id, ox:p.x-n.x, oy:p.y-n.y}; n.fixed=true; n.fx=n.x; n.fy=n.y; G.moved=false;
+    } else {
+      G.pan={sx:e.clientX, sy:e.clientY, vx:G.view.x, vy:G.view.y}; svg.classList.add('panning'); G.moved=false;
+    }
+    e.preventDefault();
+  });
+  svg.addEventListener('wheel',e=>{
+    e.preventDefault();
+    const nk=Math.max(0.4, Math.min(2.6, G.view.k*Math.exp(-e.deltaY*0.0016)));
+    const r=svg.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
+    G.view.x=px-(px-G.view.x)*(nk/G.view.k); G.view.y=py-(py-G.view.y)*(nk/G.view.k); G.view.k=nk;
+    applyTransform();
+  },{passive:false});
+  svg.addEventListener('click',e=>{
+    if(G.moved){ G.moved=false; return; }
+    const gEl=e.target.closest('.g-node'); if(!gEl) return;
+    const n=G.byId[gEl.getAttribute('data-id')];
+    openPane(n.type==='doc'?'doc':n.type==='concept'?'concept':'chap',
+      n.type==='doc'? n.id : (n.type==='chap'? n.docId : null),
+      n.type==='chap'? n.chId : null,
+      n.type==='concept'? n.id : null);
+  });
+  svg.addEventListener('mouseover',e=>{ const gEl=e.target.closest('.g-node'); setGraphHover(gEl? G.byId[gEl.getAttribute('data-id')].id : null); });
+}
+window.addEventListener('mousemove',e=>{
+  if(G.drag){
+    const svg=graphSVG(); if(!svg) return;
+    const p=screenToWorld(svg,e.clientX,e.clientY); const n=G.byId[G.drag.id];
+    n.fx=p.x-G.drag.ox; n.fy=p.y-G.drag.oy; n.x=n.fx; n.y=n.fy; G.moved=true;
+    if(((G._mt=(G._mt||0)+1)%2)===0){ for(let i=0;i<3;i++) stepGraph(); drawGraph(); }
+  } else if(G.pan){
+    G.view.x=G.pan.vx+(e.clientX-G.pan.sx); G.view.y=G.pan.vy+(e.clientY-G.pan.sy); G.moved=true; applyTransform();
+  }
+});
+window.addEventListener('mouseup',()=>{
+  if(G.drag){ const n=G.byId[G.drag.id]; if(n){ n.fixed=false; n.fx=null; n.fy=null; } G.drag=null; }
+  if(G.pan){ G.pan=null; const svg=graphSVG(); if(svg) svg.classList.remove('panning'); }
+});
 function isNodeSelected(id){
   const p=state.pane;
   if(p.kind==='doc') return id===p.docId;
