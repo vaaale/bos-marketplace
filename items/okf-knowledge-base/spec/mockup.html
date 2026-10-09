@@ -1317,12 +1317,15 @@ function renderQuery(){
   sel.innerHTML=Object.keys(BUNDLES).map(id=>'<option value="'+id+'"'+(id===state.qBundle?' selected':'')+'>'+BUNDLES[id].name+'</option>').join('');
   document.querySelectorAll('#app-query .q-subtab').forEach(t=>t.classList.toggle('active', t.dataset.sub===state.qSubtab));
   const content=document.getElementById('q-content');
+  content.classList.toggle('graph-mode', state.mode!=='empty' && state.qSubtab==='graph');
   if(state.mode==='empty'){
     content.innerHTML='<div class="empty" style="margin:0"><h3>No knowledge base selected</h3><p>Create or import a bundle in the <b>Overview</b> tab to explore its knowledge graph and search it. The reader pane on the right opens the full chapter for any node or search result.</p></div>';
   } else if(state.qSubtab==='graph'){
     const g=graphData(state.qBundle);
-    content.innerHTML='<div class="g-legend">'+legendHtml()+'</div>'+renderGraph(g)
-      +'<div class="note" style="margin-top:14px">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>containment</b> edges (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>concept-coverage</b> edges (chapter → the terms it covers, via the concept index), and <b>explicit links</b> (via stored okf_add_link edges). Click any node to open it in the reader pane. Layout is a static clustered view (not a force simulation) for this mockup.</span></div>';
+    content.innerHTML='<div class="g-legend">'+legendHtml()+'</div>'
+      +'<div id="graphStage" class="graph-stage"><svg class="g-svg"></svg></div>'
+      +'<div class="note">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>contains</b> (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>covers</b> (chapter → the concept term it covers, via the concept index), and <b>related</b> (explicit <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_add_link</code> edges). Force-directed layout — <b>drag</b> a node, <b>scroll</b> to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbors. Click any node to open it in the reader pane.</span></div>';
+    renderGraph(g);
   } else {
     content.innerHTML=renderSearchHost();
   }
