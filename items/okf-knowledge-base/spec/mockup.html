@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OKF Knowledge Base — Service Config (redesign)</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #171b22; --panel2: #1d222b; --border: #2a313c;
+    --text: #e6edf3; --muted: #8b98a5; --accent: #4f8cff; --green: #3fb950;
+    --amber: #d29922; --red: #f85149; --violet: #8b7cf6; --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; padding: 24px; }
+  .wrap { max-width: 1000px; margin: 0 auto; }
+
+  header h1 { font-size: 20px; font-weight: 600; display:flex; align-items:center; gap:10px; }
+  header .badge { font-size: 11px; color: var(--muted); border:1px solid var(--border); border-radius: 20px; padding: 2px 8px; }
+  header p { color: var(--muted); margin-top: 4px; font-size: 13px; }
+  .subhead { display:flex; align-items:center; gap:12px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); flex-wrap:wrap; }
+  .crumb { font-size: 12px; color: var(--muted); display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .crumb a { color: var(--muted); cursor:pointer; }
+  .crumb a:hover { color: var(--text); }
+  .crumb .sep { opacity:.5; }
+  .crumb .cur { color: var(--text); }
+  .seg { margin-left:auto; display:flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
+  .seg button { background:transparent; border:0; color:var(--muted); font-size:12px; padding:5px 12px; cursor:pointer; }
+  .seg button.on { background: var(--panel2); color: var(--text); }
+
+  .toolbar { display:flex; gap:8px; margin: 18px 0 12px; align-items:center; }
+  .toolbar .spacer { flex:1; }
+  .btn { display:inline-flex; align-items:center; gap:6px; background: var(--panel2); color: var(--text); border:1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor:pointer; font-size: 13px; }
+  .btn:hover { background:#232a35; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color:#fff; }
+  .btn.primary:hover { background:#5f97ff; }
+  .btn.danger { background: rgba(248,81,73,.12); border-color: rgba(248,81,73,.4); color:#ff9a94; }
+  .btn:disabled { opacity:.45; cursor:default; }
+  .btn svg { flex:0 0 auto; }
+  .ibtn { background:transparent; border:1px solid transparent; border-radius:6px; padding:5px; cursor:pointer; color:var(--muted); display:inline-flex; align-items:center; }
+  .ibtn:hover { background: var(--panel2); color: var(--text); }
+  .ibtn.danger:hover { background: rgba(248,81,73,.14); color:#ff9a94; }
+
+  .empty { text-align:center; padding: 64px 20px; color: var(--muted); border:1px dashed var(--border); border-radius: var(--radius); }
+  .empty h3 { color: var(--text); font-weight: 600; margin-bottom:6px; }
+  .empty .btn { margin-top:14px; margin-left:8px; }
+
+  table { width:100%; border-collapse: collapse; background: var(--panel); border:1px solid var(--border); border-radius: var(--radius); overflow:hidden; }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--border); }
+  tbody tr:last-child td { border-bottom:0; }
+  th { color: var(--muted); font-weight: 500; font-size:11px; text-transform:uppercase; letter-spacing:.5px; background: var(--panel2); }
+  tr.clickable { cursor:pointer; }
+  tr.clickable:hover td { background: var(--panel2); }
+  .name { display:flex; align-items:center; gap:9px; font-weight:500; }
+  .glyph { font-size:16px; }
+  .num-col { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .count { color: var(--muted); font-size:12px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; vertical-align:middle; }
+  .dot.green { background: var(--green); } .dot.amber { background: var(--amber); } .dot.red { background: var(--red); }
+  .dot.violet { background: var(--violet); }
+
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:50; }
+  .modal.hidden { display:none; }
+  .card { background: var(--panel); border:1px solid var(--border); border-radius: 10px; width: 440px; max-width:92vw; padding: 20px; }
+  .card h3 { margin-bottom:6px; font-weight:600; }
+  .card .desc { color: var(--muted); font-size:12px; margin-bottom:4px; }
+  label { display:block; color: var(--muted); font-size:12px; margin: 12px 0 5px; }
+  input, textarea, select { width:100%; background: var(--panel2); border:1px solid var(--border); color: var(--text); border-radius:6px; padding:8px 10px; font-size:13px; outline:none; font-family:inherit; }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+  .row { display:flex; gap:10px; margin-top:20px; justify-content:flex-end; }
+  .confirm-ic { display:inline-flex; align-items:center; gap:8px; font-size:13px; }
+
+  .health { display:grid; grid-template-columns: repeat(4,1fr); gap:12px; margin: 16px 0; }
+  .stat { background: var(--panel); border:1px solid var(--border); border-radius: var(--radius); padding:14px; text-align:center; position:relative; }
+  .stat .num { font-size:24px; font-weight:600; }
+  .stat .lbl { color: var(--muted); font-size:12px; margin-top:2px; }
+  .stat.alert .num { color: var(--amber); }
+
+  .tabs { display:flex; gap:2px; margin: 18px 0 14px; border-bottom:1px solid var(--border); }
+  .tab { display:inline-flex; align-items:center; gap:6px; padding:8px 14px; color: var(--muted); cursor:pointer; border-bottom:2px solid transparent; font-size:13px; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab .cnt { font-size:11px; color: var(--muted); background: var(--panel2); border:1px solid var(--border); border-radius:20px; padding:0 7px; margin-left:2px; }
+
+  .note { font-size:12px; color: var(--muted); display:flex; gap:7px; align-items:flex-start; margin: 0 0 14px; line-height:1.5; }
+  .note svg { flex:0 0 auto; margin-top:1px; }
+  .note b { color: var(--text); font-weight:600; }
+
+  /* search */
+  .search { position:relative; margin-bottom:14px; }
+  .search svg { position:absolute; left:11px; top:50%; transform:translateY(-50%); color: var(--muted); }
+  .search input { padding-left:34px; }
+  .search .clear { position:absolute; right:8px; top:50%; transform:translateY(-50%); color:var(--muted); cursor:pointer; }
+  .search .clear:hover { color: var(--text); }
+
+  /* concept index rows — term-led, violet-keyed */
+  .term { background: var(--panel); border:1px solid var(--border); border-left:2px solid var(--violet); border-radius:7px; margin-bottom:8px; overflow:hidden; }
+  .term.open { border-left-width:2px; }
+  .term .t-head { display:flex; align-items:center; gap:10px; padding:11px 13px; cursor:pointer; }
+  .term .t-head:hover { background: var(--panel2); }
+  .term .caret { color: var(--muted); transition: transform .12s; flex:0 0 auto; }
+  .term.open .caret { transform: rotate(90deg); }
+  .term .t-name { font-weight:600; font-size:13.5px; }
+  .term .t-key { font-size:10px; letter-spacing:.4px; text-transform:uppercase; color:var(--violet); border:1px solid rgba(139,124,246,.4); background:rgba(139,124,246,.12); border-radius:20px; padding:1px 7px; }
+  .term .t-cnt { margin-left:auto; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .term .t-body { border-top:1px solid var(--border); background: #141922; }
+  .cover { display:grid; grid-template-columns: 1fr auto; gap:2px 10px; padding:9px 14px 9px 30px; border-bottom:1px solid rgba(255,255,255,.04); cursor:pointer; align-items:baseline; }
+  .cover:last-child { border-bottom:0; }
+  .cover:hover { background: var(--panel2); }
+  .cover .c-loc { font-size:12px; color: var(--muted); }
+  .cover .c-loc .doc { color: var(--text); }
+  .cover .c-loc .arrow { opacity:.5; margin:0 4px; }
+  .cover .c-desc { grid-column:1; font-size:12px; color: var(--muted); }
+  .cover .c-go { grid-row:1 / span 2; align-self:center; color:var(--muted); font-size:11px; }
+  .cover:hover .c-go { color: var(--accent); }
+
+  /* document list + TOC — document-led, blue, ordered */
+  .doc-list { border:1px solid var(--border); border-radius: var(--radius); overflow:hidden; background: var(--panel); }
+  .doc-row { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--border); cursor:pointer; }
+  .doc-row:last-child { border-bottom:0; }
+  .doc-row:hover { background: var(--panel2); }
+  .doc-row .d-ic { color: var(--accent); flex:0 0 auto; }
+  .doc-row .d-title { font-weight:500; }
+  .doc-row .d-meta { font-size:12px; color:var(--muted); }
+  .doc-row .d-upd { margin-left:auto; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .doc-row .d-go { color: var(--accent); font-size:12px; display:inline-flex; align-items:center; gap:4px; }
+
+  .toc { background: var(--panel); border:1px solid var(--border); border-radius: var(--radius); overflow:hidden; }
+  .toc .toc-head { padding:12px 14px; border-bottom:1px solid var(--border); background: var(--panel2); }
+  .toc .toc-head .h { font-weight:600; font-size:14px; display:flex; align-items:center; gap:8px; }
+  .toc .toc-head .s { font-size:12px; color:var(--muted); margin-top:2px; }
+  .toc-item { display:grid; grid-template-columns: 26px 1fr auto; gap:4px 12px; padding:12px 14px; border-bottom:1px solid var(--border); cursor:pointer; align-items:start; }
+  .toc-item:last-child { border-bottom:0; }
+  .toc-item:hover { background: var(--panel2); }
+  .toc-num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); font-size:12px; padding-top:2px; }
+  .toc-title { font-weight:600; font-size:13.5px; display:flex; align-items:center; gap:8px; }
+  .toc-desc { grid-column:2; font-size:12.5px; color:var(--muted); }
+  .toc-tags { grid-column:2; display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
+  .toc-go { grid-row:1 / span 3; align-self:center; color:var(--muted); font-size:11px; display:inline-flex; align-items:center; gap:3px; }
+  .toc-item:hover .toc-go { color: var(--accent); }
+
+  /* concept-term chips (secondary, in TOC) */
+  .chip { display:inline-flex; align-items:center; gap:5px; font-size:11px; padding:1px 8px; border-radius:20px; border:1px solid var(--border); color:var(--muted); background: var(--panel2); cursor:pointer; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .chip .cdot { width:6px; height:6px; border-radius:50%; background: var(--violet); }
+  .chip:hover { color: var(--text); border-color: var(--violet); background: rgba(139,124,246,.1); }
+  .pill { font-size:10px; text-transform:uppercase; letter-spacing:.4px; border-radius:20px; padding:1px 7px; }
+  .pill.stale { color: var(--amber); background: rgba(210,153,34,.14); border:1px solid rgba(210,153,34,.35); }
+  .pill.deprecated { color: var(--red); background: rgba(248,81,73,.12); border:1px solid rgba(248,81,73,.35); }
+  .pill.ok { color: var(--green); background: rgba(63,185,80,.12); border:1px solid rgba(63,185,80,.3); }
+
+  /* chapter view */
+  .fm { background: var(--panel); border:1px solid var(--border); border-radius: var(--radius); padding:14px 16px; margin-bottom:14px; }
+  .fm .fm-row { display:grid; grid-template-columns: 96px 1fr; gap:10px; padding:5px 0; font-size:12px; align-items:baseline; }
+  .fm .fm-k { color:var(--muted); text-transform:uppercase; letter-spacing:.4px; font-size:10.5px; }
+  .fm .fm-v { color:var(--text); }
+  .fm .fm-v code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:11.5px; color:var(--text); background:var(--panel2); padding:1px 5px; border-radius:4px; }
+  .chap-card { background: var(--panel); border:1px solid var(--border); border-radius: var(--radius); overflow:hidden; }
+  .chap-bar { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--border); background: var(--panel2); }
+  .chap-bar .cb-title { font-weight:600; font-size:13.5px; }
+  .chap-bar .src-toggle { margin-left:auto; }
+  .md-body { padding:16px 18px; font-size:13.5px; line-height:1.65; color: var(--text); }
+  .md-body h3, .md-body h4 { margin:16px 0 8px; font-size:14px; }
+  .md-body h3:first-child, .md-body h4:first-child { margin-top:0; }
+  .md-body p { margin:0 0 12px; }
+  .md-body ul { margin:0 0 12px; padding-left:20px; }
+  .md-body li { margin:3px 0; }
+  .md-body code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; background:var(--panel2); border:1px solid var(--border); padding:1px 5px; border-radius:4px; }
+  .md-body blockquote.q { margin:0 0 12px; padding:8px 12px; border-left:2px solid var(--border); color:var(--muted); background: rgba(255,255,255,.02); }
+  .md-body strong { font-weight:600; }
+  .md-body a.mdlink { color: var(--accent); text-decoration:none; border-bottom:1px solid rgba(79,140,255,.4); }
+  .src-view { padding:14px 16px; }
+  .src-view pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; line-height:1.6; color:var(--muted); white-space:pre-wrap; word-break:break-word; background:#0b0e13; border:1px solid var(--border); border-radius:6px; padding:14px; }
+  .src-view .hint { font-size:11px; color:var(--muted); margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+
+  /* inline asset block */
+  .asset { margin:16px 0; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:#0b0e13; }
+  .asset .a-thumb { position:relative; height:190px; display:flex; align-items:center; justify-content:center; color:var(--muted); background:
+    repeating-linear-gradient(45deg,#0d1016 0 12px,#0b0e13 12px 24px); }
+  .asset .a-thumb .a-ic { display:flex; flex-direction:column; align-items:center; gap:8px; font-size:12px; }
+  .asset .a-cap { position:absolute; left:10px; bottom:8px; font-size:11px; color:var(--muted); background:rgba(0,0,0,.55); padding:2px 8px; border-radius:20px; }
+  .asset .a-raw { display:flex; align-items:center; gap:7px; padding:8px 12px; border-top:1px solid var(--border); font-size:11.5px; color:var(--muted); background:var(--panel2); }
+  .asset .a-raw code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .asset .a-raw a { color: var(--accent); text-decoration:none; }
+  .interp { margin:12px 18px 18px; padding:12px 14px; background: rgba(139,124,246,.08); border-left:2px solid var(--violet); border-radius: 0 6px 6px 0; }
+  .interp .i-label { display:flex; align-items:center; gap:7px; font-size:11px; color:var(--violet); text-transform:uppercase; letter-spacing:.4px; margin-bottom:6px; font-weight:600; }
+  .interp p { font-size:12.5px; line-height:1.6; color: var(--text); margin:0; }
+  .interp.unavail { background: rgba(210,153,34,.08); border-left-color: var(--amber); }
+  .interp.unavail .i-label { color: var(--amber); }
+
+  .io-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .io-card { background: var(--panel); border:1px solid var(--border); border-radius: var(--radius); padding:16px; }
+  .io-card h4 { font-size:13px; font-weight:600; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+  .io-card .io-sub { font-size:12px; color:var(--muted); margin-bottom:12px; }
+  .io-card .row { margin-top:14px; }
+  .health-list { background: var(--panel); border:1px solid var(--border); border-radius: var(--radius); }
+  .health-item { display:flex; align-items:center; gap:10px; padding:11px 14px; border-bottom:1px solid var(--border); font-size:13px; }
+  .health-item:last-child { border-bottom:0; }
+  .health-item .loc { font-size:12px; color:var(--muted); }
+  .health-item .grow { flex:1; }
+  .ok-line { display:flex; align-items:center; gap:8px; padding:10px 14px; font-size:13px; border-bottom:1px solid var(--border); }
+  .ok-line:last-child { border-bottom:0; }
+  .ok-line .m { color:var(--muted); font-size:12px; margin-left:auto; font-variant-numeric:tabular-nums; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🧠 OKF Knowledge Base <span class="badge">service config · 18 okf_* tools</span></h1>
+    <p>Open Knowledge Format bundles · a two-level, concept-anchored index (derived &amp; regenerable) · retrieval returns full documents or chapters, never snippets</p>
+    <div class="subhead">
+      <div class="crumb" id="crumb"></div>
+      <div class="seg" id="modeSeg">
+        <button data-mode="populated" class="on">Populated</button>
+        <button data-mode="empty">Empty</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ BUNDLE LIST ============ -->
+  <section id="view-list">
+    <div id="listEmpty" class="empty hidden">
+      <h3>No knowledge bases yet</h3>
+      <p>Create an OKF bundle to start building your knowledge base,<br>or import an existing one. Each bundle is a self-contained, exportable OKF directory.</p>
+      <button class="btn primary" onclick="openModal('new')">+ New Knowledge Base</button>
+      <button class="btn" onclick="openModal('import')">Import Bundle</button>
+    </div>
+
+    <div id="listBody">
+      <div class="toolbar">
+        <button class="btn primary" onclick="openModal('new')">+ New Knowledge Base</button>
+        <button class="btn" onclick="openModal('import')">Import Bundle</button>
+        <div class="spacer"></div>
+        <span class="count" id="bundleCount"></span>
+      </div>
+      <table>
+        <thead><tr><th>Knowledge base</th><th>Docs</th><th>Chapters</th><th>Concepts</th><th>Stale / Deprecated</th><th>Status</th><th></th></tr></thead>
+        <tbody id="bundleRows"></tbody>
+      </table>
+      <div class="note" style="margin-top:14px">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+        <span><b>Concepts</b> = distinct concept terms in the bundle's concept index (the O(V) routing table). <b>Stale / Deprecated</b> = chapters past their lifecycle threshold. Open a bundle to browse its concept index and document tables of contents.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ BUNDLE DETAIL ============ -->
+  <section id="view-detail" class="hidden"></section>
+</div>
+
+<!-- MODALS -->
+<div id="modal-new" class="modal hidden"><div class="card">
+  <h3>New Knowledge Base</h3><div class="desc">Creates a spec-conformant OKF bundle: <code style="font-family:monospace;font-size:11px">/KnowledgeBase/&lt;name&gt;/</code> with <code style="font-family:monospace;font-size:11px">index.md</code>, <code style="font-family:monospace;font-size:11px">concepts/</code>, <code style="font-family:monospace;font-size:11px">raw/</code>.</div>
+  <label>Bundle name</label><input placeholder="e.g. Engineering Rules & Guidelines">
+  <label>Description (optional)</label><input placeholder="Short description of what this KB covers">
+  <div class="row"><button class="btn" onclick="closeModal('new')">Cancel</button><button class="btn primary" onclick="closeModal('new')">Create Bundle</button></div>
+</div></div>
+
+<div id="modal-import" class="modal hidden"><div class="card">
+  <h3>Import Bundle</h3><div class="desc">Imports an existing OKF directory — its documents, chapters, concept index, and document TOCs must be present and queryable.</div>
+  <label>Source</label><select><option>Directory path</option><option>Git URL</option><option>Tarball (.tar.gz)</option></select>
+  <label>Path / URL</label><input placeholder="/KnowledgeBase/my-bundle  or  https://…/bundle.tar.gz">
+  <div class="row"><button class="btn" onclick="closeModal('import')">Cancel</button><button class="btn primary" onclick="closeModal('import')">Import</button></div>
+</div></div>
+
+<div id="modal-export" class="modal hidden"><div class="card">
+  <h3>Export Bundle</h3><div class="desc">The export is spec-conformant OKF — it includes the concept index and every document TOC, and re-importing reproduces a queryable bundle.</div>
+  <label>Format</label><select><option>Directory</option><option>Tarball (.tar.gz)</option></select>
+  <label>Destination</label><input placeholder="/KnowledgeBase/exports/…">
+  <div class="row"><button class="btn" onclick="closeModal('export')">Cancel</button><button class="btn primary" onclick="closeModal('export')">Export</button></div>
+</div></div>
+
+<div id="modal-ingest" class="modal hidden"><div class="card">
+  <h3>Ingest document</h3><div class="desc">Decomposes the source into chapters (each with concept terms + a one-line summary), writes the document TOC, and updates the concept index. Runs via the bundled least-privilege <code style="font-family:monospace;font-size:11px">okf-ingest</code> agent.</div>
+  <label>Source (URL, VFS path, or raw/ path)</label><input placeholder="https://…/article  or  /workspace/doc.pdf  or  raw/…">
+  <label>Crawl depth (optional)</label><input placeholder="default" value="">
+  <div class="row"><button class="btn" onclick="closeModal('ingest')">Cancel</button><button class="btn primary" onclick="closeModal('ingest')">Ingest</button></div>
+</div></div>
+
+<div id="modal-delete" class="modal hidden"><div class="card">
+  <h3>Delete knowledge base?</h3><div class="desc" style="margin-top:6px">This removes only this bundle's directory (<code id="delPath" style="font-family:monospace;font-size:11px"></code>). Documents, chapters, the concept index, TOCs, and raw sources are all removed.</div>
+  <div class="confirm-ic" style="margin-top:14px;color:var(--red)">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>
+    <span id="delMsg" style="color:var(--text)">This action cannot be undone.</span>
+  </div>
+  <div class="row"><button class="btn" onclick="closeModal('delete')">Cancel</button><button class="btn danger" onclick="closeModal('delete')">Delete Bundle</button></div>
+</div></div>
+
+<script>
+/* ---------------- icons ---------------- */
+function I(name, size, cls){
+  const s = size||16; const c = cls? ' class="'+cls+'"':'';
+  const P = {
+    caret:'<path d="M9 6l6 6-6 6"/>',
+    plus:'<path d="M12 5v14M5 12h14"/>',
+    import:'<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
+    export:'<path d="M12 21V9M7 14l5-5 5 5M5 3h14"/>',
+    trash:'<path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14"/>',
+    search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/>',
+    eye:'<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    image:'<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-8 8"/>',
+    play:'<circle cx="12" cy="12" r="9"/><path d="M10 8l6 4-6 4z"/>',
+    doc:'<path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/>',
+    layers:'<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
+    list:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+    back:'<path d="M19 12H5M12 19l-7-7 7-7"/>',
+    book:'<path d="M4 5a2 2 0 012-2h13v18H6a2 2 0 00-2 2z"/><path d="M19 3v18"/>',
+    info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+    code:'<path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/>',
+    alert:'<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/>',
+    check:'<path d="M20 6L9 17l-5-5"/>',
+    x:'<path d="M6 6l12 12M18 6L6 18"/>'
+  };
+  return '<svg viewBox="0 0 24 24" width="'+s+'" height="'+s+'" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"'+c+'>'+(P[name]||'')+'</svg>';
+}
+
+/* ---------------- sample data ---------------- */
+const BUNDLES = {
+  engineering: {
+    name:"Engineering Rules & Guidelines", glyph:"🏗️",
+    docs:[
+      { id:"api-design", title:"API Design Rules", updated:"2026-08-01", chapters:[
+        { id:"endpoint-naming", title:"Endpoint Naming Conventions", status:"ok",
+          concepts:["api-design","naming"],
+          summary:"REST resource naming: plural nouns, no verbs, versioned paths.",
+          blocks:[{t:'md',v:"## Naming Rules\n- Use **plural nouns** for collections: `/orders`, `/users`.\n- Never use verbs in resource paths; model actions as sub-resources or HTTP methods.\n- All paths are versioned under `/v1/` (see *Versioning Strategy*).\n- Max 3 path segments; prefer query params over deep nesting.\n\n> Consistent, predictable resource URIs keep the API self-describing and cacheable."}] },
+        { id:"versioning", title:"Versioning Strategy", status:"deprecated",
+          concepts:["api-design","versioning"],
+          summary:"URL-path versioning; additive-only, no breaking changes without a new version.",
+          blocks:[{t:'md',v:"## Strategy\n- Version by **URL path**: `/v1/`, `/v2/`.\n- Changes within a version are **additive only**.\n- A breaking change ships as a new major version; old versions are frozen and eventually deprecated.\n\n> This policy is being revised — see *Pre-Deploy Gate* for the interim process."}] },
+        { id:"error-response", title:"Error Response Format", status:"ok",
+          concepts:["error-handling","api-design"],
+          summary:"RFC-7807 problem+json envelope with stable error codes; never leak internals.",
+          blocks:[{t:'md',v:"## Envelope\nAll errors use **RFC-7807** `application/problem+json` with fields `type`, `title`, `status`, `code`, `detail`, `request_id`.\n- `code` is a stable, public identifier (e.g. `ORDER_NOT_FOUND`).\n- Never leak stack traces or internal hostnames to clients.\n- Always include `request_id` for correlation (see *Logging & Correlation IDs*)."}] },
+        { id:"rate-limiting", title:"Rate Limiting & Quotas", status:"ok",
+          concepts:["rate-limiting","api-design"],
+          summary:"429 + Retry-After, per-tier quotas, and burst allowances.",
+          blocks:[{t:'md',v:"## Limits\n- Return **429** with a `Retry-After` header when a caller exceeds its limit.\n- Quotas are **per tier**; free < pro < enterprise.\n- A small burst allowance absorbs spiky but legitimate traffic.\n- Document every endpoint's limits in its OpenAPI spec."}] }
+      ]},
+      { id:"code-review", title:"Code Review Policy", updated:"2026-07-22", chapters:[
+        { id:"sla", title:"Review Turnaround SLAs", status:"ok",
+          concepts:["code-review"],
+          summary:"First response within 24h; full review within 2 business days.",
+          blocks:[{t:'md',v:"## SLAs\n- **First response ≤ 24h** (even if it's a question, not an approval).\n- **Full review ≤ 2 business days**.\n- Time-sensitive releases may request expedited review with a stated reason."}] },
+        { id:"approvals", title:"Approval & Merge Rules", status:"ok",
+          concepts:["code-review","deployment"],
+          summary:"Two approvals required; squash-on-merge into the feature branch.",
+          blocks:[{t:'md',v:"## Approvals\n- **Two approvals** are required before merge (author counts as one).\n- **Squash-on-merge** into the feature branch keeps history linear.\n- Merging to `main` additionally requires the *Pre-Deploy Gate* to be green."}] },
+        { id:"checklist", title:"Review Checklist", status:"ok",
+          concepts:["code-review","logging","secrets"],
+          summary:"Tests, docs, no secrets, no orphaned TODOs, structured logs.",
+          blocks:[{t:'md',v:"## Checklist\n- Tests cover the new/changed behavior.\n- Public behavior is documented.\n- **No secrets** in code or logs (use the secrets manager).\n- No orphaned `TODO`s without an owner.\n- New log lines are **structured** and carry the `req_id` (see *Logging & Correlation IDs*)."}] }
+      ]},
+      { id:"deployment", title:"Deployment Checklist", updated:"2026-09-14", chapters:[
+        { id:"pre-deploy", title:"Pre-Deploy Gate", status:"ok",
+          concepts:["deployment"],
+          summary:"CI green, migrations reviewed, and a documented rollback plan.",
+          blocks:[{t:'md',v:"## Gate\nNothing ships to production unless:\n- CI is **green** (build, unit, integration).\n- DB migrations are **reviewed and reversible**.\n- A **rollback plan** is documented for the release.\n- Feature flags wrap any risky behavior."}] },
+        { id:"canary", title:"Canary & Rollback", status:"ok",
+          concepts:["deployment","monitoring","rollback"],
+          summary:"5% canary for 30m; auto-rollback on p99 / 5xx thresholds.",
+          blocks:[
+            {t:'md',v:"## Policy\n- Ship to a **5% canary** set for at least 30 minutes before full rollout.\n- **Auto-rollback** triggers when p99 latency or the 5xx rate crosses the threshold for two consecutive intervals.\n- Rollback drains the canary back to 0% and re-routes to the last stable build.\n\nThe rollout console makes the threshold state visible at a glance:"},
+            {t:'asset', kind:'video', file:'raw/canary-rollback-demo.mp4', caption:'Canary rollout console · 0:00–0:42',
+             interpretation:"Screen-capture of the deploy console: the canary pod set is bumped from 0→5%, error-rate and p99 sparklines render live, and when the 5xx threshold trips an 'Auto-rollback armed' banner appears and the console shows pods draining back to 0%. The clip demonstrates that rollback is automatic and threshold-gated, not a manual step."},
+            {t:'md',v:"Full rollout proceeds only after the canary window passes clean, and is always announced in the release channel."}
+          ] }
+      ]},
+      { id:"error-handling", title:"Error Handling Standards", updated:"2026-06-30", chapters:[
+        { id:"taxonomy", title:"Exception Taxonomy", status:"ok",
+          concepts:["error-handling"],
+          summary:"Classify errors as retriable, terminal, or user-facing; map each to a response.",
+          blocks:[{t:'md',v:"## Taxonomy\nEvery exception maps to one class:\n- **Retriable** — transient; safe to retry (timeouts, 503, connection reset).\n- **Terminal** — permanent; retrying will not help (validation, 404, conflict).\n- **User-facing** — surfaced to the caller with a stable message.\n\nClass drives the response: retriable → 5xx + `Retry-After`; terminal → 4xx."}] },
+        { id:"logging", title:"Logging & Correlation IDs", status:"ok",
+          concepts:["logging","error-handling","idempotency"],
+          summary:"Structured JSON logs; req_id propagated into every RPC, queue, and log line.",
+          blocks:[
+            {t:'md',v:"## Correlation\n- Mint a `req_id` at the **API gateway** for every inbound request.\n- Propagate it via the `X-Request-Id` header into every **RPC context**, **queue envelope**, and **log line**.\n- A single grep on `req_id` reconstructs the full cross-service trace.\n- Retries reuse the same `req_id` but increment an `attempt` counter."},
+            {t:'asset', kind:'image', file:'raw/correlation-flow.png', caption:'Request lifecycle & correlation-ID propagation',
+             interpretation:"Flow diagram: an inbound request enters the gateway where a req_id is minted, then injected into the X-Request-Id header, the structured-log context, the downstream RPC context, and the queue envelope. Every log line and child span carries the same req_id, so one grep reconstructs the cross-service trace. The highlighted branch shows a retry reusing the req_id with a new attempt counter."}
+          ] },
+        { id:"timeouts", title:"Timeout & Retry Policy", status:"stale",
+          concepts:["error-handling","rate-limiting","idempotency"],
+          summary:"Exponential backoff with jitter; idempotency keys on all mutating retries.",
+          blocks:[{t:'md',v:"## Policy\n- **Exponential backoff with jitter** for retriable errors.\n- Cap at 5 attempts; then surface a terminal error.\n- All **mutating retries** must send an idempotency key so a retry is safe.\n\n> ⚠ Stale — backoff caps were raised last quarter and this section has not been re-verified."}] }
+      ]}
+    ]
+  },
+  "internal-policies": {
+    name:"Internal Policies", glyph:"📋",
+    docs:[
+      { id:"remote-work", title:"Remote Work Policy", updated:"2026-05-10", chapters:[
+        { id:"eligibility", title:"Eligibility", status:"ok", concepts:["remote-work"],
+          summary:"Who may work remotely and under what conditions.",
+          blocks:[{t:'md',v:"## Eligibility\n- Remote work is available to all FTEs after the 90-day probation.\n- Roles with on-site requirements (e.g. hardware, lab) need a documented exception.\n- At least one on-site day per week is required for teams larger than 4."}] },
+        { id:"core-hours", title:"Core Hours", status:"ok", concepts:["core-hours"],
+          summary:"The daily overlap window required for collaboration.",
+          blocks:[{t:'md',v:"## Core Hours\n- **Core hours are 11:00–15:00** local (team timezone).\n- Outside core hours, async is the default; no synchronous requests.\n- Timezone bands are published per team in the org chart."}] },
+        { id:"equipment", title:"Equipment & Stipend", status:"ok", concepts:["equipment"],
+          summary:"The hardware allowance and home-office stipend.",
+          blocks:[{t:'md',v:"## Equipment\n- A **$500 home-office stipend** per year (monitor, chair, dock).\n- Laptops and peripherals are provided; return on exit.\n- Requests go through the IT catalog, not individual purchases."}] }
+      ]},
+      { id:"security", title:"Security Policy", updated:"2026-09-02", chapters:[
+        { id:"mfa", title:"MFA Requirements", status:"ok", concepts:["security","mfa"],
+          summary:"Where multi-factor auth is mandatory.",
+          blocks:[{t:'md',v:"## MFA\n- **MFA is mandatory** for all production access, VPN, and the secrets manager.\n- Use a platform authenticator or hardware key; SMS is not accepted for admin roles.\n- MFA enrollment is enforced at onboarding (see *First Week*)."}] },
+        { id:"passwords", title:"Password & Key Management", status:"ok", concepts:["passwords","security"],
+          summary:"Secrets live in the vault, never in code or logs.",
+          blocks:[{t:'md',v:"## Management\n- Secrets live in the **vault**, referenced by key — never in code, env dumps, or logs.\n- Rotate long-lived secrets on a 90-day schedule.\n- Personal access tokens are scoped and expiring by default."}] },
+        { id:"retention", title:"Data Retention", status:"stale", concepts:["data-retention"],
+          summary:"How long different data classes are kept.",
+          blocks:[{t:'md',v:"## Retention\n- Production logs: **90 days** hot, 1 year cold.\n- Customer PII: retained per the schedule below, then anonymized.\n\n> ⚠ Stale — the PII schedule is under legal review and the numbers below may change."}] }
+      ]}
+    ]
+  },
+  "employee-handbook": {
+    name:"Employee Handbook", glyph:"📖",
+    docs:[
+      { id:"onboarding", title:"Onboarding", updated:"2026-04-18", chapters:[
+        { id:"first-week", title:"First Week", status:"ok", concepts:["onboarding"],
+          summary:"The first-week checklist: accounts, MFA, team intros.",
+          blocks:[{t:'md',v:"## First Week\n- Day 1: equipment, accounts, **MFA enrollment**.\n- Day 2–3: team introductions and a reading list.\n- Week 1: first small, real task with a named reviewer."}] },
+        { id:"buddy", title:"Buddy Program", status:"ok", concepts:["buddy"],
+          summary:"Every new hire gets a peer buddy for the first 90 days.",
+          blocks:[{t:'md',v:"## Buddy\n- A peer **buddy** is assigned for the first 90 days.\n- The buddy is the first question-asker for 'how do things actually work here.'\n- Buddy time is compensated — it is part of their job, not a favor."}] },
+        { id:"probation", title:"Probation Review", status:"ok", concepts:["probation","onboarding"],
+          summary:"The 90-day probation review and what it covers.",
+          blocks:[{t:'md',v:"## Probation\n- A structured **90-day review** with the manager and a peer.\n- Covers craft, collaboration, and a forward plan.\n- Passing unlocks remote-work eligibility (see *Eligibility*)."}] }
+      ]},
+      { id:"benefits", title:"Benefits", updated:"2026-03-01", chapters:[
+        { id:"vacation", title:"Vacation & PTO", status:"ok", concepts:["vacation"],
+          summary:"The PTO accrual and minimum-leave expectations.",
+          blocks:[{t:'md',v:"## Vacation\n- **Unlimited PTO** with a recommended 3 weeks minimum per year.\n- Requests are approved by the manager; no approval needed for a single day.\n- A 1-week no-meeting block is offered each quarter."}] },
+        { id:"comp", title:"Compensation", status:"ok", concepts:["compensation","equity"],
+          summary:"Cash + equity structure and the annual review cadence.",
+          blocks:[{t:'md',v:"## Compensation\n- Total comp = **base cash + annual bonus + equity**.\n- Equity is granted at hire and re-priced at the annual review.\n- Compensation reviews happen once a year, on a fixed calendar."}] },
+        { id:"health", title:"Health Insurance", status:"ok", concepts:["health"],
+          summary:"Medical, dental, and vision coverage and the enrollment window.",
+          blocks:[{t:'md',v:"## Health\n- **Medical, dental, and vision** with the company covering the majority of premiums.\n- Open enrollment is a 2-week window each fall; other changes follow qualifying life events.\n- A wellness stipend is available for eligible expenses."}] }
+      ]}
+    ]
+  }
+};
+
+/* ---------------- derived helpers ---------------- */
+function bundleStats(b){
+  let chapters=0, stale=0; const set=new Set();
+  b.docs.forEach(d=>d.chapters.forEach(c=>{ chapters++; c.concepts.forEach(t=>set.add(t)); if(c.status!=='ok') stale++; }));
+  return { docs:b.docs.length, chapters, concepts:set.size, stale };
+}
+function conceptIndex(b){
+  const map={};
+  b.docs.forEach(d=>d.chapters.forEach(c=>c.concepts.forEach(t=>{
+    (map[t]=map[t]||[]).push({docId:d.id,docTitle:d.title,chId:c.id,chTitle:c.title,desc:c.summary,stale:c.status!=='ok',status:c.status});
+  })));
+  return Object.keys(map).sort().map(t=>({name:t,count:map[t].length,covers:map[t],stale:map[t].some(x=>x.stale)}));
+}
+function findDoc(b,id){ return b.docs.find(d=>d.id===id); }
+function findCh(b,docId,chId){ const d=findDoc(b,docId); return d&&d.chapters.find(c=>c.id===chId); }
+function statusPill(s){ if(s==='stale') return '<span class="pill stale">stale</span>'; if(s==='deprecated') return '<span class="pill deprecated">deprecated</span>'; return ''; }
+function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ---------------- tiny markdown renderer ---------------- */
+function mdInline(t){
+  return t
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g,'$1<em>$2</em>')
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\[!?\[?([^\]]*)\]\(([^)]+)\)/g,'<a class="mdlink" href="#" onclick="return false">$1</a>');
+}
+function md(src){
+  const lines = escapeHtml(src).split('\n');
+  let html='', inUl=false;
+  const close=()=>{ if(inUl){ html+='</ul>'; inUl=false; } };
+  for(const line of lines){
+    if(/^###\s/.test(line)){ close(); html+='<h4>'+mdInline(line.replace(/^###\s/,''))+'</h4>'; }
+    else if(/^##\s/.test(line)){ close(); html+='<h3>'+mdInline(line.replace(/^##\s/,''))+'</h3>'; }
+    else if(/^#\s/.test(line)){ close(); html+='<h3>'+mdInline(line.replace(/^#\s/,''))+'</h3>'; }
+    else if(/^&gt;\s?/.test(line)){ close(); html+='<blockquote class="q">'+mdInline(line.replace(/^&gt;\s?/,''))+'</blockquote>'; }
+    else if(/^-\s/.test(line)){ if(!inUl){ html+='<ul>'; inUl=true; } html+='<li>'+mdInline(line.replace(/^-\s/,''))+'</li>'; }
+    else if(line.trim()===''){ close(); }
+    else { close(); html+='<p>'+mdInline(line)+'</p>'; }
+  }
+  close();
+  return html;
+}
+function chapterSource(ch){
+  return ch.blocks.map(b => b.t==='md'
+    ? b.v
+    : '![{'+b.caption+'}]( '+b.file+' )\n\n> **Interpretation (LLM, at ingest):** '+b.interpretation
+  ).join('\n\n');
+}
+function assetBlock(a){
+  const ic = a.kind==='video' ? I('play',26) : I('image',26);
+  return '<div class="asset">'
+    + '<div class="a-thumb"><div class="a-ic">'+ic+'<span>stored asset · '+(a.kind||'image')+'</span></div><span class="a-cap">'+escapeHtml(a.caption)+'</span></div>'
+    + '<div class="a-raw">'+I('doc',13)+'<code>'+escapeHtml(a.file)+'</code><span>· local immutable copy in raw/</span><a href="#" onclick="return false" style="margin-left:auto">view raw</a></div>'
+    + '</div>'
+    + '<div class="interp"><div class="i-label">'+I('eye',13)+' Interpretation · written at ingest, stored in the chapter</div><p>'+escapeHtml(a.interpretation)+'</p></div>';
+}
+
+/* ---------------- state ---------------- */
+let state = { mode:'populated', view:'list', bundleId:'engineering', tab:'conceptIndex',
+  docId:null, chapterId:null, expandedTerm:null, termQuery:'', showSrc:{}, deleteId:null };
+
+/* ---------------- rendering ---------------- */
+function crumb(parts){
+  let h='<div class="crumb">';
+  parts.forEach((p,i)=>{
+    if(i>0) h+='<span class="sep">/</span>';
+    if(i===parts.length-1) h+='<span class="cur">'+p.label+'</span>';
+    else h+='<a onclick="'+p.fn+'">'+p.label+'</a>';
+  });
+  return h+'</div>';
+}
+function renderCrumb(){
+  const el=document.getElementById('crumb');
+  if(state.view==='list'){ el.innerHTML=crumb([{label:'Bundles'}]); return; }
+  const b=BUNDLES[state.bundleId];
+  const parts=[{label:'Bundles',fn:"goList()"},{label:b.name,fn:"openBundle('"+state.bundleId+"')"}];
+  if(state.tab==='documents'){
+    if(state.docId){ const d=findDoc(b,state.docId); parts.push({label:d.title,fn:"openDoc('"+state.docId+"')"}); }
+    if(state.chapterId){ parts.push({label:findCh(b,state.docId,state.chapterId).title}); }
+  }
+  el.innerHTML=crumb(parts);
+}
+
+function renderList(){
+  document.getElementById('view-detail').classList.add('hidden');
+  document.getElementById('view-list').classList.remove('hidden');
+  const empty = state.mode==='empty';
+  document.getElementById('listEmpty').classList.toggle('hidden', !empty);
+  document.getElementById('listBody').classList.toggle('hidden', empty);
+  const ids=Object.keys(BUNDLES);
+  document.getElementById('bundleCount').textContent = ids.length+' bundle'+(ids.length!==1?'s':'');
+  const tb=document.getElementById('bundleRows');
+  tb.innerHTML = ids.map(id=>{
+    const b=BUNDLES[id]; const st=bundleStats(b); const healthy=st.stale===0;
+    return '<tr class="clickable" onclick="openBundle(\''+id+'\')">'
+      + '<td><span class="name"><span class="glyph">'+b.glyph+'</span>'+b.name+'</span></td>'
+      + '<td class="num-col">'+st.docs+'</td><td class="num-col">'+st.chapters+'</td><td class="num-col">'+st.concepts+'</td>'
+      + '<td class="num-col">'+(st.stale? '<span class="dot amber"></span>':'')+st.stale+'</td>'
+      + '<td><span class="dot '+(healthy?'green':'amber')+'"></span>'+(healthy?'healthy':'attention')+'</td>'
+      + '<td style="text-align:right"><button class="ibtn danger" title="Delete bundle" onclick="event.stopPropagation();askDelete(\''+id+'\')">'+I('trash',15)+'</button></td>'
+      + '</tr>';
+  }).join('');
+}
+
+function renderDetail(){
+  document.getElementById('view-list').classList.add('hidden');
+  document.getElementById('view-detail').classList.remove('hidden');
+  const b=BUNDLES[state.bundleId]; const st=bundleStats(b);
+  const idx=conceptIndex(b);
+  const tabs=[
+    ['conceptIndex','Concept Index',I('layers',15),st.concepts],
+    ['documents','Documents',I('list',15),st.docs],
+    ['health','Health','',st.stale],
+    ['io','Import / Export','',0]
+  ];
+  let h='';
+  h+='<div class="toolbar">'
+    + '<button class="btn" onclick="goList()">'+I('back',15)+' Back</button>'
+    + '<div class="spacer"></div>'
+    + '<button class="btn primary" onclick="openModal(\'ingest\')">'+I('import',15)+' Ingest</button>'
+    + '<button class="btn" onclick="openModal(\'export\')">'+I('export',15)+' Export</button>'
+    + '<button class="ibtn danger" title="Delete bundle" onclick="askDelete(\''+state.bundleId+'\')">'+I('trash',16)+'</button>'
+    + '</div>';
+  h+='<h2 style="font-size:17px;display:flex;align-items:center;gap:9px"><span class="glyph">'+b.glyph+'</span>'+b.name+'</h2>';
+  h+='<div class="health">'
+    + '<div class="stat"><div class="num">'+st.docs+'</div><div class="lbl">Documents</div></div>'
+    + '<div class="stat"><div class="num">'+st.chapters+'</div><div class="lbl">Chapters</div></div>'
+    + '<div class="stat"><div class="num">'+st.concepts+'</div><div class="lbl">Concept terms</div></div>'
+    + '<div class="stat '+(st.stale?'alert':'')+'"><div class="num">'+st.stale+'</div><div class="lbl">Stale / Deprecated</div></div>'
+    + '</div>';
+  h+='<div class="tabs">'+tabs.map(t=>
+    '<div class="tab '+(state.tab===t[0]?'active':'')+'" onclick="setTab(\''+t[0]+'\')">'+(t[2]||'')+t[1]+(t[3]?'<span class="cnt">'+t[3]+'</span>':'')+'</div>'
+  ).join('')+'</div>';
+
+  if(state.tab==='conceptIndex') h+=renderConceptIndex(b,idx);
+  else if(state.tab==='documents') h+=renderDocuments(b);
+  else if(state.tab==='health') h+=renderHealth(b);
+  else if(state.tab==='io') h+=renderIO(b);
+
+  document.getElementById('view-detail').innerHTML=h;
+  renderCrumb();
+}
+
+function renderConceptIndex(b,idx){
+  let q=(state.termQuery||'').toLowerCase().trim();
+  let list=idx.filter(t=>!q || t.name.toLowerCase().includes(q) || t.covers.some(c=>c.desc.toLowerCase().includes(q)));
+  if(q && state.expandedTerm && !list.some(t=>t.name===state.expandedTerm)) state.expandedTerm=null;
+  let h='<div class="search">'+I('search',15)
+    + '<input placeholder="Search concept terms (concept-anchored — matches the vocabulary, not full text)…" value="'+escapeHtml(state.termQuery)+'" oninput="onTermQuery(this.value)">'
+    + (state.termQuery?'<span class="clear" onclick="state.termQuery=\'\';renderDetail()">'+I('x',14)+'</span>':'')
+    + '</div>';
+  h+='<div class="note">'+I('info',14)+'<span><b>Concept index</b> — the bundle-level routing table. Each row is a <span style="color:var(--violet)">concept term</span> (the searchable vocabulary); expand it to see the <b>(document, chapter)</b> pairs it covers, each with a one-line description. This is O(V) — bounded by distinct terms, not by documents. <b>Derived &amp; regenerable</b> from chapter frontmatter; rebuild any time.</span></div>';
+  if(!list.length){
+    h+='<div class="empty" style="padding:40px"><h3 style="font-size:15px">No concept terms match</h3><p>'+(q?'Try a broader term, or read the full vocabulary — the vocabulary grows organically as documents are ingested.':'')+'</p></div>';
+    return h;
+  }
+  h+='<div class="count" style="margin-bottom:10px">'+list.length+' of '+idx.length+' concept terms</div>';
+  h+=list.map(t=>{
+    const open = state.expandedTerm===t.name;
+    let body='';
+    if(open){
+      body='<div class="t-body">'+t.covers.map(c=>
+        '<div class="cover" onclick="openChapter(\''+c.docId+'\',\''+c.chId+'\')">'
+        + '<div class="c-loc"><span class="doc">'+escapeHtml(c.docTitle)+'</span><span class="arrow">›</span>'+escapeHtml(c.chTitle)+' '+(statusPill(c.status))+'</div>'
+        + '<div class="c-desc">'+escapeHtml(c.desc)+'</div>'
+        + '<span class="c-go">open '+I('back',12,'')+'</span>'
+        + '</div>'
+      ).join('')+'</div>';
+    }
+    return '<div class="term '+(open?'open':'')+'">'
+      + '<div class="t-head" onclick="toggleTerm(\''+t.name+'\')">'
+      + I('caret',15,'caret')
+      + '<span class="t-name">'+escapeHtml(t.name)+'</span>'
+      + '<span class="t-key">concept</span>'
+      + (t.stale?'<span class="pill stale">attention</span>':'')
+      + '<span class="t-cnt">'+t.count+' chapter'+(t.count!==1?'s':'')+'</span>'
+      + '</div>'+body+'</div>';
+  }).join('');
+  return h;
+}
+
+function renderDocuments(b){
+  // drill: list -> toc -> chapter
+  if(state.chapterId && state.docId) return renderChapter(b);
+  if(state.docId) return renderDocToc(b);
+
+  let h='<div class="note">'+I('info',14)+'<span><b>Documents</b> — the ingested sources in this bundle. Each has a stored <b>table of contents</b> (a level-2 drill-down an agent uses to fetch specific chapters). Click a document to open its TOC.</span></div>';
+  h+='<div class="doc-list">'+b.docs.map(d=>{
+    const cc=d.chapters.length; const tc=d.chapters.reduce((n,c)=>n+c.concepts.length,0);
+    const st=d.chapters.some(c=>c.status!=='ok');
+    return '<div class="doc-row" onclick="openDoc(\''+d.id+'\')">'
+      + '<span class="d-ic">'+I('doc',18)+'</span>'
+      + '<div><div class="d-title">'+escapeHtml(d.title)+'</div><div class="d-meta">'+cc+' chapters · '+tc+' concept refs'+(st?' · <span style="color:var(--amber)">needs attention</span>':'')+'</div></div>'
+      + '<span class="d-upd">'+d.updated+'</span>'
+      + '<span class="d-go">View TOC '+I('back',12,'')+'</span>'
+      + '</div>';
+  }).join('')+'</div>';
+  return h;
+}
+
+function renderDocToc(b){
+  const d=findDoc(b,state.docId);
+  let h='<div class="note">'+I('info',14)+'<span>This is the document\'s <b>stored table of contents</b> — the level-2 artifact. It lists each chapter with a one-line description and the <span style="color:var(--violet)">concept terms</span> it covers. An agent calls <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_read_toc</code> to get exactly this, then <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_read_concept</code> for a full chapter. Click a chapter to open it in full.</span></div>';
+  h+='<div class="toc"><div class="toc-head">'
+    + '<div class="h">'+I('book',16)+' '+escapeHtml(d.title)+'</div>'
+    + '<div class="s">'+d.chapters.length+' chapters · TOC artifact: <span style="font-family:monospace">toc/'+state.docId+'.md</span> · updated '+d.updated+'</div>'
+    + '</div>';
+  h+=d.chapters.map((c,i)=>
+    '<div class="toc-item" onclick="openChapter(\''+d.id+'\',\''+c.id+'\')">'
+    + '<span class="toc-num">'+String(i+1).padStart(2,'0')+'</span>'
+    + '<span class="toc-title">'+escapeHtml(c.title)+' '+statusPill(c.status)+'</span>'
+    + '<span class="toc-desc">'+escapeHtml(c.summary)+'</span>'
+    + '<span class="toc-tags">'+c.concepts.map(t=>'<span class="chip" title="Jump to concept index: '+t+'" onclick="event.stopPropagation();jumpToTerm(\''+t+'\')"><span class="cdot"></span>'+t+'</span>').join('')+'</span>'
+    + '<span class="toc-go">open '+I('back',12,'')+'</span>'
+    + '</div>'
+  ).join('');
+  h+='</div>';
+  return h;
+}
+
+function renderChapter(b){
+  const d=findDoc(b,state.docId); const c=findCh(b,state.docId,state.chapterId);
+  const src = state.showSrc[state.docId+':'+state.chapterId];
+  let h='<button class="btn" style="margin-bottom:12px" onclick="state.chapterId=null;renderDetail()">'+I('back',15)+' Back to '+escapeHtml(d.title)+'</button>';
+  h+='<div class="chap-card"><div class="chap-bar">'
+    + '<span class="cb-title">'+escapeHtml(c.title)+'</span>'+statusPill(c.status)
+    + '<label class="src-toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--muted);margin:0">'
+    + '<input type="checkbox" style="width:auto" '+(src?'checked':'')+' onchange="toggleSrc(\''+state.docId+'\',\''+state.chapterId+'\',this.checked)"> View source (.md)</label>'
+    + '</div>';
+  if(!src){
+    h+='<div class="fm">'
+      + '<div class="fm-row"><span class="fm-k">type</span><span class="fm-v"><code>section</code></span></div>'
+      + '<div class="fm-row"><span class="fm-k">parent</span><span class="fm-v"><code>'+state.docId+'</code> · '+escapeHtml(d.title)+'</span></div>'
+      + '<div class="fm-row"><span class="fm-k">concepts</span><span class="fm-v">'+c.concepts.map(t=>'<code>'+t+'</code>').join(' ')+'</span></div>'
+      + '<div class="fm-row"><span class="fm-k">summary</span><span class="fm-v">'+escapeHtml(c.summary)+'</span></div>'
+      + (c.status!=='ok'?'<div class="fm-row"><span class="fm-k">status</span><span class="fm-v">'+statusPill(c.status)+'</span></div>':'')
+      + '</div>';
+  }
+  h+='<div class="chap-bar" style="background:transparent;border-left:0;border-right:0">'+(src?'<span class="hint" style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px">'+I('code',13)+' Raw chapter markdown — exactly what <code style="font-family:monospace">okf_read_concept</code> returns (full text, not a snippet)</span>':'')+'</div>';
+  if(src){
+    h+='<div class="src-view"><pre>'+escapeHtml(chapterSource(c))+'</pre></div>';
+  } else {
+    h+='<div class="md-body">'+c.blocks.map(bl=> bl.t==='md' ? md(bl.v) : assetBlock(bl)).join('')+'</div>';
+  }
+  h+='</div>';
+  h+='<div class="note" style="margin-top:14px">'+I('info',14)+'<span><b>Inline assets</b> are non-HTML artifacts (image/video) that ingest downloads into <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">raw/</code>, interprets once, and writes back into the chapter as a <b>link + interpretation</b>. Retrieving this chapter hands the agent that interpretation without re-running vision — the asset\'s knowledge travels with the text. HTML hyperlinks stay as remote references (not downloaded).</span></div>';
+  return h;
+}
+
+function renderHealth(b){
+  let items=[];
+  b.docs.forEach(d=>d.chapters.forEach(c=>{ if(c.status!=='ok') items.push({d:c.status,doc:d.title,ch:c.title}); }));
+  let h='<div class="io-card" style="margin-bottom:14px"><h4>'+I('alert',16)+' Needs attention</h4><div class="io-sub">Chapters past their lifecycle threshold (okf_stale_report).</div>';
+  if(items.length){ h+='<div class="health-list">'+items.map(x=>'<div class="health-item"><span class="dot '+(x.d==='stale'?'amber':'red')+'"></span><div class="grow"><div>'+escapeHtml(x.ch)+'</div><div class="loc">'+escapeHtml(x.doc)+'</div></div>'+statusPill(x.d)+'</div>').join('')+'</div>'; }
+  else { h+='<div class="ok-line"><span class="dot green"></span>All chapters are current.</div>'; }
+  h+='</div>';
+  h+='<div class="io-card"><h4>'+I('check',16)+' Lint (okf_lint)</h4><div class="io-sub">Index/TOC drift and broken references. Both artifacts are derived, so drift is rebuilt, not patched by hand.</div>'
+    + '<div class="ok-line"><span class="dot green"></span>Concept-index drift <span class="m">0 dangling</span></div>'
+    + '<div class="ok-line"><span class="dot green"></span>Document-TOC drift <span class="m">0 stale rows</span></div>'
+    + '<div class="ok-line"><span class="dot green"></span>Broken inline-asset links <span class="m">0</span></div>'
+    + '<div class="ok-line"><span class="dot green"></span>Orphan chapters (no parent doc) <span class="m">0</span></div>'
+    + '</div>';
+  return h;
+}
+
+function renderIO(b){
+  return '<div class="io-grid">'
+    + '<div class="io-card"><h4>'+I('export',16)+' Export</h4><div class="io-sub">Spec-conformant OKF — includes the concept index and every document TOC. Re-importing reproduces a queryable bundle.</div>'
+      + '<label>Format</label><select><option>Directory</option><option>Tarball (.tar.gz)</option></select>'
+      + '<label>Destination</label><input placeholder="/KnowledgeBase/exports/…">'
+      + '<div class="row"><button class="btn primary" onclick="openModal(\'export\')">'+I('export',14)+' Export</button></div></div>'
+    + '<div class="io-card"><h4>'+I('import',16)+' Import</h4><div class="io-sub">Add another OKF bundle to this knowledge base service (side-by-side, not into the current bundle).</div>'
+      + '<label>Source</label><select><option>Directory path</option><option>Git URL</option><option>Tarball (.tar.gz)</option></select>'
+      + '<label>Path / URL</label><input placeholder="/KnowledgeBase/…">'
+      + '<div class="row"><button class="btn primary" onclick="openModal(\'import\')">'+I('import',14)+' Import</button></div></div>'
+    + '</div>'
+    + '<div class="io-card" style="margin-top:14px"><h4>'+I('import',16)+' Ingest a document into this bundle</h4><div class="io-sub">The ingest agent decomposes the source into chapters, assigns concept terms, writes summaries, creates the TOC, and updates the concept index. Inline non-HTML assets are downloaded, interpreted, and preserved.</div>'
+      + '<label>Source (URL, VFS path, or raw/ path)</label><input placeholder="https://…  ·  /workspace/doc.pdf  ·  raw/…">'
+      + '<label>Crawl depth (optional)</label><input placeholder="bundle default">'
+      + '<div class="row"><button class="btn primary" onclick="openModal(\'ingest\')">'+I('import',14)+' Ingest</button></div></div>';
+}
+
+/* ---------------- actions ---------------- */
+function render(){
+  renderCrumb();
+  if(state.view==='list') renderList(); else renderDetail();
+}
+function goList(){ state.view='list'; state.docId=null; state.chapterId=null; render(); }
+function openBundle(id){ state.view='detail'; state.bundleId=id; state.tab='conceptIndex'; state.docId=null; state.chapterId=null; state.expandedTerm=null; state.termQuery=''; render(); }
+function setTab(t){ state.tab=t; state.docId=null; state.chapterId=null; state.expandedTerm=null; render(); }
+function openDoc(id){ state.tab='documents'; state.docId=id; state.chapterId=null; render(); }
+function openChapter(docId,chId){ state.tab='documents'; state.docId=docId; state.chapterId=chId; render(); }
+function toggleTerm(name){ state.expandedTerm = state.expandedTerm===name? null : name; render(); }
+function onTermQuery(v){ state.termQuery=v; renderDetail(); renderCrumb(); }
+function jumpToTerm(name){ state.tab='conceptIndex'; state.termQuery=name; state.expandedTerm=name; state.docId=null; state.chapterId=null; renderDetail(); renderCrumb(); }
+function toggleSrc(docId,chId,on){ state.showSrc[docId+':'+chId]=on; renderDetail(); renderCrumb(); }
+function askDelete(id){ state.deleteId=id; document.getElementById('delPath').textContent='/KnowledgeBase/'+BUNDLES[id].name+'/'; document.getElementById('delMsg').textContent='Deleting “'+BUNDLES[id].name+'” removes '+bundleStats(BUNDLES[id]).chapters+' chapters across '+bundleStats(BUNDLES[id]).docs+' documents.'; openModal('delete'); }
+function openModal(id){ document.getElementById('modal-'+id).classList.remove('hidden'); }
+function closeModal(id){ document.getElementById('modal-'+id).classList.add('hidden'); }
+document.getElementById('modeSeg').addEventListener('click',e=>{
+  const btn=e.target.closest('button'); if(!btn) return;
+  state.mode=btn.dataset.mode;
+  document.querySelectorAll('#modeSeg button').forEach(x=>x.classList.toggle('on',x===btn));
+  if(state.mode==='empty'){ state.view='list'; } render();
+});
+document.querySelectorAll('.modal').forEach(m=>m.addEventListener('click',e=>{ if(e.target===m) m.classList.add('hidden'); }));
+
+render();
+</script>
+</body>
+</html>
