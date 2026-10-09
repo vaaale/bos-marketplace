@@ -179,7 +179,7 @@ An agent triggers ingestion of a document into a bundle. The user opens the app'
 
 ### User Story 9 - I can explore the KB as a graph and search it, opening full chapters in a pane (Priority: P2)
 
-In the app's **Query** tab the user has two views: a **Knowledge Graph** (nodes and edges of the bundle) and a **Search** (the same concept-anchored search an agent uses). Selecting a node or a search result opens the corresponding chapter in a resizable side pane, rendered in full, with a link to the original source document at the top.
+In the app's **Query** tab the user has a **shared search field** and a **Graph / Table** toggle: a **Knowledge Graph** (nodes and edges of the bundle) or a **Table** of the same nodes, with the search reflecting in whichever view is active (matching rows / highlighted nodes). Selecting a node or a search result opens the corresponding chapter in a resizable side pane, rendered in full, with a link to the original source document at the top.
 
 **Why this priority**: This is the human-facing mirror of the agent's retrieval — it lets the user see and use exactly what the agents see, and trust the results.
 
