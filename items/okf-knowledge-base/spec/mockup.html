@@ -1225,13 +1225,16 @@ function attachGraphInteractions(svg){
   svg.addEventListener('mouseover',e=>{ const gEl=e.target.closest('.g-node'); setGraphHover(gEl? G.byId[gEl.getAttribute('data-id')].id : null); });
 }
 window.addEventListener('mousemove',e=>{
+  if((G.downX!=null) && !G.moved && Math.hypot(e.clientX-G.downX, e.clientY-G.downY) > 3) G.moved=true;
   if(G.drag){
+    if(!G.moved) return;
     const svg=graphSVG(); if(!svg) return;
     const p=screenToWorld(svg,e.clientX,e.clientY); const n=G.byId[G.drag.id];
-    n.fx=p.x-G.drag.ox; n.fy=p.y-G.drag.oy; n.x=n.fx; n.y=n.fy; G.moved=true;
+    n.fx=p.x-G.drag.ox; n.fy=p.y-G.drag.oy; n.x=n.fx; n.y=n.fy;
     if(((G._mt=(G._mt||0)+1)%2)===0){ for(let i=0;i<3;i++) stepGraph(); drawGraph(); }
   } else if(G.pan){
-    G.view.x=G.pan.vx+(e.clientX-G.pan.sx); G.view.y=G.pan.vy+(e.clientY-G.pan.sy); G.moved=true; applyTransform();
+    if(!G.moved) return;
+    G.view.x=G.pan.vx+(e.clientX-G.pan.sx); G.view.y=G.pan.vy+(e.clientY-G.pan.sy); applyTransform();
   }
 });
 window.addEventListener('mouseup',()=>{
