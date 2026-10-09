@@ -1099,6 +1099,7 @@ function renderGraph(g){
   G.nbr=new Map(); G.nodes.forEach(n=>G.nbr.set(n.id,new Set([n.id])));
   G.edges.forEach(e=>{ G.nbr.get(e.from).add(e.to); G.nbr.get(e.to).add(e.from); });
   G.view={x:0,y:0,k:1}; gHover=null;
+  renderGraphSVG();
   for(let i=0;i<L.ticks;i++) stepGraph();
   applyTransform();
   drawGraph();
