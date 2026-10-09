@@ -1,311 +1,317 @@
-# Feature Specification: OKF Knowledge Base & Ingestion Pipeline
+# Feature Specification: OKF Knowledge Base — General-Purpose Agent Knowledge Base (Redesign)
 
-**Feature Branch**: `bos/040-okf-knowledge-base`
+**Feature Branch**: `bos/okf-kb-redesign`
 
-**Created**: 2026-08-16
+**Created**: 2026-10-09
 
 **Status**: Draft
 
-**App Target**: **mixed — `bos-core` + `marketplace-item`.** This feature has two deliverables that must ship together:
+**App Target**: **`marketplace-item`.** This is a redesign of the already-installed `okf-knowledge-base` item: its **service facet** (OKF storage + the `okf_*` tool surface + a new derived two-level index + re-scoped ingest) and its **config-app UI facet**, plus the item's bundled `okf-ingest` agent and bundle-schema skill. The prior `040` spec split the work as *mixed* (item + four `bos-core` prerequisites). Those prerequisites — the fixed `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`, the `ToolExecuteResult` attachment mechanism, `ffmpeg` in the Docker images, and marketplace-item agent/skill copy-install — remain **dependencies** (see Assumptions) and are *not re-scoped here*: this spec's deliverable is the item. If any prerequisite has not actually shipped, it is a separate BOS-source follow-up.
 
-1. **`bos-core`** — four small, targeted changes to `src/`: (a) fix `web_fetch`/`web_search` to return clean, complete, link-preserving markdown instead of the current regex-stripped, silently-truncated text; (b) add a general-purpose `file_to_markdown` server tool (PDF/DOCX/PPTX/XLSX → markdown via the sandbox's existing `markitdown` install) and a `video_keyframes` tool (ffmpeg-based); (c) extend the marketplace item install pipeline (`src/system/marketplace/install/symlinkManager.ts`) so an item can bundle agents/skills that get copied (not symlinked) into `data/agents/`/`data/skills/` with update-conflict detection; (d) add `ffmpeg` to both `Dockerfile` and `docker/run-command/Dockerfile`, and add provider-native-video-understanding capability detection alongside the existing `isNativeWebSearchAvailable()` pattern.
-2. **`marketplace-item`** (service facet + config-app UI facet) — the OKF Knowledge Base item itself, at `data/user-apps/items/okf-knowledge-base/`, redesigned around an agentic ingest pipeline, plus the delete capability.
-
-Do NOT read this as two features awkwardly stapled together: the `bos-core` changes exist *only* to serve the KB's ingestion pipeline (clean fetch output, document conversion, and a bundled ingest agent are all prerequisites for FR-018+ below) and are not independently useful BOS features in their own right.
-
-**Input**: User description: consolidates and supersedes the prior `040-okf-knowledge-base` and `041-okf-delete-capability` specs. Both are folded into this single spec; neither prior spec is retained separately.
+**Input**: User description: Re-design the OKF Knowledge Base into a general-purpose knowledge base that agents use to *organize* knowledge and *retrieve* it efficiently. Stay grounded in Andrej Karpathy's "LLM Wiki" principles (raw sources / LLM-maintained wiki / index; ingest–query–lint) and the Open Knowledge Format (v0.2). No vector database, no SQL database, no embeddings — unless we conclude they give substantial value. Retrieval returns **full documents or full chapters, never snippet chunks**.
 
 ## Overview
 
-This feature delivers a **Knowledge Base for BrowserOS whose storage format is the Open Knowledge Format (OKF)** — a directory of Markdown files with YAML frontmatter (canonical source: `GoogleCloudPlatform/knowledge-catalog`, `okf/SPEC.md`, v0.2) — running as a marketplace-item background service, **plus** an ingestion pipeline capable of turning a URL, a local document (PDF/DOCX/PPTX/XLSX), an image, or a video into OKF concepts without ever routing the source content through the calling agent's own context.
+This is a redesign of the installed OKF Knowledge Base. The prior spec's center of gravity was **ingest** (get bytes in via a multi-format pipeline). This redesign moves the center of gravity to **organization + efficient retrieval**, and re-positions ingest as the mechanism that *builds the structures retrieval depends on*.
 
-### What stays the same (baseline, carried from the original 040/041)
+### What the two use cases demand
 
-1. Bundles live under the user's VFS at `/KnowledgeBase/<bundle>/`: concepts (`.md` files), edges (Markdown links), reserved files (`index.md`, `log.md`), and semantic frontmatter families (provenance, trust, lifecycle, sources).
-2. Every operation is exposed to agents as native tools (`okf_*`), declared by the service via the 039 Service Tool Exposure contract.
-3. **Retrieval is LLM-based over OKF structure** — the LLM traverses the concept graph (links/backlinks, provenance, trust, lifecycle) to answer, following Andrej Karpathy's "LLM Wiki" pattern (canonical gist `https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f`). No RAG, no embeddings, no vector store, no model hosting in the service.
-4. Deletion — of a whole bundle (`okf_delete_bundle`) or a single concept (`okf_delete_concept`) — is supported on both the tool surface and the config-app, confirmation-gated in the UI, non-destructive to the graph by default.
+Two representative (deliberately illustrative) use cases fix the shape:
 
-### What's new — the ingestion redesign
+1. **General knowledge base.** An agent ingests articles (e.g. from a daily digest). Topics and concepts are extracted and made searchable. A query like *"Building an MCP App with a dynamic AG/UI"* returns a **ranked table of contents** — one row per relevant document, each row carrying a document id, a description of the content, and the concept that matched. The agent then either (a) fetches a document's own table of contents (its chapters) and then the specific chapters, or (b) fetches the chapters directly from the search results. Either way it retrieves the **full document or full chapter**, not a snippet.
+2. **Multiple knowledge bases for document comparison.** The user holds a bundle of *Engineering Rules & Guidelines*. They hand an agent a design document and ask it to be checked against the rules. The agent works through the design document, queries the rules bundle for applicable rules, retrieves the relevant full rule documents, compares, and emits findings. The KB's job is to hand the agent the *right full documents*; the comparison is the agent's reasoning.
 
-The original 040 shipped `okf_ingest` as a flat tool requiring the caller to pass the **entire source content as a string argument** (`{bundle, filename, content, conceptId, title}`). This has two costs: the calling LLM must reproduce/output the full source verbatim (token cost, truncation risk, hallucination risk on long sources), and the source content bloats the calling conversation's context for no benefit. Compounding this, `web_fetch`/`web_search` (the tools most likely to feed `okf_ingest`) themselves regex-strip HTML (dropping every link) and silently truncate at 200KB.
+### The core mechanism: a two-level, concept-anchored, derived index
 
-The redesign splits **mechanical acquisition** (deterministic, no LLM involved) from **semantic decomposition** (inherently a reasoning task — deciding concept boundaries, resolving citations, linking the graph):
+The retrieval contract these use cases imply — *concept-anchored, chapter-granular, full-text, efficient* — is served by a **two-level index** that is derived from, and regenerable from, the bundle's OKF content. This is the new mechanism; the prior spec had no computed index at all (retrieval was "the LLM traverses the graph").
 
-- **Mechanical acquisition** — a fixed `web_fetch`, plus new `file_to_markdown` (PDF/DOCX/PPTX/XLSX via `markitdown`) and `video_keyframes` (ffmpeg) tools — gets bytes into `raw/` via the renamed-and-narrowed `okf_add_raw_source` tool. None of this requires an LLM turn to relay content.
-- **Semantic decomposition** — reading the raw source, deciding concept granularity, writing frontmatter, linking into the graph, resolving loose citations ("Foo et al. 2024", `arxiv:NNNN.NNNNN`) that aren't plain URLs, and recursing into references worth ingesting — happens inside a **bounded sub-agent run**, dispatched via BOS's existing `agent_delegate` mechanism (`src/lib/assistant/tools/server/delegate-local.ts` → `runInnerLoop`), not a flat tool call. The sub-agent is a bundled agent (`okf-ingest`) shipped *with* the marketplace item, restricted to exactly the tools it needs (least privilege), so the top-level assistant's own tool surface never grows to accommodate ingestion's internal steps.
-- Images are ingested by giving the sub-agent the image directly as a multimodal content block (BOS's assistant harness already supports this — `src/lib/assistant/messages.ts`, `model-turn.ts`) rather than OCR — real understanding, not text extraction.
-- Video is ingested via ffmpeg keyframe sampling by default, with a provider-native-video-understanding path preferred when the active model/provider supports it (capability-detected, mirroring `isNativeWebSearchAvailable()` in `src/lib/agent/web-search.ts`).
-- Reference/citation discovery is **mechanical where possible** (regex over the fetched markdown for URLs, `arxiv:` IDs, DOIs) and only falls back to the sub-agent's own `web_search` reasoning for bare author-year citations that have no explicit link — cost proportional to actual ambiguity, not a blanket LLM pass over every reference.
-- Crawl depth (how many hops of references to follow) and fan-out worker count (how many references to ingest concurrently) are **configurable**, with a bundle-level default (in the service's `configSchema`, alongside the existing `bundleRoot`/`port`) and a per-call override on `okf_ingest`.
+- **Level 1 — concept index** (bundle-level, a stored human-readable artifact): a mapping from each **concept term** to the (document, chapter) pairs that cover it, each pair carrying a one-line description. This is the *routing table* and the *searchable vocabulary*. Crucially it is bounded by the number of **distinct concept terms**, not by the number of documents — so a bundle with hundreds of articles but a few hundred real topics keeps a small, cheap-to-route table.
+- **Level 2 — document TOC** (per ingested document, a stored human-readable `.md` artifact): the document's chapters, each with a one-line description and the concept terms it covers. This is the level-1 drill-down: fetch a document's TOC, then fetch the chapters you want.
 
-### What's new — marketplace items can bundle agents/skills
+Both are **derived and regenerable**: the canonical source of truth is the OKF content — the chapter `.md` files (each carrying frontmatter: its parent document, the concept terms it covers, and a one-line summary) plus the raw sources. The index and TOCs are views the service maintains and can rebuild from that content, so they can never become a second thing you must keep in sync by hand, and they can never silently rot. They are still *stored, browsable, exportable* artifacts (part of the distributable bundle), satisfying the requirement that the document TOC be a real `.md` file.
 
-The `okf-ingest` sub-agent above has to come from *somewhere* installable. BOS's marketplace items currently support bundling an app facet and/or a service facet (035-install-by-symlink: one symlink per item, nothing copied). This feature extends that model, for agents/skills only, to **copy-on-install** (matching the existing `seed/agents/` → `data/agents/`, `seed/skills/` → `data/skills/` pattern already used for BOS's built-in agents/skills) with **provenance tracking** so a later item update can tell whether the user (or the running agent itself, e.g. via the skill reflective-optimizer) has diverged from what was installed, and prompt to keep-or-replace only when it actually has.
+Retrieval, end to end, with no embeddings and no database: `natural-language query → okf_search performs deterministic matching over the concept index → returns TOC rows {docId, chapterId?, description, matched-concept} → the agent fetches the whole document, or the document's TOC, or a specific chapter — always full text → the agent reasons and synthesizes`. Efficiency comes from **precomputed summaries** (written at ingest) making routing a cheap deterministic pass over a small vocabulary plus targeted full-chapter reads — not the LLM re-reading everything, and not a vector store over chunks.
+
+### Inline artifacts (the other new mechanism)
+
+Source documents in a knowledge base frequently embed figures, images, and video that carry real knowledge (a state diagram, an architecture sketch, a demo). This redesign requires ingest to **extract, interpret, and preserve** them inline:
+
+> For every non-HTML asset (image, video, or other non-HTML artifact) within a chapter's scope, ingest (1) downloads a **local immutable copy** into the bundle's `raw/` store, (2) **interprets** it via the ingest agent's vision capability, and (3) writes the chapter markdown with a **link to the stored asset and the interpretation directly beneath it**.
+
+This maps exactly onto Karpathy's three layers: the asset bytes live in **raw** (immutable); the interpretation is LLM-written **wiki** text (a blockquote in the chapter); the markdown link is the **edge** connecting them. Because the interpretation is *stored text* (written once at ingest), retrieving the chapter hands the agent the readable knowledge the asset encodes **without re-running vision at query time**, and the link lets the agent re-view the raw asset if it wants to verify. HTML/link content stays as **remote references** (not downloaded); only non-HTML artifacts are pulled in locally.
+
+### What this is *not* (the "less is more" reduction)
+
+The prior installed surface had **31 tools**, many shaped for the old model (one setter per frontmatter field; graph power-tools; index/log readers; find/list duplicates). The redesigned surface is **18 tools**: **3 added** (concept-anchored `okf_search`, document-TOC `okf_read_toc`, `okf_merge_concepts`), **15 kept**, **16 removed**. Field-setters collapse into `okf_upsert_concept` (frontmatter, merge-on-fields); graph power-tools drop out because retrieval is index-based, not path-based; the log becomes internal. The full before/after table is in FR-035.
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - I can create an OKF knowledge base and add concepts to it (Priority: P1)
+### User Story 1 - I can ask "tell me about X" and get back a table of contents I can drill into, in full (Priority: P1)
 
-The user creates a new knowledge base (an OKF bundle) and the LLM adds concepts (Markdown files with frontmatter) into it via the `okf_*` tools. Concepts become graph nodes, links become edges, and the content is queryable.
+An agent issues a natural-language query against a bundle and receives a concept-anchored table of contents — one row per relevant document (and optionally chapter), each with a description and the matching concept. The agent then retrieves the full document or the specific full chapters. No snippet is ever returned in place of the full content.
 
-**Why this priority**: Foundation — without a bundle and concepts, nothing else can be demonstrated.
+**Why this priority**: This *is* the headline retrieval contract. Without it the KB is a file store, not a knowledge base.
 
-**Independent Test**: Create a bundle named "Engineering Docs" from the service config page, add three concept files via `okf_upsert_concept`, verify each appears in the bundle, then confirm a link between two concepts is retrievable via the query tools.
+**Independent Test**: Ingest a set of articles on a topic; query with a natural-language phrase not present verbatim in any title; verify `okf_search` returns concept-anchored TOC rows; verify `okf_read_concept` on a returned chapter returns its *entire* body (not a truncation); verify `okf_read_toc` returns the document's full chapter list.
 
 **Acceptance Scenarios**:
 
-1. **Given** the OKF service configuration page, **When** the user creates a new knowledge base with a name, **Then** an OKF bundle directory is created under `/KnowledgeBase/<name>/` with `index.md` and `log.md`.
-2. **Given** an existing bundle, **When** the agent calls `okf_upsert_concept` with an id, type, frontmatter, and body, **Then** a concept `.md` file is written and appears in `okf_list_concepts`.
-3. **Given** a concept with a Markdown link to another concept, **When** the agent reads it via `okf_read_concept` or queries it, **Then** the edge is extracted and navigable (`okf_neighbors`, `okf_backlinks`).
+1. **Given** a bundle containing ingested articles covering a concept, **When** an agent calls `okf_search` with a natural-language query that paraphrases the concept, **Then** it receives TOC rows each carrying a document id, an optional chapter id, a one-line content description, and the concept term that matched.
+2. **Given** a TOC row from `okf_search`, **When** the agent calls `okf_read_concept` for the referenced chapter, **Then** it receives the chapter's complete markdown body — full text, not a snippet — including any inline-asset links and interpretations.
+3. **Given** a document id, **When** the agent calls `okf_read_toc`, **Then** it receives that document's stored table of contents: its chapters, each with a one-line description and the concepts it covers — enabling drill-down to a specific chapter.
+4. **Given** a document id, **When** the agent calls `okf_read_concept` for the document itself, **Then** it receives the whole document's content in full.
 
 ---
 
-### User Story 2 - I can ask the agent to ingest a URL into a bundle, and it never has to retype the source (Priority: P1)
+### User Story 2 - Ingesting a document organizes it: chapters, concepts, summaries, a stored TOC, and an updated index (Priority: P1)
 
-The user says "ingest this article into bundle X." The agent calls `okf_add_raw_source` with the URL (fetched via the fixed `web_fetch`, clean markdown, no truncation), which lands the content in `raw/`, then delegates to the bundled `okf-ingest` agent to decompose it into concepts. At no point does the orchestrating conversation's context carry the full article text.
+The user (or an agent) ingests a document. The result is *organized*, not just stored: it is decomposed into chapters, each chapter is assigned concept terms and given a one-line summary, the document gains a stored table of contents, and the bundle's concept index is updated so the chapters are discoverable.
 
-**Why this priority**: This is the headline problem this feature exists to solve — the prior design forced the calling LLM to output the entire source as a tool argument.
+**Why this priority**: The index that US1 retrieves against only exists because ingest builds it. Organization and retrieval are one system.
 
-**Independent Test**: Ask the assistant to ingest a known article URL into a bundle; inspect the conversation transcript and confirm the raw article text never appears as model-generated output; verify concepts appear in the bundle afterward.
+**Independent Test**: Ingest a structured article (with headings); verify each heading-level section becomes a chapter concept with `parent`, `concepts`, and `summary` frontmatter; verify a stored document TOC appears listing those chapters; verify the concept index now routes the new concept terms to the new chapters.
 
 **Acceptance Scenarios**:
 
-1. **Given** a URL, **When** the agent calls `okf_add_raw_source` (backed by a fixed `web_fetch`), **Then** the full page content — clean markdown, links preserved, not truncated — lands in `raw/` without the calling LLM having generated that content as output tokens.
-2. **Given** a raw source has been added, **When** the agent (or the dispatching layer) delegates to the `okf-ingest` agent via `agent_delegate`, **Then** the sub-agent reads the raw source directly (not re-supplied as an argument), writes one or more concepts with provenance/trust/lifecycle frontmatter, links them into the graph, and updates `index.md`/`log.md`.
-3. **Given** an article containing both explicit URLs and bare citations ("Foo et al. 2024", `arxiv:2401.00001`), **When** the sub-agent resolves references, **Then** explicit URLs and arXiv/DOI-pattern citations are resolved mechanically (no `web_search` call), and only bare author-year citations trigger a `web_search`-backed resolution.
-4. **Given** a bundle-level `maxDepth`/`maxWorkers` configuration (or a per-call override), **When** the sub-agent discovers references worth ingesting, **Then** it follows at most `maxDepth` hops and ingests at most `maxWorkers` references concurrently, and skips references whose source already exists in the bundle (dedup against prior ingests).
+1. **Given** a source document with clear section structure, **When** it is ingested, **Then** each section becomes a chapter concept file (OKF `type: section`) carrying frontmatter: its parent document, the concept terms it covers, and a one-line summary.
+2. **Given** an ingested document, **When** the agent (or the config-app) inspects the bundle, **Then** a stored, human-readable table-of-contents artifact exists for that document, listing its chapters with one-line descriptions and covered concepts.
+3. **Given** an ingested document whose chapters cover a concept not previously in the bundle, **When** ingest completes, **Then** the bundle's concept index is updated so that concept now routes to the new chapters (the vocabulary grows organically).
+4. **Given** a source document already in the bundle, **When** the same source is re-ingested, **Then** it is deduplicated (not created as a duplicate document), and the index is reconciled rather than doubled.
 
 ---
 
-### User Story 3 - I can ingest documents, images, and video, not just URLs (Priority: P1)
+### User Story 3 - I can scope retrieval to a specific bundle to compare a document against a rule base (Priority: P1)
 
-The user points the agent at a local PDF, DOCX, PPTX, or XLSX file, an image, or a video, and asks it to be ingested into a bundle.
+The user holds a bundle of rules/guidelines and asks an agent to check a design document against it. The agent queries *that bundle specifically*, retrieves the applicable full rule documents, and compares. Knowledge bases are the unit of curation and of retrieval scope.
 
-**Why this priority**: The original ingestion design was scoped to text/Markdown only; multi-format ingestion was always intended and the sandbox already ships the tooling to do it.
+**Why this priority**: Confirms the multi-bundle, domain-scoped model is real, not just multiple folders in one namespace.
 
-**Independent Test**: Ingest a PDF containing multiple sections; verify each becomes a distinct, correctly-linked concept. Ingest a photo; verify the resulting concept reflects real visual understanding, not just literal OCR text. (Video: verify once `ffmpeg` lands per FR-024.)
+**Independent Test**: Create a "rules" bundle, ingest several rule documents into it. With a design document in hand, run `okf_search` against *only* the rules bundle; verify results come solely from that bundle and that the returned rule documents are retrievable in full.
 
 **Acceptance Scenarios**:
 
-1. **Given** a PDF/DOCX/PPTX/XLSX file, **When** the agent calls `file_to_markdown`, **Then** the file is converted to markdown via the sandbox's `markitdown` (staged through `workspace/`, never requiring the OKF service's `KnowledgeBase/` path to be visible inside the `run_command` sandbox) and the result is registered via `okf_add_raw_source`.
-2. **Given** an image, **When** the `okf-ingest` sub-agent processes it, **Then** the image is passed as a multimodal content block (not OCR-only) and the resulting concept cites the original image file (kept immutable in `raw/`) as its source.
-3. **Given** a video and `ffmpeg` present in both Docker images (FR-024), **When** the agent calls `video_keyframes`, **Then** keyframes are sampled and passed to the sub-agent for understanding; if the active provider/model supports native video input (capability-detected per FR-023), that path is preferred over frame-sampling.
+1. **Given** a rules bundle and a separate general bundle both containing overlapping concepts, **When** the agent calls `okf_search` naming the rules bundle, **Then** results are drawn only from the rules bundle.
+2. **Given** a matched rule document from a scoped `okf_search`, **When** the agent retrieves it via `okf_read_concept`, **Then** it gets the full rule text so it can be compared against a design document.
+3. **Given** a document the agent is evaluating (whether or not it is itself stored in a bundle), **When** the agent works through it, **Then** it can query any target bundle per section to gather the applicable full rules for comparison.
 
 ---
 
-### User Story 4 - An agent can query and traverse the knowledge graph with native tools (Priority: P1)
+### User Story 4 - Ingest interprets figures and preserves them inline, so retrieval carries their knowledge (Priority: P1)
 
-The agent uses the `okf_*` tools — which appear in its tool registry as native, callable tools — to search, read, traverse, and synthesize over the knowledge base.
+A rules document contains a figure (an image, a diagram, or a video). Ingest extracts it, downloads a local copy, interprets it, and writes the chapter so the stored markdown links to the asset and carries the interpretation directly beneath. Retrieving the chapter therefore hands the agent both the interpretation and a link to the raw asset — without re-running vision.
 
-**Why this priority**: Proves the tool-exposure model works and that retrieval is genuinely LLM-driven.
+**Why this priority**: This is what makes a KB usable for rule bases, technical docs, and any corpus where the *diagrams* carry the knowledge — a stated, load-bearing requirement.
 
-**Independent Test**: With the item installed, ask the assistant to research a topic in the bundle, then verify it reads the index, traverses relevant concepts via links, and synthesizes an answer.
+**Independent Test**: Ingest a document containing an image and a video; verify each non-HTML asset is downloaded as a local copy in `raw/`; verify each chapter's markdown contains a link to the stored asset and an interpretation beneath it; verify `okf_read_concept` returns both the link and the interpretation; verify a plain hyperlink (HTML link) in the source is *not* downloaded (left as a remote reference).
 
 **Acceptance Scenarios**:
 
-1. **Given** the OKF KB item is installed and its service running, **When** the assistant invokes an `okf_*` tool by name, **Then** the tool executes in the service and returns a result (no external tool-server configured).
-2. **Given** a schema-validating `okf_*` tool, **When** the assistant calls it with a missing required field, **Then** BOS rejects the call with a JSON-schema validation error and does not invoke the service (039 FR-004).
-3. **Given** a restrictive tool-gate config, **When** the assistant tries to call an `okf_*` tool matching that scope, **Then** it is not auto-executed — it is gated exactly like a built-in tool (039 FR-005).
-4. **Given** a query, **When** the assistant performs retrieval, **Then** it reads `index.md` first, traverses relevant concepts via links/backlinks, weighs provenance/trust/lifecycle, and synthesizes an answer with citations.
+1. **Given** a chapter whose source contains an image, **When** it is ingested, **Then** the image is downloaded as a local immutable copy in the bundle's `raw/` store, interpreted, and the chapter markdown contains a link to the stored copy with the interpretation directly beneath it.
+2. **Given** a chapter whose source contains a video, **When** it is ingested, **Then** the video is handled the same way (local copy + interpretation of the sequence + inline link).
+3. **Given** an ingested chapter with inline assets, **When** the agent retrieves it via `okf_read_concept`, **Then** the returned content includes the asset links and their interpretations, so the agent has the asset's knowledge without re-running vision.
+4. **Given** a source containing ordinary hyperlinks (to HTML pages) alongside a non-HTML image, **When** it is ingested, **Then** the hyperlinks remain remote references and only the non-HTML image is downloaded locally.
 
 ---
 
-### User Story 5 - I can delete a bundle or a concept, from either surface (Priority: P1)
+### User Story 5 - I can manage bundles: create, import, export, delete (Priority: P2)
 
-The user removes a knowledge base they no longer need, or a single wrong/superseded concept, from the config UI or via an agent tool call.
+The user creates a knowledge base, imports an existing OKF bundle, exports a bundle, and deletes one they no longer need — from the config-app or via tools.
 
-**Why this priority**: Without delete, an unwanted or miscreated bundle/concept cannot be cleaned up at all — this was entirely missing from the original 040 (carried over from 041, now the baseline rather than an add-on).
+**Why this priority**: OKF is a distribution format; bundles are the unit of curation. Secondary to ingest/retrieve.
 
-**Independent Test**: Create a bundle, delete it via `okf_delete_bundle`; verify it disappears from `okf_list_bundles` and disk. Add a concept, delete it via `okf_delete_concept`; verify the bundle is otherwise intact.
+**Independent Test**: Create a bundle; import an existing OKF directory; export a bundle and confirm the export is spec-conformant OKF (including the concept index and document TOCs); delete a bundle and confirm it is gone.
 
 **Acceptance Scenarios**:
 
-1. **Given** an existing bundle, **When** the user selects Delete Bundle in the config UI and confirms (or an agent calls `okf_delete_bundle`), **Then** the bundle directory under `/KnowledgeBase/<name>/` is removed and it no longer appears in `okf_list_bundles`.
-2. **Given** an existing concept, **When** the user selects Delete Concept and confirms (or an agent calls `okf_delete_concept`), **Then** the concept file is removed; the bundle remains otherwise intact.
-3. **Given** a concept other concepts link to, **When** it is deleted with default settings, **Then** backlinks are left intact (broken-link candidates for `okf_lint`); with `rewrite_backlinks: true`, each backlinker is rewritten, `index.md` updated, `log.md` appended.
-4. **Given** a Delete Bundle/Concept confirmation dialog, **When** the user cancels, **Then** nothing is deleted.
+1. **Given** the config-app, **When** the user creates a bundle, **Then** an OKF bundle is created with the conformant layout.
+2. **Given** an existing OKF bundle on disk, **When** the user imports it, **Then** its documents, chapters, concept index, and TOCs are present and queryable.
+3. **Given** a bundle, **When** the user exports it, **Then** the export is a spec-conformant OKF bundle that includes the concept index and every document TOC, and re-importing it reproduces a queryable bundle.
+4. **Given** a bundle, **When** the user deletes it (or an agent calls `okf_delete_bundle`), **Then** the bundle directory is removed and it no longer appears in `okf_list_bundles`.
 
 ---
 
-### User Story 6 - I can manage and distribute OKF bundles (Priority: P2)
+### User Story 6 - I can curate the concept vocabulary (Priority: P2)
 
-The user imports/exports bundles, views bundle health, and manages the lifecycle from the service configuration page.
+As the vocabulary grows organically, near-duplicate terms accumulate. The user (or an agent) merges two terms into one canonical term, and the index, TOCs, and chapter frontmatter are all updated to reference the canonical term.
 
-**Why this priority**: OKF is a distribution format; import/export is core to "portable, human-readable" but secondary to ingest/query/delete.
+**Why this priority**: Keeps retrieval routing consistent over time; a fragmentation guard for the organic vocabulary.
 
-**Independent Test**: Import an existing OKF bundle (a directory or tarball), verify its concepts are queryable, then export it and confirm the export is spec-conformant.
+**Independent Test**: Ingest sources that produce two near-duplicate terms; merge them; verify the concept index has one canonical entry, and that every document TOC and chapter `concepts` field that referenced either term now references only the canonical term.
 
 **Acceptance Scenarios**:
 
-1. **Given** an existing OKF bundle on disk, **When** the user imports it, **Then** its concepts appear and are queryable.
-2. **Given** a bundle, **When** the user exports it, **Then** the export is a spec-conformant OKF bundle.
-3. **Given** the config page, **When** the user views a bundle, **Then** its status shows concept count, stale/deprecated concepts, and per-concept trust levels.
+1. **Given** two concept terms in a bundle, **When** the agent (or user) calls `okf_merge_concepts` to merge one into the other, **Then** the concept index consolidates to the canonical term and all affected document TOCs and chapter `concepts` frontmatter are updated.
+2. **Given** a merge, **When** a query that previously matched either term is run, **Then** it routes via the single canonical term to the union of the chapters.
 
 ---
 
-### User Story 7 - A marketplace item's bundled agent/skill updates without silently clobbering my edits (Priority: P2)
+### User Story 7 - I can browse the concept index and any document's TOC in the config-app (Priority: P2)
 
-The OKF Knowledge Base item ships the `okf-ingest` agent and its schema-as-skill. When the item is updated (new marketplace version) or reinstalled, a user who customized the agent's prompt, or whose agent self-tuned the skill (reflective optimizer), doesn't lose that work silently, but also isn't nagged on every routine update.
+The config-app lets the user see, in a readable form, a bundle's concept index (term → documents/chapters) and any document's stored table of contents — the human-facing window onto the structures agents retrieve against.
 
-**Why this priority**: Prerequisite for shipping any bundled agent/skill safely; without it, item updates are either always-destructive (bad) or always-additive-and-stale (also bad).
+**Why this priority**: The index and TOCs are the system's core artifacts; making them browsable is what makes the KB inspectable and trustworthy, not a black box.
 
-**Independent Test**: Install the item; edit the installed `okf-ingest` agent's prompt; update the item to a new version; verify a keep-vs-replace prompt appears (rather than a silent overwrite). Reinstall the same version unchanged; verify no prompt appears.
-
-**Acceptance Scenarios**:
-
-1. **Given** a marketplace item bundling agents/skills, **When** it is installed, **Then** each bundled agent/skill is *copied* into `data/agents/<id>/`/`data/skills/<id>/` (never symlinked), with provenance (`itemId`, `version`, content hash) recorded.
-2. **Given** an installed bundled agent/skill unmodified since install, **When** the item is updated, **Then** the new version replaces it silently.
-3. **Given** an installed bundled agent/skill that has since diverged (user edit, or agent self-modification) from its recorded provenance hash, **When** the item is updated, **Then** the user is prompted to keep the local version or take the incoming update, before anything is overwritten.
-
----
-
-### User Story 8 - Provenance, trust, and lifecycle are first-class operations (Priority: P3)
-
-The agent manages provenance (sources/actors), the trust ladder, and lifecycle (status/stale_after) via tools.
-
-**Why this priority**: OKF's differentiators vs. a plain file store; lower priority than ingest/query/delete.
-
-**Independent Test**: Mark a concept `human-reviewed`, attach a source, set `status: deprecated` with a `stale_after`, verify `okf_stale_report` surfaces it.
+**Independent Test**: Open the config-app on a bundle; view its concept index; open a document and view its TOC; verify both match what the retrieval tools return.
 
 **Acceptance Scenarios**:
 
-1. **Given** a concept, **When** the agent calls `okf_set_trust`, **Then** `trust`/`verified` update and unknown keys are preserved.
-2. **Given** a concept, **When** the agent attaches a source or sets `status`/`stale_after`, **Then** the frontmatter persists and lifecycle tools reflect it.
-3. **Given** a concept whose `stale_after` has passed, **When** `okf_stale_report` runs, **Then** it is returned.
+1. **Given** the config-app on a bundle, **When** the user opens the concept index view, **Then** it shows each concept term and the documents/chapters it covers, with the one-line descriptions.
+2. **Given** a document in a bundle, **When** the user opens its TOC, **Then** the app renders the stored document TOC (chapters, descriptions, covered concepts).
+3. **Given** the config-app, **When** the user views a bundle's status, **Then** it shows document count, chapter count, concept-term count, and stale/deprecated items.
 
 ### Edge Cases
 
-- What happens when a concept file has unknown frontmatter keys? → preserved verbatim on every write, never dropped.
-- What happens when a tool call fails inside the service? → reported as a tool error; BOS does not crash; the service restarts on crash.
-- What happens when a concept link points to a non-existent target? → non-fatal warning (broken-link detection).
-- What happens when the service is stopped/uninstalled? → its `okf_*` tools disappear from the registry immediately.
-- What happens if a write targets a path outside the configured bundle root? → rejected.
-- What happens if the user edits a concept file by hand while the service runs? → re-read from disk on each read; backlink index rebuilt lazily/on-change.
-- What happens when an ingest run's reference crawl would exceed `maxDepth`/would re-fetch an already-ingested source? → the hop is skipped, not silently fetched anyway; skipped references are reported in the sub-agent's summary, not silently dropped.
-- What happens if a reference resolves to a URL already present in the bundle's provenance? → skipped (dedup), not re-ingested as a duplicate concept.
-- What happens if `file_to_markdown`/`video_keyframes` need the bundle's `raw/` path but the sandbox only has `workspace/` enabled? → the tool stages the input/output through `workspace/`; the OKF service's own (non-sandboxed) write path moves the result into `raw/` — the `run_command` sandbox never needs `KnowledgeBase/` in its visible-paths configuration.
-- What happens when the active AI provider has no native video/vision or native web-search capability? → the capability-detection check (mirroring `isNativeWebSearchAvailable()`) reports unavailable and the tool/pipeline falls back to the deterministic path (ffmpeg frames; plain fetch) rather than failing.
-- What happens on deleting the last concept in a bundle? → the bundle remains valid (empty concept list); not auto-deleted.
-- What happens on deleting a non-existent bundle/concept? → graceful "not found" error; nothing else deleted.
-- What happens when a marketplace item's bundled agent/skill has no recorded provenance (e.g., pre-existing install from before this feature)? → treated as diverged/unknown on first update after upgrade — prompt keep-vs-replace once, then record provenance going forward.
+- **What happens when a query matches no concept term?** → `okf_search` returns an empty (or near-empty) result set; the agent can widen the query or read the vocabulary via `okf_list_concepts` and route semantically. No invented rows.
+- **What happens when a concept index entry points at a chapter that has since been deleted?** → `okf_lint` reports the drift; the index is regenerable, so a rebuild (or the write path) removes the dangling entry.
+- **What happens when a chapter has no headings (no natural section structure)?** → Ingest treats the whole source as a single chapter.
+- **What happens when a non-HTML asset fails to download or is unreadable for interpretation?** → The chapter records the asset link with an interpretation marked as unavailable (or the asset is noted in `okf_lint`); ingest does not fail the whole document.
+- **What happens when a source is re-ingested after its content changed?** → The existing document is updated in place (append-only `raw/` for the new version); the index/TOC are reconciled, not doubled.
+- **What happens when unknown frontmatter keys are present on a concept?** → Preserved verbatim on every write (merge-on-fields, never dropped).
+- **What happens when a write targets a path outside the configured bundle root?** → Rejected (path safety).
+- **What happens when the service is stopped or uninstalled?** → Its `okf_*` tools disappear from the registry immediately.
+- **What happens when the concept vocabulary grows very large?** → `okf_search`'s deterministic pass still works; if the vocabulary becomes too large for one cheap pass, a keyword pre-filter (still no vector/SQL) is the documented escalation — see NFR-002.
+- **What happens when an ingest run would follow a reference already in the bundle?** → Deduplicated against existing provenance; the hop is skipped and reported, not silently re-fetched.
+- **What happens when the last chapter of a document is deleted?** → The document remains (possibly empty); the bundle is not auto-deleted.
 
 ## Requirements *(mandatory)*
 
-### Functional Requirements — baseline KB (carried from original 040)
+### Functional Requirements — retrieval (the core)
 
-- **FR-001**: The OKF KB MUST be a marketplace item with a service facet managing OKF bundles under `/KnowledgeBase/`.
-- **FR-002**: The service facet MUST opt into tool exposure via `deploymentMode: "tools"` (039 ADR-002) and declare `okf_*` tools natively via the Service Tool Exposure contract.
-- **FR-003**: Each declared tool MUST be validated against its JSON schema before dispatch.
-- **FR-004**: Service-declared tools MUST respect the existing tool-gating/permission model exactly like built-ins.
-- **FR-005**: When the service is stopped/uninstalled, its tools MUST be removed from the registry.
-- **FR-006**: A tool-execution error inside the service MUST be reported as a tool error without crashing BOS; invocations use loopback-scoped auth as the trust boundary.
-- **FR-007**: The service MUST create bundles with the spec-conformant layout: `index.md`, `log.md`, `concepts/`, `raw/`, a schema file.
-- **FR-008**: The service MUST support concept CRUD as tools: `okf_upsert_concept`, `okf_read_concept`, `okf_delete_concept`, `okf_list_concepts`, `okf_find_concepts`.
-- **FR-009**: The service MUST preserve unknown frontmatter keys verbatim on every write (merge-on-fields, never wholesale rewrite).
-- **FR-010**: The service MUST extract Markdown links as graph edges and provide graph tools (`okf_add_link`, `okf_remove_link`, `okf_list_links`, `okf_backlinks`, `okf_neighbors`, `okf_shortest_path`, `okf_export_graph`).
-- **FR-011**: The service MUST support provenance/trust/lifecycle tools (`okf_set_trust`, `okf_add_source`, `okf_set_status`, `okf_attest`, `okf_provenance`, `okf_stale_report`).
-- **FR-012**: The service MUST support point-in-time reads via `okf_get_as_of`.
-- **FR-013**: The service MUST support bundle import/export (`okf_import_bundle`, `okf_export_bundle`).
-- **FR-014**: The service MUST provide a management config-app page for bundle create/import/export/health.
-- **FR-015**: The management UI MUST conform to `040-okf-knowledge-base.html` for all baseline screens; delete controls (FR-016 below) and any new ingest-run/agent-bundling UI extend it (see UI Mockup Reference).
-- **FR-016**: The service MUST write atomically and guard against path traversal outside the configured bundle root.
-- **FR-017**: `okf_delete_concept` MUST be non-destructive by default: no backlink/index/log rewrite unless `rewrite_backlinks: true`.
+- **FR-001**: The service MUST provide concept-anchored search (`okf_search`) that takes a natural-language query and a bundle and returns a result set of TOC rows — each row carrying a document id, an optional chapter id, a one-line content description, and the concept term that matched — sufficient for the calling agent to retrieve the relevant knowledge.
+- **FR-002**: `okf_search` MUST produce its candidate rows via deterministic matching over the bundle's concept index (the routing table) so that routing cost is bounded by the number of distinct concept terms, not the number of documents; the final semantic routing and synthesis remain the calling agent's responsibility.
+- **FR-003**: Retrieval MUST return full documents or full chapters, never snippet chunks. Reading any concept (document or chapter) returns its entire content.
+- **FR-004**: The service MUST provide document-TOC retrieval (`okf_read_toc`) returning a document's stored table of contents — its chapters, each with a one-line description and the concept terms it covers.
+- **FR-005**: The service MUST provide full-content reading of a single concept (`okf_read_concept`) for any concept id (document or chapter), returning its complete markdown body including resolved inline-asset links and their interpretations.
+- **FR-006**: The service MUST support reading the concept vocabulary (`okf_list_concepts`) — the set of concept terms in a bundle, each with a count of the chapters that cover it.
 
-### Functional Requirements — delete capability (carried from 041, now baseline)
+### Functional Requirements — the two-level derived index
 
-- **FR-018**: The service MUST provide `okf_delete_bundle`, deleting an entire bundle directory and returning a result to the agent.
-- **FR-019**: The config UI MUST provide Delete Bundle and Delete Concept actions, each gated by a confirmation dialog naming the target; cancel MUST abort without deleting.
-- **FR-020**: Deleting a concept MUST NOT delete the bundle or other concepts; deleting a bundle MUST remove only that bundle's directory.
-- **FR-021**: Deleting a non-existent bundle/concept MUST return a clear "not found" error without deleting anything else.
-- **FR-022**: Delete tools MUST respect the same 039 tool contract as every other `okf_*` tool.
+- **FR-007**: The service MUST maintain a bundle-level **concept index** — a stored, human-readable artifact mapping each concept term to the (document, chapter) pairs that cover it, each pair carrying a one-line description.
+- **FR-008**: The service MUST maintain, per ingested document, a stored **table-of-contents** artifact — a human-readable `.md` listing the document's chapters, each with a one-line description and the concept terms it covers.
+- **FR-009**: Both the concept index and each document TOC MUST be **derived and regenerable**: the service MUST be able to rebuild them from the bundle's underlying chapter content and frontmatter, so neither is the sole source of truth and neither can silently rot.
+- **FR-010**: The concept index MUST be included in a bundle's export and re-imported cleanly; document TOCs likewise. They are part of the distributable bundle.
+- **FR-011**: The size of the concept index MUST scale with the number of distinct concept terms, not with the number of documents or chapters.
 
-### Functional Requirements — ingestion redesign (new)
+### Functional Requirements — ingest (re-scoped: it builds the index and artifacts)
 
-- **FR-023**: `web_fetch` MUST return complete, link-preserving content, and MUST keep working on **every** provider. Where the provider offers a native web-fetch server tool (Anthropic), route through it — the provider does the extraction upstream and returns cleaner output than any local converter. Where it does not (self-hosted / OpenAI-compatible endpoints), fall back to fetching locally and converting HTML to markdown in BOS, preserving `<a href>` targets (absolutized against the page URL) and never truncating silently. The tool MUST NOT be reduced to an error on non-Anthropic providers: it worked everywhere before native support existed, and removing that is a straight downgrade for those users.
-- **FR-024**: The service MUST expose `okf_add_raw_source` (`{bundle, filename, content?, sourcePath?, conceptId?, title?}`) as the mechanical primitive that registers bytes into `raw/`, accepting either inline `content` (small/pasted text) or a `sourcePath` already staged on disk (e.g. by `web_fetch`/`file_to_markdown`) — the caller MUST NOT be required to pass large content as an inline argument when a `sourcePath` is available.
-- **FR-025**: `okf_ingest` MUST dispatch semantic decomposition to a bounded sub-agent run (via `agent_delegate`/`runInnerLoop`) rather than performing concept-writing itself; the sub-agent MUST be restricted to a least-privilege tool set (raw-source read, `okf_upsert_concept`/`okf_add_link`/`okf_set_*`/`okf_add_source`/`okf_append_log`, `okf_find_concepts`/`okf_read_concept`/`okf_read_index` for dedup, `web_search`/`web_fetch` for reference resolution).
-- **FR-025a**: `okf_ingest` MUST be the single entry point for an ingest, accepting a URL, a VFS path, or a `raw/` path. It MUST NOT perform acquisition itself (the service worker has no `web_fetch`/`file_to_markdown`), and MUST instead return the exact acquisition steps to run — **with `output_path` pinned on every fetch/convert step**. Requiring the caller to remember `output_path` is insufficient: omitting it forces the model to regenerate the whole document as output tokens to store it, silently defeating SC-007.
-- **FR-025b**: Acquisition tools (`web_fetch`, `file_to_markdown`) MUST support an `output_path` that writes content to the VFS and returns only a receipt (path + size), never the content. Without this there is no way to move a document into `raw/` except by the model re-emitting it verbatim.
-- **FR-026**: Reference/citation discovery MUST resolve explicit URLs, `arxiv:`-pattern IDs, and DOIs mechanically (regex, no LLM call); only citations with no explicit machine-resolvable identifier (e.g., bare "Author et al. Year") MAY invoke `web_search`-backed resolution.
-- **FR-027**: Reference crawl depth and concurrent ingest worker count MUST be configurable, with a bundle-level default (service `configSchema`) and a per-`okf_ingest`-call override. `maxWorkers` MUST mean real concurrency — satisfied by FR-038's parallel tool execution, since `agent_delegate` is parallel-safe.
-- **FR-038**: The agent loop MUST support running tool calls concurrently within a turn, as an **opt-in per-tool** property (`parallelSafe`) so existing tools are unaffected. It MUST: batch only *adjacent* parallel-safe calls (never reordering a write around a read), bound concurrency by a configurable cap, append results in call order rather than completion order, and preserve the existing guarantees — every `tool_use` id answered, cancellation, per-call hooks, and in-band error isolation (one failing call must not strand its siblings).
-- **FR-028**: The sub-agent MUST check for and skip references whose source is already present in the bundle's provenance (dedup against prior ingests), rather than re-ingesting duplicates.
-- **FR-029**: A general-purpose `file_to_markdown` tool MUST convert PDF/DOCX/PPTX/XLSX to markdown via the sandbox's `markitdown` install, staged through `workspace/` so the `run_command` sandbox never requires the bundle's `KnowledgeBase/` path to be visible.
-- **FR-030**: Images MUST be ingested via a real vision content block to the sub-agent (via the new `view_image` tool and the `ToolExecuteResult` mechanism — see design.md), not OCR-only extraction.
-- **FR-031**: A `video_keyframes` tool MUST sample frames from a video via `ffmpeg`/`ffprobe` for ingestion, returned as image attachments via the same `ToolExecuteResult` mechanism; when the active provider/model supports native video understanding (capability-detected per FR-032), that path MUST be preferred over frame-sampling.
-- **FR-032**: BOS MUST add a provider capability-detection check for native video understanding (`isNativeVideoUnderstandingAvailable()`, `src/lib/agent/web-search.ts`), following the existing `isNativeWebSearchAvailable()` pattern. Confirmed against current provider docs that neither Anthropic nor OpenAI support native video input today — the check exists and always returns `false` for now; frame-sampling via `video_keyframes` is the only working path until a provider adds it.
-- **FR-033**: `ffmpeg` MUST be added to both `Dockerfile` and `docker/run-command/Dockerfile` (kept in lockstep, per the existing comment documenting that invariant).
+- **FR-012**: `okf_ingest` MUST decompose a source into chapters from the source's structure/headings, each chapter becoming a concept file (OKF `type: section`) carrying frontmatter: its parent document, the concept terms it covers, and a one-line summary.
+- **FR-013**: `okf_ingest` MUST assign one or more concept terms to each chapter; the vocabulary grows organically (new terms are created as encountered).
+- **FR-014**: `okf_ingest` MUST write a one-line summary for each chapter, which feeds both the concept index and the document TOC.
+- **FR-015**: `okf_ingest` MUST create or update the document's TOC artifact and the bundle concept index as part of ingesting.
+- **FR-016**: `okf_ingest` MUST route semantic decomposition through the bundled least-privilege ingest agent (not performed by the service worker), which reads the raw source directly and writes chapters via the `okf_*` tools; at no point is the full source re-emitted by the orchestrating agent as output tokens.
+- **FR-017**: `okf_add_raw_source` MUST register source bytes — text or a non-HTML asset — into the bundle's `raw/` store immutably, accepting either inline `content` or a `sourcePath` already staged on disk (so the caller is never forced to pass large content inline).
+- **FR-018**: `okf_ingest` MUST deduplicate against the bundle's existing provenance — a re-ingested source updates the existing document rather than creating a duplicate.
+- **FR-019**: `okf_ingest` MAY follow references worth ingesting, bounded by a configurable crawl depth and fan-out, with dedup against already-ingested sources; followed and skipped references MUST be reported in the run summary.
 
-### Functional Requirements — marketplace item agent/skill bundling (new)
+### Functional Requirements — inline artifacts
 
-- **FR-034**: A marketplace item MUST be able to declare bundled agents (`agents/<id>/AGENT.md`) and skills (`skills/<id>/SKILL.md`) in its own directory.
-- **FR-035**: On install (`installItemLink` in `src/system/marketplace/install/symlinkManager.ts`), bundled agents/skills MUST be **copied** into `data/agents/<id>/`/`data/skills/<id>/` — never symlinked — mirroring the existing `seed/agents/` → `data/agents/`, `seed/skills/` → `data/skills/` copy-once pattern.
-- **FR-036**: Each copied agent/skill MUST record provenance — source `itemId`, item `version`, and a content hash covering the asset's **entire directory** (entry file plus any `scripts/`/`references/`), so an edit to a bundled helper file counts as divergence just as an edit to the entry file does.
-- **FR-037**: On item update/reinstall, if the installed agent/skill's current on-disk content matches its recorded provenance hash (untouched), the update MUST replace it silently; if it has diverged — or carries no recorded provenance at all — BOS MUST NOT overwrite it, and MUST instead record a conflict the user can resolve (keep local vs. take the update) from Settings. Conflicts MUST persist across the install that produced them, so a headless install (agent-driven `app_build`, marketplace sync) still surfaces the decision later rather than dropping it.
+- **FR-020**: During ingest, the service MUST support registering non-HTML source assets (images, video, and other non-HTML artifacts) as local, immutable copies in the bundle's `raw/` store.
+- **FR-021**: For every non-HTML asset within a chapter's scope, ingest MUST interpret it via the ingest agent's vision capability and write the chapter markdown with (a) a link to the stored asset and (b) the interpretation directly beneath that link.
+- **FR-022**: HTML/link content in a source MUST be kept as remote references (not downloaded); only non-HTML artifacts are downloaded as local copies.
+- **FR-023**: Retrieving a chapter MUST include its inline-asset links and interpretations in the returned content, so the agent gets the asset's knowledge without re-running vision at query time.
+
+### Functional Requirements — concepts
+
+- **FR-024**: The service MUST support concept authorship (`okf_upsert_concept`) — create or update a concept file with frontmatter (merge-on-fields; unknown keys preserved) and body. This is also how a concept's trust, status, provenance, and lifecycle fields are set (no separate field-setter tools).
+- **FR-025**: The service MUST support concept deletion (`okf_delete_concept`) — remove a concept file, non-destructive to the rest of the bundle by default.
+- **FR-026**: The service MUST support concept curation (`okf_merge_concepts`) — merge one concept term into another canonical term, updating the concept index, all affected document TOCs, and all chapter `concepts` frontmatter that referenced either term.
+
+### Functional Requirements — bundles
+
+- **FR-027**: The service MUST provide bundle listing (`okf_list_bundles`) with per-bundle health: document count, chapter count, concept-term count, and stale/deprecated items.
+- **FR-028**: The service MUST support bundle creation (`okf_init_bundle`).
+- **FR-029**: The service MUST support bundle import (`okf_import_bundle`) and export (`okf_export_bundle`), both spec-conformant OKF.
+- **FR-030**: The service MUST support bundle deletion (`okf_delete_bundle`), removing only that bundle's directory.
+
+### Functional Requirements — organization (minimal graph)
+
+- **FR-031**: The service MUST support adding a relationship between concepts (`okf_add_link`) as an OKF markdown-link edge.
+- **FR-032**: The service MUST support backlink lookup (`okf_backlinks`).
+
+### Functional Requirements — health
+
+- **FR-033**: The service MUST provide lint (`okf_lint`) — detect broken inline-asset links, orphan chapters, and concept-index / document-TOC drift from the underlying content.
+- **FR-034**: The service MUST provide a staleness report (`okf_stale_report`) for concepts past their lifecycle threshold.
+
+### Functional Requirements — config-app (UI)
+
+- **FR-035**: The service MUST provide a management config-app page for bundle create / import / export / delete, and for browsing a bundle's concept index and a document's table of contents.
+- **FR-036**: The config-app MUST render, in a human-readable form, a bundle's concept index (term → documents/chapters, with descriptions) and any document's stored TOC, and a bundle's status (document / chapter / concept-term counts, stale items).
+
+### Functional Requirements — tool surface
+
+- **FR-037**: The service MUST declare exactly the following 18 `okf_*` tools, under the **Knowledge Base** tool group, via the 039 Service Tool Exposure contract, and no others:
+
+  | Group | Tools |
+  |---|---|
+  | Retrieval | `okf_search`, `okf_read_toc`, `okf_read_concept`, `okf_list_concepts` |
+  | Concepts | `okf_upsert_concept`, `okf_delete_concept`, `okf_merge_concepts` |
+  | Bundles | `okf_list_bundles`, `okf_init_bundle`, `okf_import_bundle`, `okf_export_bundle`, `okf_delete_bundle` |
+  | Ingest | `okf_ingest`, `okf_add_raw_source` |
+  | Organization | `okf_add_link`, `okf_backlinks` |
+  | Health | `okf_lint`, `okf_stale_report` |
+
+  Compared to the prior 31-tool surface: **added** `okf_search`, `okf_read_toc`, `okf_merge_concepts`; **removed** `okf_bundle_status`, `okf_find_concepts`, `okf_read_index`, `okf_read_bundle_schema`, `okf_append_log`, `okf_get_as_of`, `okf_set_trust`, `okf_add_source`, `okf_attest`, `okf_provenance`, `okf_remove_link`, `okf_list_links`, `okf_neighbors`, `okf_shortest_path`, `okf_export_graph` (field-setters collapsed into `okf_upsert_concept`; graph power-tools dropped as retrieval is index-based; log made internal).
+- **FR-038**: Every declared tool MUST be validated against its JSON schema before dispatch and MUST respect the existing tool-gating/permission model exactly like built-in tools.
+
+### Functional Requirements — bundled agent & skill
+
+- **FR-039**: The item MUST bundle the `okf-ingest` agent (`agents/okf-ingest/AGENT.md`) with a **least-privilege** tool allowlist that includes the acquisition tools needed for inline-artifact interpretation (`view_image`, `video_keyframes`, `web_fetch`, `file_to_markdown`) and the `okf_*` read/write tools it needs, and excludes destructive operations and unrestricted `run_command`.
+- **FR-040**: The item MUST bundle the bundle-schema skill (`skills/okf-bundle-schema/SKILL.md`) encoding the ingest/query conventions — chapter decomposition, concept assignment, summary writing, inline-artifact interpretation, and concept-index / document-TOC maintenance — attached to the `okf-ingest` agent.
 
 ### Non-Functional Requirements
 
-- **NFR-001 (Portability)**: Every bundle MUST be a spec-conformant OKF bundle usable with git/grep/editor.
-- **NFR-002 (Durability)**: Atomic writes; `raw/` immutable (append-only).
-- **NFR-003 (Forward compatibility)**: Unknown frontmatter keys preserved verbatim.
-- **NFR-004 (Path safety)**: All writes scoped to the configured bundle root.
-- **NFR-005 (Reliability)**: Tool errors/crashes reported without crashing BOS; service restarts on crash.
-- **NFR-006 (Tool lifecycle)**: Tools removed on stop/uninstall.
-- **NFR-007 (Tool gating parity)**: Same gating model as built-ins.
-- **NFR-008 (Single-user)**: No multi-user access control required.
-- **NFR-009 (External-edit resilience)**: Re-read from disk on each read; backlink index rebuilt lazily.
-- **NFR-010 (No embeddings)**: No vector store/embedding pipeline; retrieval is file-graph + in-memory backlink index only.
-- **NFR-011 (Least privilege for the ingest sub-agent)**: The `okf-ingest` agent's tool allowlist MUST stay narrow — it must not gain the top-level assistant's full tool surface merely by being delegated to.
-- **NFR-012 (Bounded recursion)**: Reference crawling MUST respect `maxDepth` and dedup; an ingest run MUST NOT be able to unboundedly fan out across the web.
-- **NFR-013 (Sandbox containment)**: `file_to_markdown`/`video_keyframes` MUST NOT require expanding the `run_command` sandbox's visible-paths configuration to include `KnowledgeBase/`.
+- **NFR-001 (OKF portability)**: Every bundle MUST be a spec-conformant OKF bundle usable with git/grep/editor; the concept index and document TOCs are plain `.md` files inside the bundle.
+- **NFR-002 (No vector / SQL / embeddings in v1)**: Retrieval MUST be over the file-based derived index (concept index + document TOCs) and full-chapter reading — no vector store, no SQL database, no embedding pipeline. A real index (a keyword/BM25 pre-filter or embeddings) MAY be introduced **only** when the concept vocabulary is large enough that one deterministic/LLM routing pass over it is measurably too slow or too token-heavy; that threshold and its justification MUST be documented before it is adopted. It is an escalation, not a v1 component.
+- **NFR-003 (Chapter-granular, full-text)**: Retrieval returns full documents or full chapters; never snippet chunks.
+- **NFR-004 (Derived, regenerable index)**: The concept index and document TOCs are derived from chapter content + frontmatter; rebuildable at any time; never the sole source of truth.
+- **NFR-005 (OKF invariants)**: Schema-less (only `type` required); unknown frontmatter keys preserved verbatim on every write (merge-on-fields); human-readable plain markdown; forward-compatible round-trips.
+- **NFR-006 (Path safety)**: All writes scoped to the configured bundle root; atomic writes; `raw/` immutable (append-only).
+- **NFR-007 (Reliability)**: Tool errors/crashes are reported without crashing BOS; the service restarts on crash; tools are removed on stop/uninstall.
+- **NFR-008 (Single-user)**: No multi-user access control in v1.
+- **NFR-009 (Least-privilege ingest agent)**: The `okf-ingest` agent's tool allowlist stays narrow; it does not gain the top-level assistant's full tool surface.
+- **NFR-010 (Karpathy fidelity)**: The design follows the LLM-Wiki pattern — immutable raw sources / LLM-maintained wiki / index, with the three operations ingest–query–lint — where the LLM does the reasoning and the service provides and maintains the structure.
+- **NFR-011 (Efficiency)**: Routing cost is bounded by the number of distinct concept terms, not by document or chapter count.
 
 ### Key Entities
 
-- **KnowledgeBundle**: An OKF bundle at `/KnowledgeBase/<name>/`. Attributes: name, path, `index.md`, `log.md`, concept count, `maxDepth`/`maxWorkers` ingest defaults.
-- **Concept**: One `.md` file with frontmatter; id = path minus `.md`.
-- **Edge / Link**: A Markdown link, concept A → concept B.
-- **RawSource**: An immutable source in `raw/` — text, converted-document markdown, or a binary asset (image/video) the sub-agent reads directly.
-- **BundleSchema**: The bundle's ingest/query/lint conventions — modeled as a BOS skill (see FR-034) rather than a bespoke convention file.
-- **IngestRun**: One `agent_delegate` invocation of the `okf-ingest` agent — bundle, seed source, resolved/skipped references, concepts written, depth reached.
-- **ReferenceCandidate**: A citation discovered in a source — either mechanically resolved (URL/arXiv/DOI) or requiring `web_search`; carries a resolved-URL-or-none and an ingest/skip decision.
+- **KnowledgeBundle**: An OKF bundle at `/KnowledgeBase/<name>/`. Holds documents, chapters, the concept index, and raw sources.
+- **Document**: An ingested source (OKF `type: document`). Decomposed into chapters; has a stored table-of-contents artifact.
+- **Chapter / Concept**: One `.md` concept file (OKF `type: section`). The atomic full-text retrieval unit. Carries frontmatter: `parent` (document), `concepts` (terms it covers), `summary` (one line). May contain inline-asset links + interpretations.
+- **ConceptTerm**: A vocabulary term in the concept index — organic, mergeable, not a separate content-bearing file.
+- **ConceptIndex**: Bundle-level stored, derived artifact. Maps each concept term to `(document, chapter, one-line description)` pairs.
+- **DocumentTOC**: Per-document stored `.md`, derived artifact. Lists the document's chapters with one-line descriptions and covered concepts.
+- **InlineAsset**: A downloaded non-HTML source asset in `raw/` plus its interpretation written into the owning chapter's markdown.
+- **IngestRun**: One delegated invocation of the `okf-ingest` agent (source, chapters written, concepts assigned, assets interpreted, references followed/skipped).
 - **ServiceTool**: An `okf_*` tool declared per the 039 contract.
-- **BundleHealth**: Concept count, stale/deprecated concepts, per-concept trust — for the config page.
-- **InstalledAgentAsset / InstalledSkillAsset**: A copied agent/skill under `data/agents/`/`data/skills/`, carrying `installedFrom: {itemId, version, contentHash}`.
-- **DeleteConfirmation**: UI gate requiring explicit intent before a destructive action.
+- **BundleHealth**: Document / chapter / concept-term counts and stale/deprecated items, for the config-app.
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
-- **SC-001**: An `okf_*` tool is visible and callable immediately on service start, no external tool-server configured.
-- **SC-002**: 100% of valid tool invocations to a healthy service return a result without error; a crashing tool does not crash BOS.
-- **SC-003**: A user can create a bundle, add concepts, and have 100% of concepts queryable.
-- **SC-004**: Unknown frontmatter keys survive 100% of write/read round-trips.
-- **SC-005**: A bundle exported by the service re-imports cleanly with all concepts/links/frontmatter intact.
-- **SC-006**: Stopping/uninstalling the service removes its tools immediately.
-- **SC-007**: Ingesting a URL results in zero article-length content appearing as model-generated output tokens in the orchestrating conversation (verifiable from the run transcript) — only the sub-agent's own bounded reasoning/tool-call turns.
-- **SC-008**: A source containing explicit URLs and arXiv IDs resolves 100% of them without a `web_search` call; only bare author-year citations trigger one.
-- **SC-009**: An ingest run never exceeds its configured `maxDepth`/`maxWorkers`, and never re-ingests a source already present in the bundle's provenance.
-- **SC-010**: A PDF/DOCX/PPTX/XLSX file ingests into one or more concepts without the `run_command` sandbox needing `KnowledgeBase/` added to its visible paths.
-- **SC-011**: Deleting a bundle/concept from the config UI takes at most 3 steps (select → confirm → deleted); 100% of destructive UI actions require confirmation.
-- **SC-012**: An item update that finds its bundled agent/skill unmodified replaces it silently in 100% of cases; a diverged one prompts keep-vs-replace in 100% of cases, never a silent overwrite.
+- **SC-001**: A natural-language query returns, via `okf_search`, concept-anchored TOC rows; retrieving any referenced chapter via `okf_read_concept` returns its **full** text (not a snippet).
+- **SC-002**: 100% of ingested source documents produce a stored document TOC and update the bundle concept index; a re-ingest of an existing source does not duplicate it.
+- **SC-003**: Every non-HTML asset in an ingested chapter's scope is downloaded as a local copy, interpreted, and appears in the chapter markdown as a link + interpretation; retrieving that chapter returns both. Ordinary hyperlinks are left as remote references.
+- **SC-004**: The concept index and every document TOC are plain `.md` files present in a bundle export; re-importing the export reproduces a fully queryable bundle.
+- **SC-005**: Unknown frontmatter keys survive 100% of write/read round-trips.
+- **SC-006**: For a bundle of N documents with V distinct concept terms, the concept index is O(V), not O(N) — verified by a corpus where V ≪ N.
+- **SC-007**: The declared `okf_*` tool surface is exactly 18 tools; none of the 16 removed tools remains declared.
+- **SC-008**: Merging two concept terms updates the concept index, all affected document TOCs, and all chapter `concepts` frontmatter that referenced either term, leaving a single canonical entry.
+- **SC-009**: Stopping/uninstalling the service removes all 18 `okf_*` tools immediately.
+- **SC-010**: `okf_lint` detects broken inline-asset links and concept-index / document-TOC drift from the underlying content.
 
 ## Assumptions
 
-- **039 is the tool-exposure mechanism** for all `okf_*` tools (tool declaration, JSON-schema validation, gating, loopback auth, removal on stop/uninstall).
-- **LLM-based retrieval over OKF structure**: no embeddings, no vector DB, no RAG in the service.
-- **Single-user**: BOS is a personal OS; no per-agent access assignment in v1.
-- **`agent_delegate`/`runInnerLoop` already supports long-running sub-agent turns** (used by Build Studio → Developer today) — the ingest redesign is a new *consumer* of this mechanism, not new delegation infrastructure. Whether BOS's tool-calling loop dispatches multiple `agent_delegate` calls concurrently (for `maxWorkers` fan-out) is confirmed during implementation, not assumed here.
-- **The sandbox already ships `markitdown[all]`, `poppler-utils`, `libreoffice`, `python-docx`, `python-pptx`** (verified in `Dockerfile`) — `file_to_markdown` is a wiring task, not a new capability.
-- **`ffmpeg` is not yet present** in either Docker image — FR-033 is a real gap, not already covered.
-- **Provider video/vision support varies and shifts over time** — capability detection (FR-032), not a hardcoded assumption of what any given provider supports.
-- **No trash/soft-delete for v1** — bundle/concept deletion is permanent; a future feature could add it.
-- **`raw/` sources remain immutable** and are never deletable independent of their concept/bundle.
-- **Index state persists under `data/`**, not `src/`.
+- **The item already exists and is installed** (spec 040/041 consolidated): a service facet (worker thread, `okf-core` storage, `/KnowledgeBase` VFS, 039 tool exposure) and a config-app. This redesign reworks its retrieval model, index, ingest, tool surface, and config-app; it does not re-derive the service-facet shape.
+- **The prior 040 `bos-core` prerequisites are present and unchanged**: the fixed `web_fetch` (clean markdown, links preserved, no silent truncation), `file_to_markdown` (markitdown), `view_image`, `video_keyframes`, the `ToolExecuteResult` mechanism (tool results can carry image/video content), `ffmpeg` in the Docker images, and marketplace-item agent/skill copy-install with provenance. If any has not actually shipped, it is a prerequisite BOS-source follow-up, not part of this item's deliverable.
+- **LLM-based retrieval over the derived index** (no embeddings / vector / SQL in v1), per the "substantial value" constraint (NFR-002).
+- **The bundled `okf-ingest` agent runs in-process** via the existing `agent_delegate` mechanism (the same one Build Studio → Developer uses); it is a new consumer, not new delegation infrastructure.
+- **A chapter is a concept file** (OKF `type: section`); "concepts" in the retrieval sense are the *index vocabulary* (terms routing to chapters), not separate content-bearing files. This preserves OKF's "everything is a `.md`, only `type` required" invariant.
+- **Single-user**; no per-agent access assignment in v1.
+- **`raw/` sources are immutable** (append-only); the concept index and document TOCs are derived/regenerable and never the sole source of truth.
 
 ## UI Mockup Reference
 
-- **Baseline**: `040-okf-knowledge-base.html` (this spec directory) — bundle list, bundle detail (concepts/health/import-export), New Bundle/Import/Export dialogs. Still the visual contract for these screens.
-- **Delete controls**: the prior `041-okf-delete-capability.html` mockup (Delete Bundle / Delete Concept actions + confirmation dialogs) is the reference for these controls' visual design; fold its delete affordances into the single consolidated config-app UI during implementation — there is no longer a separate 041 mockup file to consult, so capture its intent (per-row delete + toolbar danger action + named confirmation dialog) directly in the implementation.
-- **Not yet mocked**: an ingest-run status/progress surface (bundle-level `maxDepth`/`maxWorkers` settings, and visibility into an in-flight or completed ingest — concepts written, references skipped/ingested) has no mockup yet; design it consistent with the existing visual language during implementation.
+- **Baseline**: `040-okf-knowledge-base.html` (this item's spec directory) — bundle list, bundle detail, create / import / export dialogs, and the delete affordances carried over from the prior 041 work. Still the visual contract for these screens.
+- **New (not yet mocked)**: the **concept-index browser** and the **document-TOC viewer** are new config-app surfaces. They are required by FR-035/FR-036 and must be designed consistent with the existing visual language; produce them as a mockup at the design step (a single consolidated config-app mockup extending the baseline, not separate files).
