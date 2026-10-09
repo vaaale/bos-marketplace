@@ -138,5 +138,5 @@ Per the plan command, `research.md` / `data-model.md` / `contracts/` are added *
 
 1. **Tool rename**: `okf_init_bundle` (FR-025) vs `okf_create_bundle` (design.md §8.2) — pin one in the first task (recommend keeping the spec's `okf_init_bundle` name; the spec is the contract).
 2. **`jobs.json` location** — bundle-level vs service-level: design.md says service state; confirm in the first service task (single-user, so service-level global is fine and matches FR-044's global Jobs tab).
-3. **e2e feature-id** — the `buildstudio_run_tests` contract wants `e2e/<feature-id>.spec.ts`; pin the feature-id slug in the test task.
+3. **e2e path** — pinned: item-local `e2e/okf-knowledge-base.spec.ts` (feature-id = item id), run via `BOS_PREVIEW_URL` + `npx playwright test`.
 4. **App facet entry** — confirm `app/src/main.tsx` (bundled) is the right app shape for the mockup (the mockup is a self-contained HTML; the app facet is a TSX app that reproduces it — `app_build` bundles it).
