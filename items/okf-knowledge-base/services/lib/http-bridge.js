@@ -302,7 +302,7 @@ function createRequestHandler(ctx) {
 
         if (bundle && req.method === "POST" && section === "import" && parts.length === 3) {
           const body = await readJsonBody(req);
-          return sendJson(res, 200, await core.importBundle(bundleRoot, bundle, { files: body.files, sourcePath: body.sourcePath }));
+          return sendJson(res, 200, await core.importBundle(bundleRoot, bundle, { files: body.files, sourcePath: body.sourcePath, rebuild: body.rebuild !== false }));
         }
       }
 

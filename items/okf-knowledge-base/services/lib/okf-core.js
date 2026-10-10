@@ -1110,8 +1110,8 @@ async function initBundle(bundleRoot, name, opts = {}) {
 }
 
 /** Per-bundle health (FR-027): the Overview stat cards + the list row. */
-async function bundleHealth(bundleRoot, name) {
-  const model = await getModel(bundleRoot, name);
+async function bundleHealth(bundleRoot, name, { allowRebuild = true } = {}) {
+  const model = await getModel(bundleRoot, name, { allowRebuild });
   const chapters = model.classified.chapters;
   const stale = chapters.filter((c) => c.stale).length;
   const deprecated = chapters.filter((c) => c.status === "deprecated").length;
@@ -1216,7 +1216,7 @@ async function exportBundle(bundleRoot, name) {
  * bundle). Non-destructive and reported — never a silent overwrite, never a
  * silent partial index.
  */
-async function importBundle(bundleRoot, name, { files, sourcePath } = {}) {
+async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = true } = {}) {
   const bDir = bundleDir(bundleRoot, name);
   await vfs.mkdir(bDir);
   let imported = 0;
@@ -1254,9 +1254,9 @@ async function importBundle(bundleRoot, name, { files, sourcePath } = {}) {
   await vfs.mkdir(path.join(bDir, "raw"));
   await vfs.mkdir(path.join(bDir, "concepts"));
   markGraphDirty(bDir);
-  const model = await rebuildDerived(bundleRoot, name);
+  const model = rebuild ? await rebuildDerived(bundleRoot, name) : { terms: [], needsRegeneration: true, builtAt: null };
   await appendLog(bundleRoot, name, { event: "bundle_import", message: `imported ${imported} file(s)` });
-  const health = await bundleHealth(bundleRoot, name);
+  const health = await bundleHealth(bundleRoot, name, { allowRebuild: rebuild });
   return {
     ...health,
     imported,
