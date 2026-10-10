@@ -8,8 +8,8 @@ Replaces the pre-redesign `design.md`. That document's center of gravity was *in
 the index retrieval depends on. Decisions the new spec locks in are treated as fixed;
 the four old `bos-core` prerequisites are treated as **dependencies, not re-scoped here**
 (spec App Target). Where this design carries something forward from the old document
-(service-facet shape, VFS loopback bridge, 039 tool exposure), it is labeled **retained**
-— not re-litigated.
+(service-facet shape, VFS loopback bridge, 039 tool exposure, dispatcher-shaped
+`okf_ingest`), it is labeled **retained** — not re-litigated.
 
 ---
 
@@ -19,7 +19,7 @@ the four old `bos-core` prerequisites are treated as **dependencies, not re-scop
 `data/user-apps/items/okf-knowledge-base/` with **three facets of one item**:
 
 1. **Service facet** — the worker-thread daemon that owns OKF storage, maintains the
-   derived index, declares the 19 `okf_*` tools via the 039 Service Tool Exposure
+   derived index, declares the 18 `okf_*` tools via the 039 Service Tool Exposure
    contract, and runs a loopback REST bridge the app talks to.
 2. **App facet** — a **standalone master-detail app** (Overview / Jobs / Query),
    dock-openable, replacing the old settings-embedded `config-app/index.html`.
@@ -64,13 +64,13 @@ install.
 |---|---|
 | **I. Spec-Driven** — feature defined by a spec before build; pipeline. | ✅ Spec is `item-okf-knowledge-base/spec.md` (this is the `design` step). No code is a source of truth. |
 | **II. Server Authority & SSR Boundary** — filesystem/Node live in server code; clients fetch. | ✅ All OKF storage and the derived index live in the worker (server-side, behind the loopback bridge). The app iframe and the assistant both reach it over HTTP; no OKF logic in the app bundle. |
-| **III. Always Delegate; Claude Codes** — development on a sub-agent. | ✅ This design is authored by the Architect; implementation is delegated to the Developer. The feature's *runtime* trigger (`okf-ingest`) reuses the existing headless `runSubAgent` surface (`POST /api/subagents/delegate`) over the worker's existing loopback channel — no new infra (ADR-005). |
-| **IV. Minimize Blast Radius** — feature branch; self-modification isolated. | ✅ Lands on the active `bos/okf-auto-ingest` branch (this scope-add); item work is branch-coupled in `data/user-apps` and promotes/discards with the branch. |
+| **III. Always Delegate; Claude Codes** — development on a sub-agent. | ✅ This design is authored by the Architect; implementation is delegated to the Developer. The feature's *runtime* delegation (`okf-ingest`) reuses the existing `agent_delegate`/`runInnerLoop` mechanism, not new infra (ADR-005). |
+| **IV. Minimize Blast Radius** — feature branch; self-modification isolated. | ✅ Lands on the active `bos/okf-kb-redesign` branch; item work is branch-coupled in `data/user-apps` and promotes/discards with the branch. |
 | **V. The VFS Is Not the Source** — user data under `data/`; versioned apps in their own GitFS repo. | ✅ Bundles live under the VFS at `/KnowledgeBase/` (user data, owned by the service). The item's code lives in the `user-apps` GitFS repo, reached through the item symlink — never in BOS source. |
 | **VI. Specs & Docs Stay in Sync** | ✅ The item ships its own `docs/usage/OKF Knowledge Base/` and `docs/dev/OKF Knowledge Base/` facets, updated in the same change. This `design.md` is the architecture artifact the later `plan`/`tasks` reference. |
-| **VII. Respect Boundaries** — confirm destructive ops; no new deps unasked. | ✅ `okf_delete_bundle`/`okf_delete_concept` are the only destructive ops and stay explicit-intent — the **app** gates them behind confirmation dialogs; the ingest agent is granted them only because end-to-end re-ingest reconciliation needs them (§8.4), and it never deletes a *bundle* the caller didn't ask it to. No new runtime dependency is introduced: the app reuses BOS's existing in-app SVG force simulation (no `d3`/`vis.js` added — ADR-009). |
+| **VII. Respect Boundaries** — confirm destructive ops; no new deps unasked. | ✅ `okf_delete_bundle`/`okf_delete_concept` are the only destructive ops and stay explicit-intent (the app gates them behind confirmation dialogs per the mockup; the agent doesn't get them — see §8). No new runtime dependency is introduced: the app reuses BOS's existing in-app SVG force simulation (no `d3`/`vis.js` added — ADR-009). |
 | **OKF invariants (NFR-001/005)** — schema-less, human-readable, unknown keys preserved, raw immutable. | ✅ Retained from the installed `okf-core.js` (frontmatter shallow-merge already preserves unknown keys; `raw/` is append-only and never overwritten). The derived index/TOC add *new* frontmatter keys (`type`, `parent`, `concepts`, `summary`, `status`, `stale_after`, `sources`) — all preserved verbatim on write. |
-| **Least privilege (NFR-009)** — the ingest sub-agent's allowlist is scoped to the KB domain. | ✅ §8.4 lists the exact allowlist: the full `okf_*` surface + the named acquisition tools + VFS reads; it excludes non-`okf_*` tools, unrestricted `run_command`, `agent_delegate`, and the top-level assistant's full surface. |
+| **Least privilege (NFR-009)** — the ingest sub-agent's allowlist stays narrow. | ✅ §8 lists the exact allowlist; it excludes destructive tools, unrestricted `run_command`, and the full assistant surface. |
 
 No conflicts flagged. One note for the reviewer: NFR-002 ("no vector/SQL/embeddings in
 v1") is satisfied structurally — retrieval is a deterministic pass over a derived
@@ -86,10 +86,9 @@ pre-filter is documented in ADR-001, not built.
 The user installs the OKF Knowledge Base item. It becomes a **service** owning
 `/KnowledgeBase/<bundle>/`. Three entry points exist:
 
-- **The assistant** uses the 19 `okf_*` tools to ingest (`okf_ingest` auto-starts a headless
-  `okf-ingest` run and returns a `jobId` at once), to retrieve (`okf_search` →
-  `okf_read_toc`/`okf_read_concept`), to curate concepts and bundles, to observe runs
-  (`okf_list_jobs`), and to check health.
+- **The assistant** uses the 18 `okf_*` tools to ingest (via the dispatcher → bundled
+  `okf-ingest` sub-agent), to retrieve (`okf_search` → `okf_read_toc`/`okf_read_concept`),
+  to curate concepts and bundles, and to check health.
 - **The user** opens the standalone **app** (a dock window) and uses its three tabs:
   **Overview** (list/manage bundles, browse the concept index and document TOCs, lint,
   import/export), **Jobs** (watch ingest runs through their real lifecycle), and **Query**
@@ -110,10 +109,11 @@ flowchart TD
     subgraph NEXT["Next.js app process (BOS core)"]
         AGENT["Top-level assistant"]
         TREG["AssistantTool registry (039-registered okf_* tools)"]
-        DELEG["runSubAgent headless runner (POST /api/subagents/delegate)"]
+        DELEG["agent_delegate / runInnerLoop (in-process)"]
         SM["ServiceManager (worker lifecycle, tool_declare bridge)"]
         IF["App iframe: OKF Knowledge Base (Overview/Jobs/Query)"]
         AGENT -->|"okf_* tool_call (IPC)"| SM
+        AGENT -->|"agent_delegate(okf-ingest, task+jobId)"| DELEG
         TREG -.registers.-> SM
         IF -->|"same-origin fetch, else __bos broker services.call"| HTTPBASE["service base URL (httpPath or runtime.port)"]
     end
@@ -127,7 +127,7 @@ flowchart TD
         CORE["lib/okf-core.js — OKF storage engine + derived index/TOC/graph/search"]
         VFSB["lib/vfs-bridge.js — loopback /api/fs (+ /api/fs/raw for binary assets)"]
         HTTPB["lib/http-bridge.js — app-facing REST (bundles, index, toc, search, graph, jobs)"]
-        TOOLS["lib/tools.js — 19 okf_* declarations + handlers"]
+        TOOLS["lib/tools.js — 18 okf_* declarations + handlers"]
         AGENTB["agents/okf-ingest/AGENT.md  ·  skills/okf-bundle-schema/SKILL.md"]
         W --> CORE
         W --> VFSB
@@ -137,14 +137,12 @@ flowchart TD
         TOOLS --> CORE
     end
 
-    SUB["okf-ingest sub-agent (headless run, self-sufficient allowlist)"]
+    SUB["okf-ingest sub-agent (in-process, narrow allowlist)"]
 
     SM -->|spawn + tool_call/tool_result| W
-    TOOLS -->|"okf_ingest: POST /api/subagents/delegate {agent,task} (loopback, async)"| DELEG
-    DELEG -->|runSubAgent(okf-ingest)| SUB
-    DELEG -.->|"NDJSON progress + terminal {done|error} → W finalizes job (ADR-006)"| W
+    DELEG --> SUB
     SUB -->|"okf_* tool_call (IPC)"| SM
-    SUB -->|"optional progress (loopback POST /jobs/<id>)"| HTTPB
+    SUB -->|"job lifecycle callback (loopback HTTP: running/completed/failed)"| HTTPB
     CORE -->|loopback| APIFS["/api/fs, /api/fs/raw  (BOS VFS API)"]
     APIFS --> VFSROOT["/KnowledgeBase/<bundle>/  (VFS)"]
     HTTPBASE -->|proxied| PROXY --> W
@@ -159,19 +157,15 @@ flowchart TD
   `/api/fs` — the only sanctioned way an unbundled worker reaches the VFS).
 - **039 tool exposure** (`deploymentMode: "tools"`, `tool_declare`, `toolGroups`
   "Knowledge Base").
-- **Worker runs outside Next.js** with no `web_fetch`/`file_to_markdown`/agent loop —
-  `okf_ingest` therefore does not fetch or run the LLM itself; it **auto-triggers a
-  headless `okf-ingest` run** over the worker's loopback channel (ADR-005), which performs
-  the acquisition (pinning `output_path`) and decomposition.
+- **Dispatcher-shaped `okf_ingest`** that returns the exact next calls (acquisition
+  steps pinning `output_path`, then a delegation block) rather than fetching itself —
+  the worker runs outside Next.js with no `web_fetch`/`file_to_markdown`.
 
-**New in this scope-add**: `okf_ingest` **auto-triggers a headless `okf-ingest` run**
-(ADR-005) — caller freed at return — with the **worker owning finalization** from the run's
-own terminal signal plus a stale reaper (ADR-006/FR-049), a new **`okf_list_jobs`** agent
-tool (FR-048, surface now 19), and the **self-sufficient ingest-agent allowlist** (FR-039,
-§8.4). **New earlier in the redesign**: the derived concept index + document TOC (§5),
-`okf_search` (§6), run observability (§7.3), the inline-asset pipeline (FR-015/FR-020–023,
-§7.5), graph derivation (ADR-004, §6.3), the app-facing REST surface (ADR-003, §8), and the
-standalone master-detail app (replaces the config-app).
+**New in this redesign**: the derived **concept index + document TOC** in `okf-core.js`
+(§5), **`okf_search`** (the deterministic core primitive, §6), **run observability**
+(AbR-006, §7.3), the **inline-asset pipeline** (FR-015/FR-020–023, §7.5), the **graph
+derivation** (ADR-004, §6.3), the **app-facing REST surface** (ADR-003, §8), and the
+**standalone master-detail app** (replaces the config-app).
 
 ### 3.3 Component — deliverable file plan
 
@@ -183,13 +177,11 @@ idealized `services/tools/*.js` split):
 data/user-apps/items/okf-knowledge-base/
 ├── services/
 │   ├── service.json           # RETAINED shape; port default 0 (unchanged). Config schema
-│   │                          #   already carries bundleRoot/maxDepth/maxWorkers; adds staleJobMs.
-│   ├── index.js               # RETAINED worker entry. Changes: (a) keep the
-│   │                          #   bind-then-handshake-first ordering; (b) extend the VFS
-│   │                          #   bridge to binary (see vfs-bridge); (c) the okf_ingest
-│   │                          #   handler fires the headless delegate request and consumes
-│   │                          #   its NDJSON stream to own the job's terminal state
-│   │                          #   (ADR-005/006). Tool_declare loop reads tools.js.
+│   │                          #   already carries bundleRoot/maxDepth/maxWorkers.
+│   ├── index.js               # RETAINED worker entry. Two changes: (a) keep the
+│   │                          #   bind-then-handshake-first ordering; (b) extend the
+│   │                          #   VFS bridge to binary (see vfs-bridge). No other
+│   │                          #   structural change — tool_declare loop reads tools.js.
 │   └── lib/
 │       ├── okf-core.js        # REWORKED. Retains: frontmatter YAML-lite, path safety
 │       │                      #   (safeJoin/validate*), raw/ append-only, shallow-merge
@@ -207,20 +199,17 @@ data/user-apps/items/okf-knowledge-base/
 │       │                      #   REPLACES the old config-app routes with the app-facing
 │       │                      #   surface in §8 (bundles, bundle-detail, toc, chapter,
 │       │                      #   search, graph, jobs, asset proxy).
-│       └── tools.js           # REWORKED. DECLARATIONS = exactly the 19 tools in §8.2
+│       └── tools.js           # REWORKED. DECLARATIONS = exactly the 18 tools in §9
 │                              #   (was 31). Handlers reuse okf-core; read-only tools stay
-│                              #   parallelSafe (readOnly()). okf_ingest auto-triggers a
-│                              #   headless okf-ingest run, returns jobId (ADR-005);
-│                              #   okf_list_jobs is readOnly (FR-048).
+│                              #   parallelSafe (readOnly()). okf_ingest keeps its
+│                              #   dispatcher shape and gains jobId minting (ADR-006).
 ├── agents/
 │   └── okf-ingest/
-│       └── AGENT.md           # REWORKED. Self-sufficient allowlist (§8.4): the full
-│                              #   okf_* surface + acquisition + VFS reads. Instructions:
-│                              #   acquisition (web_fetch/file_to_markdown, output_path
-│                              #   pinned), chapter decomposition, concept assignment,
+│       └── AGENT.md           # REWORKED. New least-privilege allowlist (§8) scoped to the
+│                              #   18-tool surface + acquisition + the job callback.
+│                              #   Instructions: chapter decomposition, concept assignment,
 │                              #   one-line summaries, doc-TOC + concept-index maintenance,
-│                              #   inline-asset interpret-and-preserve, nested reference
-│                              #   ingest (own okf_ingest), final honest summary.
+│                              #   inline-asset interpret-and-preserve, job lifecycle calls.
 ├── skills/
 │   └── okf-bundle-schema/
 │       └── SKILL.md           # REWORKED. Authoritative ingest/query/lint conventions:
@@ -230,7 +219,7 @@ data/user-apps/items/okf-knowledge-base/
 │                              #   format, dedup. Replaces the per-bundle schema.md voice
 │                              #   as the source of conventions (ADR-007).
 ├── config/
-│   └── okf-knowledge-base.json  # RETAINED (bundleRoot, port:0, maxDepth, maxWorkers, staleJobMs).
+│   └── okf-knowledge-base.json  # RETAINED (bundleRoot, port:0, maxDepth, maxWorkers).
 ├── app/
 │   └── src/                   # NEW standalone master-detail app (replaces app/config-app/).
 │       ├── main.tsx           # entry — mounts into #root (per the item app-facet anatomy;
@@ -256,15 +245,13 @@ data/user-apps/items/okf-knowledge-base/
 └── docs/                       # REQUIRED item facet (target-marketplace-item.md).
     ├── usage/OKF Knowledge Base/
     │   ├── index.md           # what it does, the three tabs, retrieval model in plain terms.
-    │   ├── ingest.md          # how to trigger ingest (tool or app modal → auto run),
-    │                          #   what a run does, watching Jobs / okf_list_jobs.
+    │   ├── ingest.md          # how to trigger ingest, what a run does, watching Jobs.
     │   └── troubleshooting.md # search misses (concept-anchored, not full-text), stale items,
-                               #   stuck jobs (reaper), import/export, service not started.
-
+    │                          #   import/export, service not started (Settings → Plugins).
     └── dev/OKF Knowledge Base/
         ├── architecture.md    # this design, condensed: containers, derived index, jobs.
         ├── data-model.md      # bundle layout, frontmatter schema, index/TOC format.
-        ├── tool-surface.md    # the 19 tools (mirror of §8.2).
+        ├── tool-surface.md    # the 18 tools (mirror of §9).
         └── extension.md       # adding a bundle convention, the okf-ingest skill as the seam.
 ```
 
@@ -338,7 +325,7 @@ hand-written into `data/user-apps` — the Developer stages the facets and
 - **Context.** The app is a browser iframe; it is *not* an agent and cannot call
   `okf_*` tools directly. It needs read (and a little write: create/import/export/delete
   bundle, trigger ingest) access to the same data the tools expose.
-- **Options.** (a) The app calls the 19 `okf_*` tools through some new agent-bridge. (b) A
+- **Options.** (a) The app calls the 18 `okf_*` tools through some new agent-bridge. (b) A
   **dedicated app-facing REST surface** on the service's loopback port, reusing the *same*
   `okf-core.js` functions as the tools, exposing the shapes the UI actually needs (bundle
   list, bundle detail incl. stats + concept index + documents, doc TOC, chapter, search,
@@ -349,7 +336,7 @@ hand-written into `data/user-apps` — the Developer stages the facets and
   the 039 tools are an *agent* surface (IPC-dispatched, JSON-schema-gated) and shouldn't be
   the app's transport; and the app needs shapes (graph, jobs, the concept index as a
   browseable tree) that are *views* over the same core, not new agent capabilities.
-- **Consequences.** **Adding app views does NOT add to the 19-tool agent surface** (FR-036)
+- **Consequences.** **Adding app views does NOT add to the 18-tool agent surface** (FR-036)
   — the HTTP routes are internal plumbing, not `tool_declare`d tools. One capability, two
   surfaces: `okf_search` and the `GET /search` route run the **identical** `core.search()`
   (FR-001/FR-002, FR-043). The app's reachability is the standard `httpPath`-else-port
@@ -361,7 +348,7 @@ hand-written into `data/user-apps` — the Developer stages the facets and
 - **Context.** FR-042/FR-045 require a force-directed knowledge graph (documents, chapters,
   concept terms; typed directed edges) for the Query tab. The old design had graph
   "power tools" (`okf_neighbors`, `okf_shortest_path`, `okf_export_graph`) — dropped from
-  the 19-tool surface.
+  the 18-tool surface.
 - **Options.** (a) A stored graph (a second artifact or a graph DB) kept in sync by the
   write path. (b) **Derive nodes+edges on read** from what is already stored: containment
   from each chapter's `parent` frontmatter, coverage from the concept index, explicit
@@ -378,101 +365,79 @@ hand-written into `data/user-apps` — the Developer stages the facets and
   `neighbors` tool surface is needed — the app's hover-to-trace-neighbors is computed
   client-side from the returned edge list.
 
-### ADR-005 — `okf_ingest` auto-triggers a headless `okf-ingest` run (supersedes the dispatcher-returns-instructions model)
+### ADR-005 — `okf_ingest` stays a dispatcher; the sub-agent does the semantic work (retained, re-anchored)
 
-- **Context.** Calling `okf_ingest` should start ingestion *automatically* and free the
-  caller immediately (spec FR-046). The service is a worker thread outside Next.js — it
-  cannot run an LLM turn or call `agent_delegate` *directly*, but it **can reach BOS's HTTP
-  surface over loopback** (it already does for the VFS, via `vfs-bridge` → `/api/fs`). The
-  question is which existing mechanism starts a **named** agent headlessly, with no live
-  conversation occupying the caller's turn.
-- **Options.** (a) The worker performs the decomposition — impossible (no agent loop).
-  (b) `okf_ingest` returns instructions (`acquisition_required`/`delegation_required` + a
-  `delegate` block) and the *calling assistant* runs the acquisition steps and issues
-  `agent_delegate` — the installed behavior; it burdens the caller, holds its turn for the
-  whole run, and is exactly the "you're told to call the ingestion agent" friction being
-  removed. (c) **The worker itself starts the run**: it mints the job, fires
-  `POST /api/subagents/delegate` (loopback) with `{task, agent:"okf-ingest"}`, and returns
-  `{jobId, status:"queued"}` at once. That route runs the same `runSubAgent`
-  (`src/lib/agent/subagents/runner.ts`) the scheduler, workflows, Telegram, and self-heal
-  use to start named agents with no conversation; it **streams NDJSON** and ends with a
-  terminal `{type:"done", result}` / `{type:"error"}` line. The worker consumes that stream
-  asynchronously and owns the job's terminal state (ADR-006).
-- **Decision.** **(c)**. No new infra: the worker uses the same loopback channel it already
-  uses for the VFS, and `POST /api/subagents/delegate` is the platform's existing
-  headless-named-agent entry point (its route comment explicitly anticipates "a consuming
-  service"). `okf-ingest` is a `local` agent, so the delegate route's feature-branch gate
-  (which applies only to `claude` agents) does not apply. The run performs the **whole job
-  end-to-end** (FR-047): acquisition (`web_fetch`/`file_to_markdown`, each pinning
-  `output_path` so the source streams to disk, never re-emitted as the caller's tokens),
-  `okf_add_raw_source`, chapter decomposition, concept/summary assignment, inline-asset
-  interpretation, TOC + concept-index maintenance, and the bounded reference crawl
-  (nested references each as their own `okf_ingest` → their own jobs).
-- **Consequences.** The caller is freed at `okf_ingest`'s return — no follow-up steps, no
-  held turn, and no assistant-side "safety net" to maintain (the worker is the launcher and
-  owns the outcome). The document never re-enters the caller as output tokens. Reference
-  crawl stays bounded by `maxDepth`/`maxWorkers` (FR-019). **Supersedes** the installed
-  `tools.js` dispatcher (`plannedAcquisition` / `delegation_required`) and the old
-  `agent_delegate`-via-assistant path; that step sequence is retained only as what the
-  headless run now performs *itself*.
+- **Context.** Semantic decomposition (split into chapters, assign concepts, write
+  summaries, interpret assets) is a multi-step *reasoning* task. The service is a worker
+  thread outside Next.js — it cannot run an LLM turn or call `agent_delegate` itself.
+- **Options.** (a) The worker performs the decomposition (impossible — no agent loop). (b)
+  A new async `runId` + status-poll tool pair. (c) **`okf_ingest` validates + returns the
+  exact next calls** (acquisition steps pinning `output_path`, then a `delegate` block); the
+  *in-process* calling assistant issues `agent_delegate` against the bundled `okf-ingest`
+  agent.
+- **Decision.** **(c)** — **retained from the installed item** (`tools.js`' `okf_ingest`,
+  `plannedAcquisition`), re-anchored to the new decomposition semantics (chapters + index,
+  not loose "concepts") and extended to mint a **job record** for observability (ADR-006).
+  `agent_delegate` → `runInnerLoop` (`src/lib/assistant/tools/server/delegate-local.ts`)
+  is the existing mechanism; no new run-tracking infra is invented.
+- **Consequences.** The document never re-enters the orchestrating agent as output tokens
+  (every acquisition step pins `output_path` — the whole point). The calling assistant's
+  own turn is occupied for the duration of the delegated ingest (synchronous from its
+  perspective) — acceptable for v1. Reference crawl is bounded by `maxDepth`/`maxWorkers`
+  (FR-019, already in the config schema); fan-out uses the parallel-safe `agent_delegate`.
 
-### ADR-006 — Run observability: the worker (launcher) owns finalization from the run's own terminal signal, plus a stale reaper
+### ADR-006 — Run observability: a service-owned job record + sub-agent HTTP lifecycle callbacks
 
 - **Context.** FR-041/FR-044/SC-011 require ingest runs to be observable through a real
   lifecycle (queued → running → completed | failed) with a summary (chapters written,
-  concepts assigned, assets interpreted, references skipped/failed) or an error, exposed to
-  both the app's Jobs tab **and the `okf_list_jobs` tool** (FR-048), **without** the caller
-  emitting the full source and **without** the run-observation plumbing adding tools beyond
-  `okf_list_jobs` (FR-044).
-- **Why the old boundary problem is gone.** In ADR-005 (c) the **worker** is the one that
-  called `POST /api/subagents/delegate` and reads its NDJSON response — so it observes the
-  run's real terminal outcome directly, on the same request. It no longer "can't see the
-  agent loop"; it *is* the client of the run. Finalization is therefore authoritative in
-  the worker, not dependent on the sub-agent remembering to call back.
-- **Options.** (a) Sub-agent → service `POST /jobs/<id>` callbacks with the *calling
-  assistant* as the safety net (the installed model) — fragile here: the caller is no
-  longer in the loop at all, and trusting the sub-agent to emit a correct terminal call
-  leaves a crashed/abandoned run stuck "running". (b) **The worker consumes the delegate
-  stream and owns terminal state** — the `{type:"done", result}` / `{type:"error"}` line is
-  the ground truth, and the worker calls `core.updateJob(jobId, terminal, …)` from it.
-  (c) A **worker-side stale reaper** as the last line of defense for a worker that is
-  itself killed mid-run (the run keeps going in BOS's process, but the worker lost the
-  handle).
-- **Decision.** **(b) + (c)**. Job transitions, all owned by the worker:
-  - `okf_ingest` called → `core.createJob({id:"run-<n>", status:"queued", bundle, source})`,
-    persisted under `bundleRoot/.jobs/`; the worker then fires the delegate request and
-    returns `{jobId, status:"queued"}` to the caller (FR-046).
-  - The worker marks `running` when the delegate request is accepted. It advances
-    `progress` **from the NDJSON `{type:"tool"}` lines it is already reading** (each
-    `okf_upsert_concept` = one chapter written) — free, no sub-agent cooperation needed.
-    The sub-agent *may additionally* `POST /jobs/<id> {progress:"…"}` for finer text, but
-    that is now **optional enrichment**, not the terminal-state path.
-  - Stream terminal `{type:"done"}` → the worker derives state from `result.endedReason`
-    (NOT from the line type — a failed *local* run arrives as `done` with
-    `endedReason:"error"`, because `runSubAgent` catches its own errors and resolves
-    (`runner.ts`); the route's `{type:"error"}` line is only its outer `catch`, essentially
-    unreachable for a self-catching local agent). So: `endedReason:"completed"` → record
-    `completed`, summary from `result.output` (the sub-agent's final text, also the
-    `text` field; the skill instructs it to be a compact honest count:
-    chapters/concepts/assets/refsSkipped/refsFailed — the existing "report honestly" rule),
-    and/or derived by the worker from the writes it handled for the job. `endedReason:
-    "error"` (and `"max_steps"`) → `failed` with `result.error`. A true thrown crash
-    surfaces as the `{type:"error"}` line → also `failed`.
-  - **Stale reaper (FR-049):** a worker timer, plus a sweep on (re)start, marks any job
-    still `queued`/`running` older than a configured `staleJobMs` (default e.g. 30 min) as
-    `failed (stale)`, so a killed worker or an abandoned run never leaves the Jobs tab /
-    `okf_list_jobs` showing a run that will never finish.
-- **Consequences.** The app's Jobs tab and `okf_list_jobs` read the same
-  `core.listJobs()` — one store, two surfaces (the ADR-003 "one capability, two surfaces"
-  pattern again). No new IPC channel; `POST /jobs/<id>` remains for optional progress. Jobs
-  are single-user (NFR-008); `.jobs/` is operational state under the bundle root (excluded
-  from `okf_export_bundle`, per §10 risk 2). The caller is entirely out of the loop — there
-  is no assistant safety net to maintain, because the launcher *is* the observer.
+  concepts assigned, assets interpreted, references skipped/failed) or an error, **without**
+  adding to the 18-tool surface and **without** the agent emitting the full source.
+- **The boundary problem.** The service (worker thread) creates the job when `okf_ingest`
+  is called, but the *sub-agent* runs **in the main Next.js process** — the service cannot
+  observe the agent loop directly. The only channels across that boundary are (i) the
+  agent's tool calls (039 IPC → worker) and (ii) the service's own loopback HTTP bridge.
+  `agent_delegate` returns to the *calling* assistant when the sub-agent finishes; that
+  return is visible to the assistant, not to the service.
+- **Options.**
+  - **(a) Polling** — the service guesses completion by watching chapter-file mtimes.
+    Fragile (a stalled sub-agent looks "running" forever; a partial write looks "done").
+  - **(b) The calling assistant marks the job** — it would need a tool for that, adding a
+    19th tool, and the assistant is often the user's top-level agent (heavy to burden).
+  - **(c) Sub-agent → service loopback HTTP lifecycle callbacks** — the sub-agent is told
+    the `jobId` (embedded by `okf_ingest` in the `agent_delegate` task text, which the
+    sub-agent already carries in context) and is instructed by its skill/agent prompt to
+    `POST /jobs/<id>` transitions: `running` on first write, `completed` with the summary,
+    `failed` with the error. These `POST /jobs/…` routes are **app/service-facing HTTP, not
+    039 tools** — so the 18-tool surface is untouched.
+- **Decision.** **(c)** — the **simplest mechanism that works across the worker-thread
+  boundary**. The service owns the job record (in-memory hot map + a persisted
+  `/KnowledgeBase/.jobs/<id>.md` so Jobs survives a service restart). Transitions:
+  - `okf_ingest` called → service mints `{id: "run-<n>", status: "queued", bundle, source}`
+    and returns it in the `delegate` block (`jobId`).
+  - Sub-agent, on its first `okf_upsert_concept`/TOC/index write for the job → `POST
+    /jobs/<id> {status:"running"}` (the skill says to do this once, up front).
+  - Sub-agent success → `POST /jobs/<id> {status:"completed", summary:{chapters,
+    concepts, assets, refsSkipped, refsFailed, written:[titles]}}`.
+  - Sub-agent failure → `POST /jobs/<id> {status:"failed", error:"…"}`.
+  - **Safety net (covers a sub-agent that dies without calling back):** the calling
+    assistant, on `agent_delegate`'s return, checks the job's terminal state via `GET
+    /jobs/<id>` (one cheap loopback call the app's Jobs tab already does); if the
+    `agent_delegate` result is an error string and the job is still `queued`/`running`, the
+    assistant issues `POST /jobs/<id> {status:"failed", error}`. Because `okf_ingest`'s
+    `delegate.task` tells the sub-agent to make the lifecycle calls *and* the assistant
+    owns the return, completion/failure is detected even if one path lapses.
+- **Consequences.** No new tool, no new IPC channel. The `running` progress string
+  (mockup: "Interpreting inline asset … writing 3 of 6 chapters") is optional and
+  best-effort — the sub-agent *may* `POST /jobs/<id> {progress:"…"}` between chapters; the
+  UI shows a live bar when present and a static "running" state when not. Jobs are
+  single-user (NFR-008); the `.jobs/` dir is under the bundle root so it rides export if
+  wanted but is not part of the OKF *content* contract (it's operational state, like
+  `log.md`).
 
 ### ADR-007 — Bundle conventions live in the `okf-bundle-schema` skill, not a per-bundle `schema.md`
 
 - **Context.** The old design read conventions from a per-bundle `schema.md` via the
-  `okf_read_bundle_schema` tool (now **removed** from the 19-tool surface).
+  `okf_read_bundle_schema` tool (now **removed** from the 18-tool surface).
 - **Decision.** The authoritative conventions are the item's bundled **skill**
   (`skills/okf-bundle-schema/SKILL.md`), attached to `okf-ingest` (FR-040) — reusing BOS's
   skill infrastructure rather than a parallel convention-file mechanism. A bundle *may*
@@ -702,7 +667,7 @@ chapters:
 ```
 
 `core.rebuildToc(bDir, docId)` derives it from that document's chapter frontmatter.
-`okf_read_toc` (§8.2) returns it (FR-004). It is exported/imported with the bundle (FR-010).
+`okf_read_toc` (§9) returns it (FR-004). It is exported/imported with the bundle (FR-010).
 
 ### 5.5 `links.json` — explicit edges
 
@@ -710,7 +675,7 @@ chapters:
 chapter's body (`- [Label](<target>.md)` under a `## Links` section — retained from the
 installed `addLink`, human-readable, OKF-portable) **and** as an entry in `links.json`
 (`{from, to, label?}`) for cheap graph derivation (ADR-004). The two are reconciled by
-`okf_lint` (drift between the markdown links and `links.json` is reported, §8.2 `okf_lint`).
+`okf_lint` (drift between the markdown links and `links.json` is reported, §9 `okf_lint`).
 `okf_backlinks` (FR-032) is answered from the link graph (`okf-core`'s existing
 `ensureGraph` backlink index, built from `extractLinks`) — unchanged in mechanism.
 
@@ -811,31 +776,26 @@ force-directed renderer (FR-042/FR-045):
 
 ## 7. Ingest pipeline (re-scoped, not re-derived — spec retains the prior architecture)
 
-### 7.1 `okf_ingest` — auto-trigger (supersedes the old dispatcher shape)
+### 7.1 `okf_ingest` — the dispatcher (retained shape, re-anchored)
 
-`okf_ingest({bundle, source, maxDepth?, maxWorkers?})` runs in the worker. It **acts, not
-plans**: it mints the job and immediately starts the headless run (ADR-005), then returns
-**`{jobId, status:"queued"}`** to the caller — the same shape for every `source` type
-(FR-046). The caller does not run acquisition steps and does not delegate anything; it is
-free to proceed. Dedup first: if `source`'s normalized key is already in
-`raw/sources.json`, the tool returns the existing `docId` (FR-018) rather than starting a
-duplicate run.
+`okf_ingest({bundle, source, maxDepth?, maxWorkers?})` runs in the worker (no
+`web_fetch`/`file_to_markdown` here). It **plans, not acts**, and returns one of two
+shapes (retained from `tools.js`), **plus a minted `jobId`** (ADR-006):
 
-What the headless run does with each `source` type is fixed (this is what the *run*
-performs, not what the caller performs):
+| `source` | Returns | Meaning |
+|---|---|---|
+| `https://…/x` (URL) | `acquisition_required` + `steps` + `jobId` | `web_fetch(url, output_path)` → `okf_add_raw_source(sourcePath)` → `okf_ingest(raw/…)` |
+| `/path/to/x.pdf` (convertible) | `acquisition_required` + `steps` + `jobId` | `file_to_markdown(path, output_path)` → same tail |
+| `/path/to/x.md` (plain text) | `acquisition_required` + `steps` + `jobId` | `okf_add_raw_source(sourcePath)` → same tail (no conversion) |
+| `raw/x.md` (already in bundle) | `delegation_required` + `delegate{agent,task}` + `jobId` | straight to `agent_delegate({agent:"okf-ingest", task})` |
 
-| `source` | The run's first steps |
-|---|---|
-| `https://…/x` (URL) | `web_fetch(url, output_path)` → `okf_add_raw_source(sourcePath)` → decompose |
-| `/path/to/x.pdf` (convertible) | `file_to_markdown(path, output_path)` → `okf_add_raw_source(sourcePath)` → decompose |
-| `/path/to/x.md` (plain text) | `okf_add_raw_source(sourcePath)` → decompose (no conversion) |
-| `raw/x.md` (already in bundle) | decompose directly (source already registered) |
-
-Every acquisition step pins `output_path` — the source streams to disk and the run reads a
-receipt, so the document never re-enters the caller (or the run) as output tokens (FR-047).
-After acquisition, the run does the FR-012–FR-015 decomposition, FR-020–FR-023
-inline-asset interpretation, and the FR-019 bounded reference crawl (nested references
-each as their own `okf_ingest` → their own jobs).
+The `steps` pin `output_path` (the whole mechanism — the document streams to disk and the
+tool returns a receipt, never output tokens). The `delegation.task` embeds the **`jobId`**
+and instructs the sub-agent to read the raw source itself, decompose into chapters, assign
+concepts + summaries, interpret inline assets, write the TOC + index, and make the job
+lifecycle calls (ADR-006). Dedup check: if `source`'s normalized key is already in
+`raw/sources.json`, the dispatcher reports the existing `docId` (FR-018) rather than
+creating a duplicate.
 
 ### 7.2 `okf_add_raw_source` — mechanical registration (retained)
 
@@ -844,45 +804,41 @@ each as their own `okf_ingest` → their own jobs).
 staged by `web_fetch`/`file_to_markdown` — so large content never passes inline, FR-017),
 records the provenance ledger entry, optionally stubs a concept. No LLM, no delegation.
 
-### 7.3 Run observability flow (ADR-005/ADR-006, concrete)
+### 7.3 Run observability flow (ADR-006, concrete)
 
 ```
-Caller (agent or app Ingest modal) ─okf_ingest({bundle, source})─▶ Worker:
-            • dedup vs raw/sources.json (if duplicate → return existing docId, no run)
-            • core.createJob({id:"run-<n>", status:"queued", bundle, source}); persist
-            • fire POST /api/subagents/delegate {agent:"okf-ingest", task}  (loopback, async)
-            • return {jobId, status:"queued"} to the caller   ← caller is free now
+Assistant ─okf_ingest({bundle, source})─▶ Worker:
+            • (if not raw/) returns acquisition steps + mints job {id, queued, bundle, source}
+            • (if raw/)     returns delegate{agent:"okf-ingest", task:<embeds jobId>} + job {queued}
+            • job persisted to /KnowledgeBase/.jobs/<id>.md; in-memory map updated
 
-Worker ─(same HTTP request, NDJSON stream)─▶ runSubAgent("okf-ingest", task) [main process]:
-            Sub-agent (self-sufficient allowlist, §8.4); task embeds jobId/bundle/source:
-              • (run's first steps per §7.1) acquire → okf_add_raw_source
+Assistant ─agent_delegate("okf-ingest", task)─▶ runInnerLoop (main process):
+            Sub-agent (narrow allowlist, §8):
+              • POST /jobs/<id> {status:"running"}                      (once, up front)
               • reads raw/<file> directly (file_read) — never re-supplied
               • decomposes into chapters; per chapter:
                    okf_upsert_concept(parent, concepts, summary, status, sources)
               • inline non-HTML assets (§7.5): download → view_image/video_keyframes →
                    write link + interpretation block
-              • writes toc/<docId>.md + concept-index.md (write path rebuilds; the sub-agent
-                   also runs the skill's final index/toc maintenance step)
-              • bounded reference crawl (maxDepth/maxWorkers), dedup vs raw/sources.json;
-                   each nested reference = its own okf_ingest → its own job
-              • ends with a compact, honest summary (report-honestly rule)
+              • writes toc/<docId>.md + rebuilds concept-index.md (okf_upsert_concept
+                   triggers the derived rebuild; the sub-agent also calls a final
+                   index/toc maintenance step per the skill)
+              • bounded reference crawl (maxDepth/maxWorkers), dedup vs raw/sources.json
+              • POST /jobs/<id> {status:"completed",
+                   summary:{chapters, concepts, assets, refsSkipped, refsFailed, written:[titles]}}
+                  — OR {status:"failed", error} on a fatal problem
 
-Worker ◀── NDJSON {type:"tool"} lines → advance progress (chapters written so far) ──▶
-Worker ◀── terminal {type:"done", result} → read result.endedReason:
-            "completed" → core.updateJob(completed, summary from result.output)
-            "error"|"max_steps" → core.updateJob(failed, result.error)
-            OR {type:"error"} (a thrown crash) → core.updateJob(failed, error)
-[stale reaper: any job queued/running > staleJobMs → failed(stale), incl. after restart]
+Assistant ◀── agent_delegate returns the sub-agent's compact summary ──▶
+            • safety net: GET /jobs/<id>; if agent_delegate returned an error string and
+              the job is not terminal, POST /jobs/<id> {status:"failed", error}
 
-App Jobs tab  ──▶ GET /jobs / GET /jobs/<id>   (poll; ADR-003)
-okf_list_jobs   ──▶ core.listJobs()            (same store; FR-048)
-            • both render queued → running (live progress) → completed/failed
+App Jobs tab ◀── GET /jobs  /  GET /jobs/<id>  (polling; ADR-003) ──▶
+            • renders queued → running (live progress if present) → completed/failed
 ```
 
-The **launcher owns finalization**: because the worker issued the delegate request, it reads
-the run's own terminal signal and writes the job's final state — no assistant safety net,
-no dependence on the sub-agent remembering to call back (ADR-006). The stale reaper covers
-a worker killed mid-run.
+The service **cannot** see the agent loop (worker boundary) — it gets told, over its own
+loopback HTTP, by the sub-agent it delegated to. This is the simplest mechanism that works
+across that boundary and adds no tool (ADR-006).
 
 ### 7.4 Chapter decomposition & index maintenance (sub-agent + skill)
 
@@ -944,7 +900,7 @@ BOS assistant tools the sub-agent's allowlist names; see §8).
   (retained). On `dispose`/`restart`, close the server.
 - **Config** `config/okf-knowledge-base.json`: `bundleRoot` (default `/KnowledgeBase`),
   `port` (**default `0`** — OS-assigned, the only safe default, `services.md` §3),
-  `maxDepth` (default 1), `maxWorkers` (default 3), `staleJobMs` (default 1800000 — the job-reaper bound, ADR-006). Runtime port is written to
+  `maxDepth` (default 1), `maxWorkers` (default 3). Runtime port is written to
   `runtime.json` by `ServiceManager` after the `bound` message.
 - **App reachability** (`services.md` §11 — the mandatory reading for any service port):
   the app resolves its base URL as **`httpPath` if present else direct `runtime.port`**:
@@ -963,7 +919,7 @@ BOS assistant tools the sub-agent's allowlist names; see §8).
   peer is loopback (`isTrustedPeer`) — a forwarded `X-Forwarded-For` header can't launder a
   non-loopback peer. Single-user (NFR-008); no per-user ACL in v1.
 
-### 8.2 The 19 tools (FR-037) — the agent surface, exactly 19
+### 8.2 The 18 tools (FR-037) — the agent surface, exactly 18
 
 Declared under the **Knowledge Base** tool group (`service.json` `toolGroups` — retained).
 Read-only tools are `parallelSafe` (retained `readOnly()`). Validation against each
@@ -990,11 +946,8 @@ level:
 - `okf_delete_bundle` `{bundle}` → removes only that bundle's directory (FR-030, US5).
 
 **Ingest**
-- `okf_ingest` `{bundle, source, maxDepth?, maxWorkers?}` → **auto-trigger** (FR-016/FR-046, §7.1): mints the job, starts the headless `okf-ingest` run (ADR-005), and returns `{jobId, status:"queued"}` immediately. Returns the existing `docId` on a dedup hit (FR-018). No `acquisition_required`/`delegation_required` instruction block is returned to the caller.
+- `okf_ingest` `{bundle, source, maxDepth?, maxWorkers?}` → dispatcher (FR-016, §7.1); returns acquisition/delegation + `jobId`.
 - `okf_add_raw_source` `{bundle, filename?, content?, sourcePath?, conceptId?, title?}` → mechanical raw registration (FR-017, §7.2).
-
-**Jobs**
-- `okf_list_jobs` `{limit?}` → `[{id, status, bundleId, source, startedAt, durationMs?, progress?, summary?, error?}]` — the current ingest runs and their lifecycle status, the **same records the app's Jobs tab shows** (FR-041/FR-048). *readOnly / parallelSafe.*
 
 **Organization**
 - `okf_add_link` `{bundle, id, target, label?}` → adds an explicit "related" edge (markdown link + `links.json`) (FR-031).
@@ -1011,13 +964,13 @@ level:
 frontmatter, FR-024), `okf_attest`/`okf_provenance` (→ `sources` frontmatter),
 `okf_remove_link`/`okf_list_links`/`okf_neighbors`/`okf_shortest_path`/`okf_export_graph`
 (graph power-tools dropped — retrieval is index-based; the app renders the graph, ADR-004).
-Net arithmetic: 31 declared → 19 declared = **12 fewer**. Per FR-037 that's **4 added**
-(`okf_search`, `okf_read_toc`, `okf_merge_concepts`, `okf_list_jobs`) and **15 kept**. The
-**removed** list names 15–16 tools (the spec's "16 removed" vs. the 31→19 net of 12 differ
-by exactly the folding: the field-setter family `okf_set_status`/`okf_set_trust`/
-`okf_add_source` — and the `okf_attest`/`okf_provenance` pair — keep their *capability*
-inside `okf_upsert_concept` frontmatter and `sources` rather than vanishing, so they're
-"removed" tools, not removed features).
+Net arithmetic: 31 declared → 18 declared = **13 fewer**. Per FR-037 that's **3 added**
+(`okf_search`, `okf_read_toc`, `okf_merge_concepts`) and **15 kept**. The **removed** list
+names 15–16 tools (the spec's "16 removed" vs. the 31→18 net of 13 differ by exactly the
+folding: the field-setter family `okf_set_status`/`okf_set_trust`/`okf_add_source` — and
+the `okf_attest`/`okf_provenance` pair — keep their *capability* inside `okf_upsert_concept`
+frontmatter and `sources` rather than vanishing, so they're "removed" tools, not removed
+features).
 
 ### 8.3 App-facing REST routes (ADR-003) — what the app actually calls
 
@@ -1028,7 +981,6 @@ reusing the *same* `core` functions as the tools.
 | Method + path | Reuses | Returns | Feeds |
 |---|---|---|---|
 | `GET /config` | `getRuntime()` | `{httpPath, port, runtime:{bundleRoot}}` | `bridge.ts` base-URL |
-| `GET /tools` | declared tool list | `{count, tools:[{name, description, inputSchema, parallelSafe}]}` | titlebar **"19 okf_\* tools" badge** — the **real** declared count, not a second hardcoded literal (the mockup's "18" going stale is exactly why); also what the e2e SC-007 assertion reads, so the test checks what the service actually declares, not a literal |
 | `GET /bundles` | `core.listBundles` | `[{name, docs, chapters, conceptTerms, stale, deprecated, status}]` (FR-027) | Overview bundle list + health stat cards |
 | `POST /bundles` | `core.initBundle` | bundle health | "New Knowledge Base" modal |
 | `GET /bundles/<b>` | `core.bundleDetail` | `{health, documents:[{id, title, chapters, conceptRefs, updated, source}], conceptIndex:[{name, count, covers:[...], stale}]}` (FR-027 + US7) | Bundle detail header + Documents + Concept Index tabs |
@@ -1044,9 +996,7 @@ reusing the *same* `core` functions as the tools.
 | `DELETE /bundles/<b>` | `core.deleteBundle` | `{deleted:true}` | Delete modal (confirmed) |
 | `GET /jobs` | job store | `[{id, status, bundleId, source, startedAt, durationMs?, progress?, summary?, error?}]` (FR-041) | **Jobs tab list** + tab badge count |
 | `GET /jobs/<id>` | job store | full job record incl. summary/error | Job detail (expand) |
-| `POST /jobs` | `okf_ingest` handler (shared) | `{jobId, status:"queued"}` | **Ingest modal** (app-side auto-trigger; FR-046/FR-047) — body `{bundle, source, maxDepth?, maxWorkers?}`, same shape as the tool. The app is an iframe (not an agent) and cannot call the `okf_*` tool directly, so it drives the **same worker-side trigger path** via this route: mint job → fire `POST /api/subagents/delegate` → return `jobId`. The Jobs tab then polls `GET /jobs` for the lifecycle.
-| `POST /jobs` | `okf_ingest` handler (shared) | `{jobId, status:"queued"}` | **Ingest modal** (app-side auto-trigger; FR-046/FR-047) — body `{bundle, source, maxDepth?, maxWorkers?}`, same shape as the tool. The app is an iframe (not an agent) and cannot call the `okf_*` tool directly, so it drives the **same worker-side trigger path** via this route: mint job → fire `POST /api/subagents/delegate` → return `jobId`; the Jobs tab then polls `GET /jobs`. **Supersedes the installed `POST /bundles/<b>/ingest`** (which ran the old dispatcher `planIngest` and returned a `delegation_required`/`acquisition_required` block for the user to hand the assistant) — the app's `serviceClient.prepareIngest()` is reworked to call `POST /jobs` and render the queued→running lifecycle, so the modal no longer shows "hand this to an assistant." |
-| `POST /jobs/<id>` | job store | updated record | **optional sub-agent progress enrichment** (`{progress:"…"}`, ADR-006) — terminal state is owned by the launcher from the run's own signal, not by this route |
+| `POST /jobs/<id>` | job store | updated record | **sub-agent lifecycle callbacks** (`running`/`completed`/`failed`/`progress`, ADR-006) — *and* the calling-assistant safety net |
 
 The **graph** and **jobs** response shapes are the *new* surfaces (the delegation's
 requirement); their exact JSON is the `nodes/edges` above and the job record below. The
@@ -1072,50 +1022,37 @@ itself.
 ```
 The Jobs tab **polls** `GET /jobs` (and, for the expanded row, `GET /jobs/<id>`) on a short
 interval (the mockup's live "elapsed" + progress bar), reflecting status as it changes
-(FR-041, SC-011); `okf_list_jobs` reads the same `core.listJobs()` for the agent surface
-(FR-048). (Polling, not SSE, is simplest and matches the loopback bridge; an NDJSON tail
-could replace it later without changing the record shape.)
+(FR-041, SC-011). (Polling, not SSE, is simplest and matches the loopback bridge; an
+NDJSON tail could replace it later without changing the record shape.)
 
-### 8.4 The bundled `okf-ingest` agent — self-sufficient allowlist (FR-039, NFR-009)
+### 8.4 The bundled `okf-ingest` agent — least-privilege allowlist (FR-039, NFR-009)
 
-`agents/okf-ingest/AGENT.md` `tools:` — **rewritten** so the headless run (ADR-005) is
-**end-to-end self-sufficient** (FR-047). Because the run performs acquisition *and*
-decomposition *and* reconciliation itself — no caller holds tools for it — it carries the
-**full `okf_*` surface plus the named acquisition tools plus VFS reads**:
+`agents/okf-ingest/AGENT.md` `tools:` — **rewritten** for the new surface (was 22; the
+removed graph/lifecycle tools are dropped):
 
 ```
 okf_ingest, okf_add_raw_source,
-okf_search, okf_read_toc, okf_read_concept, okf_list_concepts,
-okf_upsert_concept, okf_delete_concept, okf_merge_concepts,
-okf_add_link, okf_backlinks, okf_lint, okf_stale_report,
-okf_list_bundles, okf_init_bundle, okf_import_bundle, okf_export_bundle, okf_delete_bundle,
-okf_list_jobs,
+okf_list_concepts, okf_read_concept, okf_read_toc, okf_search,
+okf_upsert_concept, okf_add_link,
 web_search, web_fetch, file_to_markdown, view_image, video_keyframes,
 file_read, file_list
 ```
 
-(That is the complete 19-tool `okf_*` surface — retrieval, concepts, bundles, ingest,
-jobs, organization, health — plus 5 acquisition tools + 2 VFS reads.)
-
-- **Why the full `okf_*` surface (the point of FR-047).** The run is headless and must
-  not assume an orchestrating assistant. Re-ingesting a changed source reconciles the
-  existing document — that legitimately uses `okf_delete_concept`/`okf_upsert_concept`.
-  Following a reference spawns **its own** `okf_ingest` (which mints a nested job, §7.1),
-  so the run recurses through the tool, not through `agent_delegate`. `okf_list_jobs`
-  lets it observe its own siblings; `okf_lint`/`okf_stale_report` let it verify what it
-  wrote before finishing.
+- **Read/organize:** `okf_list_concepts` (extend-before-create, dedup), `okf_read_concept`
+  (context), `okf_read_toc` (what a doc already covers), `okf_search` (is this term already
+  routed?), `okf_add_link` (connect new chapters to existing ones), `okf_upsert_concept`
+  (write chapters + document stub + frontmatter; the write path rebuilds the index/TOC).
 - **Acquisition (for references it follows + inline assets):** `web_search`, `web_fetch`,
   `file_to_markdown`, `view_image`, `video_keyframes` — the last two **specifically for
-  inline-asset interpretation** (FR-039). `file_read`/`file_list` to read the raw source
-  from the bundle.
-- **Explicitly NOT granted (least-privilege in scope, NFR-009):** any non-`okf_*` tool,
-  unrestricted `run_command`, and `agent_delegate` (nested runs go through `okf_ingest`,
-  never through delegating to arbitrary agents). It never gains the top-level assistant's
-  full surface.
-- **It does NOT finalize the job.** The launcher (the worker, ADR-006) writes the
-  terminal state from the run's own signal. The agent's only job-facing duty is to end
-  with a **compact, honest summary** (chapters/concepts/assets/refsSkipped/refsFailed) —
-  the "report honestly" rule, carried from the prior AGENT.md into this rewrite.
+  inline-asset interpretation** (FR-039 names them). `file_read`/`file_list` to read the
+  raw source from the bundle.
+- **`okf_ingest`** is granted so the sub-agent can recurse on a reference it decides to
+  follow (it gets the dispatcher steps + a nested `jobId`; nested runs are separate job
+  records — ADR-006).
+- **Explicitly NOT granted:** `okf_delete_concept`/`okf_delete_bundle` (destructive stays
+  a top-level-assistant / app-explicit action), `okf_merge_concepts` (curation, not
+  ingest), unrestricted `run_command`, and every non-OKF, non-acquisition tool. No full
+  assistant surface (NFR-009).
 - It has the `okf-bundle-schema` **skill** attached (FR-040) — the conventions (§7.4, §5.2,
   §7.5 block format) live there, not in a per-bundle file.
 
@@ -1140,59 +1077,57 @@ Retrieval (app, Query tab):
   GET /bundles/<b>/search?query=  → same [TOC rows] → click → GET /concept/<id> → FULL chapter
   GET /bundles/<b>/graph          → {nodes, edges}  → force-render → click node → same /concept
 
-Ingest (auto-trigger, ADR-005):
-  okf_ingest(bundle, source) → mint job(queued) → POST /api/subagents/delegate {okf-ingest}
-            → return {jobId, status:queued} to caller   ← caller is free now
-            → headless okf-ingest run (self-sufficient, §8.4): acquire (output_path) →
-              okf_add_raw_source → raw/ → chapters (upsert) + concepts/summaries +
-              assets (download+interpret) + toc + concept-index (derived rebuild)
-            → nested reference = its own okf_ingest → its own job
-            → run ends with a compact, honest summary
+Ingest:
+  okf_ingest → (acquisition steps pinning output_path) → okf_add_raw_source → raw/
+            → okf_ingest → delegation_required{jobId} → agent_delegate(okf-ingest)
+            → sub-agent: chapters (upsert) + concepts/summaries + assets (download+interpret)
+                          + toc + concept-index (derived rebuild) + job callbacks
+            → summary returned to the assistant; job → completed|failed
 
 Inline asset:
   sub-agent → download non-HTML asset → vfs-bridge.writeBinary → raw/assets/<docId>/<name>
             → view_image / video_keyframes → interpretation text
             → okf_upsert_concept writes the link + interpretation block into the chapter
 
-Job lifecycle (launcher owns finalization, ADR-006):
-  worker: okf_ingest → mint job(queued) → fire delegate request (async) → return {jobId}
-  worker consumes NDJSON: {tool} lines → progress; terminal {done} → read
-            result.endedReason: completed→completed(summary) | error/max_steps→failed
-            | a thrown {error} line → failed(error)
-  [stale reaper: job queued/running > staleJobMs → failed(stale), incl. after restart]
-  App Jobs tab polls GET /jobs; okf_list_jobs reads core.listJobs() → lifecycle (SC-011)
+Job lifecycle:
+  okf_ingest mints job(queued) → sub-agent POST /jobs/<id>(running) →
+  sub-agent POST /jobs/<id>(completed, summary) | (failed, error)
+  [safety net: assistant GET /jobs/<id>; if agent_delegate errored and job non-terminal →
+   POST /jobs/<id>(failed)]
+  App Jobs tab polls GET /jobs → renders lifecycle (SC-011)
 ```
 
 **Error handling:** every `okf_*` and HTTP route returns in-band errors (404/409/400 via
 the retained `statusForError`); a failed chapter/asset never fails the whole document
 (spec *Edge Cases*); a failed ingest leaves `raw/` and the index consistent because the
 derived artifacts rebuild from content (NFR-004). **Lifecycle:** service stop/uninstall
-removes all 19 tools immediately (SC-009, retained). The `.jobs/` dir and derived
+removes all 18 tools immediately (SC-009, retained). The `.jobs/` dir and derived
 artifacts are bundle-scoped, so they're removed with `okf_delete_bundle`.
 
 ---
 
 ## 10. Risks / open questions
 
-1. **`raw/` binary — resolved.** `vfs-bridge` today only does text (`readText`/`writeText`
-   → `/api/fs?op=read|write`). For binary, use the **streaming** `PUT /api/fs/raw?path=`
-   (write-temp-then-rename, no whole-file buffering — `src/app/api/fs/raw/route.ts`) and
-   `GET /api/fs/raw?path=` for reads. So `vfs-bridge.writeBinary` streams the request body
-   straight into the target file and `readRaw` streams back — a 100MB+ video is never held
-   in a JSON body. (Supersedes the earlier base64-via-`op:write` idea.)
+1. **`raw/` binary through `/api/fs` base64.** `vfs-bridge` today only does text
+   (`readText`/`writeText` → `/api/fs?op=read|write`). Non-HTML assets are binary, so we
+   add `writeBinary` (base64 → `op:write`) and `readRaw` (`GET /api/fs/raw?path=`). **Open:
+   confirm the `/api/fs` `write` op accepts a base64-marked payload and that `readRaw`
+   streams without buffering large video** (services.md §VFS bridge notes `raw` streams
+   both directions — verify the *write* side handles binary, or stage via a temp file and
+   use the streaming PUT). A 100MB+ video held in a JSON body would be wrong; use the
+   streaming path for large assets.
 2. **Job record durability vs. OKF purity.** Jobs live under the bundle root
    (`.jobs/`) to survive restart, but they're *operational* state, not OKF *content*.
    **Open: should export include `.jobs/`?** Default: exclude it from `okf_export_bundle`
    (it's not part of the distributable contract, NFR-001) but keep it on disk; confirm the
    reviewer wants export to skip `.jobs/` and `links.json`-drift, or include them.
-3. **Headless-run fidelity (ADR-005/ADR-006).** The launcher owns the job's terminal state
-   from the run's own `{done}`/`{error}` signal, so the mechanism no longer depends on the
-   sub-agent making lifecycle calls — the worker-side stale reaper is the last line of
-   defense for a worker killed mid-run. **Residual:** a run that "completes" with a
-   partial outcome (e.g. hit `maxDepth`) should record `completed` with an honest
-   `refsSkipped`/`refsFailed` summary, not `failed` — the skill/agent prompt carries that
-   "report honestly" rule, and the worker derives the summary from the writes it observed
-   for the job.
+3. **Sub-agent job-callback fidelity (ADR-006).** The mechanism depends on the sub-agent
+   actually making the `POST /jobs/<id>` calls. **Mitigation already in the design:** the
+   skill/agent prompt makes it a first-class instruction, and the calling-assistant safety
+   net closes the gap if the sub-agent lapses or dies. **Residual:** a sub-agent that
+   "completes" with a partial run (e.g. hit `maxDepth`) should report `completed` with an
+   honest `refsSkipped`/`refsFailed` summary, not `failed` — the skill must say this
+   (the old AGENT.md already had this "report honestly" rule; carried into the rewrite).
 4. **Concept-term normalization & merge quality (FR-026, US6).** Organic vocabulary
    accumulates near-duplicates; `okf_merge_concepts` is the guard. **Open:** the *detection*
    of near-duplicates (to suggest a merge) is a candidate for a lightweight pass in
@@ -1226,7 +1161,7 @@ artifacts are bundle-scoped, so they're removed with `okf_delete_bundle`.
    design doesn't depend on a specific provider.
 9. **Pre-existing installed item upgrading into this redesign.** The installed item has 31
    tools, a flat `okf_ingest`, `schema.md`-based conventions, and a config-app. Upgrading
-   means: the 31→19 tool change (tools removed on the next start — SC-009), the
+   means: the 31→18 tool change (tools removed on the next start — SC-009), the
    derived-index introduction (bundles created pre-redesign have no `concept-index.md` /
    `toc/`; the read-through rebuild generates them on first read — **self-healing, no
    migration required**, but confirm a pre-redesign bundle's chapters carry enough
@@ -1243,7 +1178,7 @@ artifacts are bundle-scoped, so they're removed with `okf_delete_bundle`.
 
 - **Path:** `item-okf-knowledge-base/mockup.html` (this spec directory) — the **binding
   visual + interaction contract**, already implementing the full app shell:
-  - **App shell** — titlebar (🧠 OKF Knowledge Base, "19 okf_* tools" badge, Populated/Empty
+  - **App shell** — titlebar (🧠 OKF Knowledge Base, "18 okf_* tools" badge, Populated/Empty
     mode toggle) + top tab bar **Overview / Jobs / Query** (with a live Jobs badge). This
     is the FR-035 master-detail app, not a settings page.
   - **Overview** — bundle list (per-bundle Docs/Chapters/Concepts/Stale + status dot) →

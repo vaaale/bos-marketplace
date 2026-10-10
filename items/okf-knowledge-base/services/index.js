@@ -3,9 +3,10 @@
 // Retained unchanged in shape from the pre-redesign item (spec Assumptions):
 // the bind-then-handshake-first ordering, the loopback VFS bridge, and the
 // 039 tool_declare loop. What changed around it: DECLARATIONS is now the
-// 18-tool surface, and createRequestHandler now serves the standalone app's
-// REST routes (bundles/toc/concept/search/graph/jobs) instead of the old
-// settings config-app's.
+// 19-tool surface, createRequestHandler serves the standalone app's REST
+// routes (bundles/toc/concept/search/graph/jobs) instead of the old
+// settings config-app's, and this file now also runs the JOB STALE REAPER
+// (see startReaper below).
 //
 // This file is also `import()`ed from BOS's MAIN thread (parentPort === null)
 // during manifest validation (validateManifestAtStart, CH-011) — every use of
@@ -19,7 +20,7 @@ const path = require("path");
 const http = require("http");
 
 const core = require("./lib/okf-core");
-const { DECLARATIONS, makeHandlers, planIngest } = require("./lib/tools");
+const { DECLARATIONS, makeHandlers } = require("./lib/tools");
 const { createRequestHandler } = require("./lib/http-bridge");
 const vfsBridge = require("./lib/vfs-bridge");
 
@@ -27,6 +28,13 @@ const DEFAULT_BUNDLE_ROOT = "/KnowledgeBase";
 // Bundle-level ingest crawl limits (per-call overridable on okf_ingest).
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_WORKERS = 3;
+// How long a job may sit non-terminal before the reaper calls it lost.
+// 30 minutes: comfortably longer than a real ingest run (minutes), short
+// enough that a run orphaned by a restart does not spin for a whole day.
+const DEFAULT_STALE_JOB_MS = 30 * 60 * 1000;
+// How often the reaper sweeps. A fifth of the default staleness window, so
+// a lost run is admitted to within a few minutes of actually being lost.
+const REAPER_INTERVAL_MS = 5 * 60 * 1000;
 const handlers = makeHandlers(core);
 
 if (parentPort) {
@@ -52,6 +60,8 @@ if (parentPort) {
   let bundleRoot = DEFAULT_BUNDLE_ROOT;
   let ingestDefaults = { maxDepth: DEFAULT_MAX_DEPTH, maxWorkers: DEFAULT_MAX_WORKERS };
   let serviceId = "okf-knowledge-base";
+  let staleJobMs = DEFAULT_STALE_JOB_MS;
+  let reaperTimer = null;
 
   function log(level, message) {
     parentPort.postMessage({ type: "log", level, message });
@@ -71,9 +81,45 @@ if (parentPort) {
   }
 
   async function closeServer() {
+    if (reaperTimer) {
+      clearInterval(reaperTimer);
+      reaperTimer = null;
+    }
     if (!server) return;
     await new Promise((resolve) => server.close(() => resolve()));
     server = null;
+  }
+
+  // ── The job stale reaper (design ADR-006 / FR-049) ─────────────────────
+  //
+  // core.driveRun writes a terminal state on every path it controls, so a
+  // run that merely FAILS is already recorded honestly. What it cannot cover
+  // is this process dying mid-run — a service restart, a BOS reload, a
+  // killed Next.js. Those orphan the job: it stays `running` with nobody
+  // left watching it, and the Jobs tab spins forever on a run that ended
+  // minutes ago.
+  //
+  // So the reaper runs BOTH on a timer and as a sweep on (re)start. The
+  // startup sweep is the important half: a restart is precisely the event
+  // that orphans jobs, and the first thing this service should do about the
+  // jobs it finds `running` — when it knows for a fact it is not running
+  // any of them — is admit they are lost.
+  async function reapOnce(reason) {
+    try {
+      const { count, reaped } = await core.reapStaleJobs(bundleRoot, staleJobMs);
+      if (count) {
+        log("info", `job reaper (${reason}): marked ${count} stale run(s) failed — ${reaped.join(", ")}`);
+      }
+    } catch (err) {
+      log("warn", `job reaper (${reason}) could not run (non-fatal): ${err.message}`);
+    }
+  }
+
+  function startReaper() {
+    if (reaperTimer) clearInterval(reaperTimer);
+    reaperTimer = setInterval(() => void reapOnce("timer"), REAPER_INTERVAL_MS);
+    // Never hold the worker open just to run a sweep.
+    if (typeof reaperTimer.unref === "function") reaperTimer.unref();
   }
 
   // One-time, additive-only recovery for bundles created while the bug above
@@ -147,6 +193,7 @@ if (parentPort) {
           maxDepth: Number.isFinite(userConfig.maxDepth) ? userConfig.maxDepth : DEFAULT_MAX_DEPTH,
           maxWorkers: Number.isFinite(userConfig.maxWorkers) ? userConfig.maxWorkers : DEFAULT_MAX_WORKERS,
         };
+        staleJobMs = Number.isFinite(userConfig.staleJobMs) && userConfig.staleJobMs > 0 ? userConfig.staleJobMs : DEFAULT_STALE_JOB_MS;
         const port = typeof userConfig.port === "number" ? userConfig.port : 0;
 
         // Bind + send initialized/bound/tool_declare FIRST, before touching the
@@ -176,7 +223,6 @@ if (parentPort) {
             declarations: DECLARATIONS,
             vfs: vfsBridge,
             getIngestDefaults: () => ingestDefaults,
-            planIngest: (args, ingestCtx) => planIngest(core, args, ingestCtx),
           }),
         );
         server.on("error", (err) => {
@@ -223,6 +269,11 @@ if (parentPort) {
             } catch (err) {
               log("warn", `could not load the ingest job store yet (non-fatal): ${err.message}`);
             }
+
+            // Sweep first, then arm the timer. See startReaper's comment for
+            // why the startup sweep is the half that matters.
+            await reapOnce("startup sweep");
+            startReaper();
           })();
         });
       } else if (msg.type === "dispose" || msg.type === "restart") {
@@ -239,7 +290,7 @@ if (parentPort) {
           return;
         }
         try {
-          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, getRuntime, serviceId });
+          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, staleJobMs, getRuntime, serviceId });
           parentPort.postMessage({ type: "tool_result", payload: { callId, result } });
         } catch (err) {
           parentPort.postMessage({

@@ -1936,6 +1936,323 @@ async function updateJob(bundleRoot, id, patch = {}) {
   return job;
 }
 
+// ════════════════════════════════════════════════════════════════════════
+//  THE AUTO-TRIGGER (core.triggerIngest) + THE STALE REAPER
+// ════════════════════════════════════════════════════════════════════════
+//
+// ── What changed, and why ────────────────────────────────────────────────
+//
+// `okf_ingest` used to be a DISPATCHER: it validated the source, minted a
+// job, and returned an instruction block — `acquisition_required` with steps
+// to run, or `delegation_required` with an agent_delegate call to issue. The
+// caller then had to execute that ritual correctly, three calls deep, and the
+// job's terminal state depended on the sub-agent remembering to POST its own
+// lifecycle callbacks.
+//
+// That shape existed for one reason: the worker thread has no agent loop, so
+// it could not start a run. But BOS exposes `/api/subagents/delegate` over
+// plain loopback HTTP — the same transport this module already uses to reach
+// `/api/fs`. The worker CAN start a run; it just wasn't asking.
+//
+// So `okf_ingest` is now an AUTO-TRIGGER:
+//
+//   okf_ingest({bundle, source})  ->  {jobId, status: "queued"}   [returns NOW]
+//                                      \
+//                                       `- the run proceeds in the background
+//
+// Three consequences worth naming:
+//
+//  1. **The caller is freed.** triggerIngest returns as soon as the job is
+//     created. The delegate stream is consumed by a detached async task, so
+//     the invoking assistant's turn is not held open for a multi-minute run.
+//     This is why there is no `await` on `driveRun()` below — that is
+//     deliberate, not an oversight.
+//
+//  2. **The LAUNCHER owns the terminal state**, derived from the run's own
+//     signal (`result.endedReason`), not from the agent's good manners. An
+//     agent that dies, loops, or forgets to report still gets an honest job
+//     record. The agent's only job-facing duty is its final summary text.
+//
+//  3. **Acquisition moved into the task, not the caller.** The per-source
+//     first steps (web_fetch / file_to_markdown / okf_add_raw_source) are
+//     written into the sub-agent's task, each pinning `output_path`. That
+//     parameter is still the whole mechanism — it is what makes the source
+//     stream to disk instead of being re-emitted as output tokens — but it
+//     is now pinned by the service, where it cannot be forgotten, instead of
+//     by whoever reads the instruction block.
+
+const CONVERTIBLE = /\.(pdf|docx|pptx|xlsx|doc|ppt|xls)$/i;
+
+/** Filesystem-safe slug for the staged copy's filename. */
+function stagedName(source) {
+  const base =
+    String(source)
+      .replace(/[?#].*$/, "")
+      .replace(/\/+$/, "")
+      .split("/")
+      .filter(Boolean)
+      .pop() || "source";
+  const slug = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "source";
+  return slug.replace(CONVERTIBLE, "") + ".md";
+}
+
+/**
+ * The acquisition FIRST STEPS for a source, as literal tool calls for the
+ * sub-agent's task. Returns [] when the source is already in the bundle's
+ * raw/ (nothing to acquire).
+ *
+ * Every step pins `output_path`. Without it the acquisition tool returns the
+ * document as a tool result and the only way to store it is for the model to
+ * re-emit the whole thing — the exact cost this pipeline exists to remove.
+ */
+function acquisitionFirstSteps(bundle, source) {
+  const isUrl = /^https?:\/\//i.test(source);
+  const isAbsPath = source.startsWith("/");
+  if (!isUrl && !isAbsPath) return []; // a raw/ path — already in the bundle
+
+  const staged = `/workspace/okf-staged-${stagedName(source)}`;
+  const steps = [];
+  if (isUrl) {
+    steps.push({ tool: "web_fetch", args: { url: source, output_path: staged } });
+  } else if (CONVERTIBLE.test(source)) {
+    steps.push({ tool: "file_to_markdown", args: { path: source, output_path: staged } });
+  }
+  const sourcePath = steps.length ? staged : source;
+  steps.push({
+    tool: "okf_add_raw_source",
+    args: { bundle, sourcePath, ...(isUrl ? { originUrl: source } : {}) },
+  });
+  return steps;
+}
+
+function renderSteps(steps) {
+  return steps.map((s, i) => `${i + 1}. \`${s.tool}(${JSON.stringify(s.args)})\``).join("\n");
+}
+
+/** The sub-agent task for one ingest run. Embeds jobId / bundle / source. */
+function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
+  const steps = acquisitionFirstSteps(bundle, source);
+  const acquisition = steps.length
+    ? `## Step 0 — acquire the source (do this FIRST, exactly as written)\n\n${renderSteps(steps)}\n\n` +
+      `Run those calls verbatim. \`output_path\` is pinned on purpose: with it the source streams to disk and the tool ` +
+      `returns a receipt, so the document never passes through your context. Do NOT drop it and paste the content into ` +
+      `\`okf_add_raw_source({content})\` instead — that re-emits the entire document as output tokens for no benefit. ` +
+      `\`okf_add_raw_source\` returns the \`rawFile\` path; that file is what you decompose.\n\n`
+    : `## Step 0 — the source is already in the bundle\n\nIt is at \`${source}\`. Read it from there with \`file_read\`; ` +
+      `do not expect it inline and do not re-fetch it.\n\n`;
+
+  return (
+    `Ingest \`${source}\` into the OKF bundle "${bundle}" as organized chapters.\n\n` +
+    `jobId: ${jobId}\nbundle: ${bundle}\nsource: ${source}\nmaxDepth: ${maxDepth}\nmaxWorkers: ${maxWorkers}\n\n` +
+    acquisition +
+    `## Then do the whole job\n\n` +
+    `Decompose the source at its natural heading structure into chapters (\`concepts/<docId>/<chId>.md\`, ` +
+    `\`type: section\`), each carrying \`parent\`, the \`concepts\` terms it covers and a one-line \`summary\` — those ` +
+    `three fields are what the concept index and the document TOC are derived from. Upsert the document stub ` +
+    `(\`concepts/<docId>.md\`, \`type: document\`) with the original URL in \`sources[].uri\` so the app's "Open source" ` +
+    `link has a target. Check \`okf_list_concepts\` before coining a term: extend before you create.\n\n` +
+    `For every NON-HTML asset in a chapter's scope: \`web_fetch\` it with \`output_path\` into ` +
+    `\`raw/assets/<docId>/\`, register it with \`okf_add_raw_source({asset:true, docId, sourcePath})\`, interpret it ` +
+    `with \`view_image\` or \`video_keyframes\`, and write the stored link plus a ` +
+    `\`> **Interpretation (LLM, at ingest):** …\` blockquote directly beneath it in the chapter body. Ordinary HTML ` +
+    `hyperlinks stay remote references — do not download them. A failed asset is marked unavailable and does not fail ` +
+    `the document.\n\n` +
+    `Follow at most ${maxDepth} hop(s) of references beyond this seed source, at most ${maxWorkers} at a time, each ` +
+    `nested reference via its own \`okf_ingest\` call (it becomes its own job). Skip anything already in the bundle's ` +
+    `provenance ledger.\n\n` +
+    `## Finishing\n\n` +
+    `You do NOT finalize this job. The service launched this run and writes its terminal state from the run's own ` +
+    `signal — there are no lifecycle callbacks for you to POST. Your one job-facing duty is your final message: a ` +
+    `compact, honest summary of chapters written, concept terms assigned, assets interpreted, references skipped and ` +
+    `references failed. Never echo the source text.`
+  );
+}
+
+/** Human-readable progress line from a tool-call tick. */
+function progressFor(tool, index) {
+  if (tool === "okf_upsert_concept") return `writing chapters · ${index} tool calls so far`;
+  if (tool === "view_image" || tool === "video_keyframes") return `interpreting an inline asset · ${index} tool calls so far`;
+  if (tool === "web_fetch" || tool === "file_to_markdown") return `acquiring the source · ${index} tool calls so far`;
+  if (tool === "okf_add_raw_source") return `registering a source into raw/ · ${index} tool calls so far`;
+  return `${tool} · ${index} tool calls so far`;
+}
+
+/**
+ * THE single auto-trigger path. Shared by the `okf_ingest` tool and the app's
+ * `POST /jobs` route — one capability, two surfaces, so a run a user starts
+ * from the Ingest modal and a run an agent starts are literally the same
+ * record produced by the same code.
+ *
+ * Returns IMMEDIATELY with `{jobId, status: "queued"}`. The run proceeds in
+ * the background; watch it via `okf_list_jobs` / `GET /jobs`.
+ */
+async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers, defaults } = {}) {
+  const src = String(source || "").trim();
+  if (!bundle) throw new Error("bundle is required");
+  if (!src) throw new Error("source is required — an http(s) URL, an absolute VFS path, or a raw/ path in the bundle");
+
+  const depth = Number.isFinite(maxDepth) ? maxDepth : (defaults && defaults.maxDepth) ?? 1;
+  const workers = Number.isFinite(maxWorkers) ? maxWorkers : (defaults && defaults.maxWorkers) ?? 3;
+
+  const bDir = bundleDir(bundleRoot, bundle);
+  if (!(await vfs.exists(bDir))) {
+    throw new Error(`bundle not found: ${bundle} — create it first with okf_init_bundle({name: "${bundle}"})`);
+  }
+
+  // FR-018 dedup. A source already in the provenance ledger is NOT run
+  // again: the existing docId comes back and no job is created, so a repeat
+  // call is cheap and idempotent rather than a duplicate document.
+  if (!src.startsWith("raw/")) {
+    const known = await findSource(bundleRoot, bundle, src).catch(() => null);
+    if (known) {
+      return {
+        status: "already_ingested",
+        bundle,
+        source: src,
+        docId: known.docId,
+        rawFile: known.rawFile,
+        ingestedAt: known.ingestedAt,
+        jobId: null,
+        note:
+          "This source is already in the bundle's provenance ledger, so no run was started. Read what is there with " +
+          `okf_read_toc({bundle: "${bundle}", docId: "${known.docId}"}). Re-ingest only if the source genuinely changed — ` +
+          "pass its raw/ path directly to do that.",
+      };
+    }
+  }
+
+  const job = await createJob(bundleRoot, { bundleId: bundle, source: src, maxDepth: depth, maxWorkers: workers });
+  const task = buildIngestTask({ jobId: job.id, bundle, source: src, maxDepth: depth, maxWorkers: workers });
+
+  // Detached on purpose — see consequence (1) in this section's header. The
+  // caller gets {jobId} back before the first token of the run.
+  void driveRun(bundleRoot, job.id, task);
+
+  return {
+    status: "queued",
+    jobId: job.id,
+    bundle,
+    source: src,
+    maxDepth: depth,
+    maxWorkers: workers,
+    job,
+    note:
+      `Run ${job.id} started. It is running now in the bundled okf-ingest agent — there is nothing for you to run. ` +
+      `Check on it with okf_list_jobs({}) (or the app's Jobs tab); it ends as completed with a summary, or failed with ` +
+      `an error.`,
+  };
+}
+
+/**
+ * Consume one delegated run to its end and write the job's terminal state.
+ * Every exit path writes a terminal status — a job this function started can
+ * never be left hanging by this function, only by the process dying under it
+ * (which is what the stale reaper is for).
+ */
+async function driveRun(bundleRoot, jobId, task) {
+  const delegate = require("./delegate-bridge");
+  try {
+    await updateJob(bundleRoot, jobId, { status: "running", progress: "starting the okf-ingest agent" });
+  } catch {
+    /* the job vanished (bundle deleted mid-flight) — the run can still proceed */
+  }
+
+  try {
+    const run = await delegate.runIngestAgent({
+      task,
+      onTool: ({ tool, index }) => {
+        void updateJob(bundleRoot, jobId, { progress: progressFor(tool, index) }).catch(() => {});
+      },
+    });
+
+    if (run.ok) {
+      await updateJob(bundleRoot, jobId, {
+        status: "completed",
+        summary: summaryFromOutput(run.output, run.toolCalls),
+      });
+    } else {
+      await updateJob(bundleRoot, jobId, {
+        status: "failed",
+        error: run.error || `the run ended as "${run.endedReason || "unknown"}"`,
+      });
+    }
+  } catch (err) {
+    // The stream itself broke. We do not know the run succeeded, so it did not.
+    await updateJob(bundleRoot, jobId, {
+      status: "failed",
+      error: `could not drive the okf-ingest run: ${err.message}`,
+    }).catch(() => {});
+  }
+}
+
+/**
+ * Turn the agent's final message into the job summary the Jobs tab renders.
+ *
+ * The agent writes prose, not JSON — asking it for a machine-readable block
+ * and then trusting the shape is how you get a summary card full of NaN. So
+ * the counts are read out of the prose where they are stated plainly, and
+ * anything not stated stays 0 rather than being guessed at. The full text is
+ * always kept verbatim in `text`, which is what the detail view falls back to.
+ */
+function summaryFromOutput(output, toolCalls) {
+  const text = String(output || "").trim();
+  if (!text) return { chapters: 0, concepts: 0, assets: 0, refsSkipped: 0, refsFailed: 0, written: [], text: "", toolCalls };
+
+  const num = (re) => {
+    const m = text.match(re);
+    return m ? Number(m[1]) : 0;
+  };
+  return {
+    chapters: num(/(\d+)\s+chapters?\b/i),
+    concepts: num(/(\d+)\s+concepts?\s*(?:terms?)?\b/i),
+    assets: num(/(\d+)\s+assets?\b/i),
+    refsSkipped: num(/(\d+)\s+(?:references?|refs?)\s+skipped/i),
+    refsFailed: num(/(\d+)\s+(?:references?|refs?)\s+failed/i),
+    written: [],
+    text,
+    toolCalls,
+  };
+}
+
+/**
+ * THE STALE REAPER (FR-049 / ADR-006).
+ *
+ * `driveRun` writes a terminal state on every path it controls. What it
+ * cannot cover is the process dying mid-run: a worker restart, a BOS reload,
+ * a killed Next.js. Those leave a job sitting in `queued`/`running` forever,
+ * and a Jobs tab with a permanently-spinning row is worse than one that says
+ * plainly that the run was lost.
+ *
+ * So: any job still non-terminal and older than `staleJobMs` is marked
+ * `failed` with an honest "stale" reason. Run on a timer AND as a sweep on
+ * (re)start, because a restart is exactly the event that orphans jobs and
+ * waiting a full interval to admit it is the wrong default.
+ */
+async function reapStaleJobs(bundleRoot, staleJobMs) {
+  const cutoffMs = Number.isFinite(staleJobMs) && staleJobMs > 0 ? staleJobMs : 30 * 60 * 1000;
+  const state = await loadJobs(bundleRoot);
+  const now = Date.now();
+  const reaped = [];
+
+  for (const job of state.jobs) {
+    if (job.status !== "queued" && job.status !== "running") continue;
+    const since = Date.parse(job.startedAt || job.queuedAt || "");
+    if (Number.isNaN(since)) continue;
+    const ageMs = now - since;
+    if (ageMs < cutoffMs) continue;
+    const minutes = Math.round(ageMs / 60000);
+    await updateJob(bundleRoot, job.id, {
+      status: "failed",
+      error:
+        `stale: the run was still "${job.status}" ${minutes} minute(s) after it started, past the ${Math.round(cutoffMs / 60000)}-minute ` +
+        `limit. The service did not see it finish — most likely BOS restarted while it was running. Anything it managed to write is ` +
+        `already in the bundle (writes are atomic and the derived index rebuilds from content); re-run okf_ingest to finish the job.`,
+    }).catch(() => {});
+    reaped.push(job.id);
+  }
+  return { reaped, count: reaped.length, cutoffMs };
+}
+
 module.exports = {
   // bundles
   listBundles,
@@ -1981,6 +2298,11 @@ module.exports = {
   listJobs,
   getJob,
   updateJob,
+  reapStaleJobs,
+  // the auto-trigger (THE single ingest path)
+  triggerIngest,
+  acquisitionFirstSteps,
+  buildIngestTask,
   // internals exposed for the bridge, the tools layer and tests
   appendLog,
   extractLinks,

@@ -1,238 +1,261 @@
-# Data model — OKF Knowledge Base
+# Data model
 
-Everything is plain Markdown with YAML frontmatter under the VFS. A bundle is a directory you can open in the Files app, grep, or commit to git with no tooling at all.
+Everything is a Markdown file with YAML frontmatter in the BOS VFS. No database, no binary index, no sidecar state the content can't regenerate.
 
 ## Bundle layout
 
 ```
-/KnowledgeBase/<bundle>/
-├── index.md                 Human entry point + a derived "concepts covered" overview.
-│                            Regenerated on write; the concept index is the authoritative
-│                            routing artifact.
-├── log.md                   Append-only operational history (init / ingest / merge / delete).
-│                            Internal — there is no tool to write to it.
-├── concept-index.md         DERIVED, level 1. The O(V) routing table. Frontmatter carries
-│                            the machine-readable index; the body is a human listing.
-├── toc/
-│   └── <docId>.md           DERIVED, level 2. One per document: its chapters with
-│                            descriptions and covered terms.
-├── links.json               Sidecar: [{from, to, label}] for okf_add_link edges.
-├── raw/                     IMMUTABLE (append-only, never edited or overwritten).
-│   ├── <source>.md          Ingested sources (text / converted-document markdown).
-│   ├── <source>.v2.md       A changed source re-registered: a NEW version; the old stays.
-│   ├── sources.json         Provenance ledger (dedup + the "Open source" target).
-│   └── assets/<docId>/      Downloaded non-HTML inline assets. Immutable.
-└── concepts/                CANONICAL CONTENT — the source of truth.
-    ├── <docId>.md           Document stub       type: document
-    └── <docId>/<chId>.md    Chapter             type: section   ← the retrieval unit
+<bundleRoot>/                       # default /KnowledgeBase
+├── .jobs/
+│   └── jobs.json                   # service-level job store (NOT exported)
+└── <bundle>/
+    ├── index.md                    # curated entry point + derived "concepts covered"
+    ├── log.md                      # append-only event log (init/ingest/lint/merge/delete)
+    ├── concept-index.md            # DERIVED level 1 — the O(V) routing table
+    ├── toc/
+    │   └── <docId>.md              # DERIVED level 2 — one document's chapters
+    ├── links.json                  # [{from, to, label?}] — okf_add_link edges
+    ├── raw/                        # IMMUTABLE, append-only
+    │   ├── <source>.md             # ingested text / converted-document markdown
+    │   ├── <source>.v2.md          # a changed re-ingest; the old bytes stay
+    │   ├── sources.json            # provenance ledger
+    │   └── assets/<docId>/         # downloaded non-HTML inline assets
+    │       ├── <name>.png
+    │       └── <name>.mp4
+    └── concepts/                   # CONTENT — the source of truth
+        ├── <docId>.md              # document stub   {type: document}
+        └── <docId>/<chId>.md       # chapter         {type: section}
 ```
 
-Two invariants worth stating outright:
+**Source of truth: `concepts/**` and `raw/**`.** `concept-index.md` and `toc/*.md` are derived and regenerable. `links.json` is a derivation convenience — the markdown links in chapter bodies are the portable record, and `okf_lint` reconciles the two.
 
-- **`concepts/` and `raw/` are the only source of truth.** `concept-index.md` and `toc/*.md` are views. Delete them and the next read regenerates them; edit them by hand and the next read overwrites your edit. That asymmetry is the point.
-- **`raw/` is never edited.** A changed source becomes a new version file. An asset is written once.
+A chapter id is `<docId>/<chId>`. `validateConceptId` allows the `/`; `safeJoin` scopes it under `concepts/`. Nesting makes "which chapters belong to this document" a single directory listing, and `parent` stays in frontmatter anyway — redundant on purpose, so the file is portable and the graph derivable without a directory walk.
 
-A chapter is nested *under* its document (`concepts/api-design/endpoint-naming.md`), so "which chapters belong to this document" is one directory listing. `parent` is still carried in frontmatter — redundantly, deliberately — so the file is portable on its own and the graph derivation doesn't depend on path shape.
+## Invariants
 
-**Concept terms are not files.** A term exists exactly as long as some chapter lists it in `concepts`. That is why merging terms is a frontmatter rewrite and why deleting the last chapter covering a term removes it from the index with nothing to clean up.
+1. **Schema-less** — only `type` is required.
+2. **Unknown frontmatter keys are preserved verbatim** on every write (shallow merge, `{...existing, ...patch}`). Dropping a key you don't recognise is silent data loss.
+3. **Human-readable plain Markdown** — git, grep and an editor are sufficient tooling.
+4. **`raw/` is append-only** — never overwritten, versioned instead.
+5. **Path safety on every write** — `safeJoin` rejects anything that escapes the root; writes are atomic (temp + rename).
+6. **Derived artifacts are never the sole source of truth** and are regenerated, not patched.
+7. **`raw/assets/` copies are immutable**; `raw/sources.json` is the dedup ledger.
 
-## Chapter frontmatter (`type: section`)
+Frontmatter round-trips every *key and value*, but not byte-for-byte: there is no external YAML library here, so comments, quoting style and formatting in hand-edited frontmatter are normalized.
+
+## Chapter frontmatter
 
 ```yaml
 ---
 id: api-design/endpoint-naming        # == the path under concepts/
-type: section
-parent: api-design                    # the document (docId) this chapter belongs to
+type: section                         # section | document
+parent: api-design                    # the docId this chapter belongs to
 title: Endpoint Naming Conventions
 concepts: [api-design, naming]        # the concept TERMS this chapter covers
 summary: "REST resource naming: plural nouns, no verbs, versioned paths."
 status: stable                        # draft | stable | deprecated
-stale_after: 2026-12-01               # optional ISO date; stale once passed
-verified: unverified                  # unverified | machine-confirmed | human-reviewed
+stale_after: 2026-12-01               # optional ISO date
 sources:
-  - id: api-design.md
+  - id: raw/api-design.md
     uri: https://engineering.example.com/handbook/api-design
+    note: ingested 2026-08-01
 created_at: 2026-08-01T00:00:00.000Z
 updated_at: 2026-08-01T00:00:00.000Z
-# unknown keys are preserved verbatim on every write
+# any unknown key survives verbatim
 ---
 ```
 
-| Field | Role |
+**Three fields carry the entire retrieval contract:**
+
+| Field | Why |
 |---|---|
-| `parent` | containment. Feeds the document TOC and the graph's `contains` edge. A chapter with no resolvable parent is an orphan `okf_lint` reports. |
-| `concepts` | the index vocabulary. **No terms ⇒ unreachable by `okf_search`.** |
-| `summary` | one line, used *twice*: as the description shown in the index and TOC, and as the text the deterministic match runs against. Its quality is the retrieval surface. |
-| `status` / `stale_after` | lifecycle; drives `okf_stale_report` and the Health tab. |
-| `verified` | the trust ladder. Machine-extracted content starts `unverified`; only a human sets `human-reviewed`. |
-| `sources` | provenance. A `uri` that is an `http(s)` URL becomes the app's "Open source" target; otherwise the stored `raw/` path is. |
+| `parent` | Puts the chapter in a document. The TOC and the graph's `containment` edge come from it. No parent = an orphan `okf_lint` reports. |
+| `concepts` | The index vocabulary. **A chapter with no `concepts` is unreachable by `okf_search`** — stored, and invisible. |
+| `summary` | One line, and it does double duty: the description a human reads in the index/TOC, *and* the text the deterministic match runs against. |
 
-**Document stubs** (`type: document`) are the same shape minus `parent`/`concepts`, with a `title`, a one-line `summary`, `sources` and timestamps. `okf_read_concept` on a document id returns the stub; its chapter listing is `okf_read_toc`.
+A chapter written without those three is not an error — it is written, and silently unroutable. `okf_lint` flags it.
 
-### Merge semantics
+**Document stub** (`concepts/<docId>.md`) is the same shape minus `parent`/`concepts`, with `type: document`, a `title`, a one-line `summary`, `sources` (the original URL and/or `raw/` path — this is the "Open source" target) and timestamps.
 
-`okf_upsert_concept` shallow-merges `{...existing, ...patch}`, so **unknown keys survive every write**. Two exceptions, because a naive shallow merge would silently discard history:
+**Lifecycle, trust and provenance are ordinary frontmatter.** `status` / `stale_after` for lifecycle, `verified` for the trust ladder (`unverified` → `machine-confirmed` → `human-reviewed`; machine-extracted content starts `unverified` and only a human moves it to `human-reviewed`), `sources` for provenance. There are no setter tools — `okf_upsert_concept` merges on fields, so they're set in the same call that writes the chapter.
 
-- `sources` merges **by identity** (`id` or `uri`) rather than replacing the array.
-- `attestations` **appends**.
+## Concept index (`concept-index.md`)
 
-The frontmatter parser/serializer is a dependency-free YAML subset. It round-trips every key and value — including nested arrays of objects, which is what the concept index's `terms[].covers[]` needs — but not comments or quoting style. It is not a byte-for-byte YAML round trip, and it isn't trying to be.
-
-## Level 1 — `concept-index.md`
+Level 1. Frontmatter is machine-readable; body is the human listing. It is a `.md` and not a JSON sidecar because the index must be present in an export, greppable in an editor, and *one* artifact — a parallel JSON file would be a second thing to keep in sync, which is what the derived layer exists to avoid.
 
 ```markdown
 ---
 type: concept-index
 bundle: engineering
+index_generated_at: 2026-10-09T00:00:00.000Z
 terms:
   - name: api-design
-    count: 2
     covers:
-      - docId: api-design
-        docTitle: API Design Rules
-        chId: endpoint-naming
-        chTitle: Endpoint Naming Conventions
-        description: "REST resource naming: plural nouns, no verbs, versioned paths."
-        status: stable
-        stale: false
-      - docId: error-handling
-        docTitle: Error Handling Standards
-        chId: error-response
-        chTitle: Error Response Format
-        description: "RFC-7807 problem+json envelope with stable error codes."
-        status: stable
-        stale: false
-    stale: false
-index_generated_at: 2026-10-09T11:02:17.441Z
+      - { docId: api-design, docTitle: API Design Rules, chId: endpoint-naming,
+          chTitle: Endpoint Naming Conventions,
+          description: "REST resource naming: plural nouns, no verbs, versioned paths.",
+          status: stable, stale: false }
+      - { docId: error-handling, docTitle: Error Handling Standards, chId: error-response,
+          chTitle: Error Response Format,
+          description: "RFC-7807 problem+json envelope with stable error codes.",
+          status: stable, stale: false }
+  - name: rollback
+    covers:
+      - { docId: deployment, docTitle: Deployment Checklist, chId: canary,
+          chTitle: Canary & Rollback,
+          description: "5% canary for 30m; auto-rollback on p99 / 5xx thresholds.",
+          status: stable, stale: false }
 ---
-# Concept Index — engineering
+# Concept Index — Engineering Rules & Guidelines
 
 *Derived from chapter frontmatter. Regenerable; not the source of truth.*
 
 - **api-design** — 2 chapters
-  - `API Design Rules` › *Endpoint Naming Conventions* — REST resource naming: plural nouns…
-  - `Error Handling Standards` › *Error Response Format* — RFC-7807 problem+json envelope…
+  - `API Design Rules` › *Endpoint Naming Conventions* — REST resource naming…
+  - `Error Handling Standards` › *Error Response Format* — RFC-7807…
+- **rollback** — 1 chapter
+  - `Deployment Checklist` › *Canary & Rollback* — 5% canary…
 ```
 
-**Why `.md` with the data in frontmatter** rather than a JSON sidecar: the index must be a plain Markdown file inside the bundle (portable, greppable, present in an export), *and* it must be the machine-readable search input. A separate `concept-index.json` would be a second artifact to keep in sync — the exact failure the derived model exists to prevent. Frontmatter gives one regenerable file that is both.
+`terms[]` is keyed by **distinct term**, so it is O(V) in vocabulary, not O(N) in documents — a bundle with hundreds of articles but a few hundred real topics keeps a small table. That's the property that makes the deterministic search pass affordable.
 
-**Size is O(V)** — keyed by distinct term, not by document or chapter. A bundle with hundreds of articles but a few hundred real topics keeps a small, cheap-to-route table. That is the property the retrieval contract rests on.
+## Document TOC (`toc/<docId>.md`)
 
-## Level 2 — `toc/<docId>.md`
+Level 2. Same pattern, derived from one document's chapters.
 
 ```markdown
 ---
 type: toc
 document: api-design
 title: API Design Rules
-index_generated_at: 2026-10-09T11:02:17.441Z
-updated: 2026-10-09T11:02:17.441Z
+index_generated_at: 2026-10-09T00:00:00.000Z
 chapters:
-  - id: endpoint-naming
-    title: Endpoint Naming Conventions
-    summary: "REST resource naming: plural nouns, no verbs, versioned paths."
-    concepts: [api-design, naming]
-    status: stable
+  - { id: endpoint-naming, title: Endpoint Naming Conventions,
+      summary: "REST resource naming: plural nouns, no verbs, versioned paths.",
+      concepts: [api-design, naming], status: stable }
+  - { id: versioning, title: Versioning Strategy,
+      summary: "URL-path versioning; additive-only…",
+      concepts: [api-design, versioning], status: deprecated }
 ---
 # API Design Rules — Contents
 
-1. **Endpoint Naming Conventions** — REST resource naming: plural nouns… · `api-design` `naming`
+1. **Endpoint Naming Conventions** — REST resource naming… · `api-design` `naming`
+2. **Versioning Strategy** — URL-path versioning… · `api-design` `versioning`
 ```
 
-Same pattern, same regenerability. `okf_read_toc` returns this; a TOC whose document no longer exists is pruned on the next rebuild.
+### Freshness
 
-## Staleness and regeneration
-
-Both levels carry `index_generated_at`. On read, `getModel()` compares it against the newest chapter `updated_at`:
-
-- stamp newer than every chapter → serve the stored index
-- any chapter newer, or no index at all → **rebuild from content**, write both levels, serve that
-
-Writes rebuild eagerly too, so an export always carries a correct index. The read-through path is the repair mechanism for anything that changed the bundle outside the service — a git pull, an editor, another tool — and it is why a pre-redesign bundle with no `concept-index.md` simply grows one on first read instead of needing a migration.
-
-The stored index is also shape-validated before it is trusted: terms must be objects with a `name` and a `covers` array, or the model is derived from content instead. A hand-edited or third-party-written index can't mis-route queries.
-
-### Pre-redesign chapters
-
-The old model stored `title`/`status`/`verified`/`sources` — no `parent`, `concepts` or `summary`. Classification handles that **best-effort and non-destructively**:
-
-| Situation | Read as |
-|---|---|
-| `type: document` | a document |
-| `type: section`, or carries `parent` | a chapter of that document |
-| legacy, id has a prefix (`ai/attention`) | a chapter of document `ai` (synthesised if no stub exists) |
-| legacy, flat id | a document with no chapters |
-| terms | `concepts`, else `tags`, else `topics`, else none |
-| description | `summary`, else `description`, else the first line of prose |
-
-Nothing is rewritten. `indexNeedsRegeneration` is reported on bundle health, on import, and in the app's banner, so the user is told routing is partial rather than shown a confident-looking index that isn't complete.
+Both artifacts carry `index_generated_at`. `getModel()` compares it to the newest chapter `updated_at` in the bundle; a stamp older than the content (a hand edit, a git pull, another tool) triggers one rebuild on read. The same rebuild runs on every write path that can change them, so an export is always current.
 
 ## `raw/sources.json` — the provenance ledger
 
-```json
+```jsonc
 {
   "sources": {
     "https://engineering.example.com/handbook/api-design": {
+      "sourceKey": "https://engineering.example.com/handbook/api-design",
       "rawFile": "raw/api-design.md",
       "docId": "api-design",
-      "originUrl": "https://engineering.example.com/handbook/api-design",
-      "ingestedAt": "2026-10-09T11:00:03.218Z",
-      "sourceKey": "https://engineering.example.com/handbook/api-design"
+      "ingestedAt": "2026-08-01T00:00:00.000Z"
     }
   }
 }
 ```
 
-Keys are normalized (lowercased host, no fragment, no trailing slash) so trivially different URLs for the same page dedupe. Two jobs:
+`sourceKey` is the normalized source: a URL lowercased on host, stripped of its fragment and trailing slash; a path as-is. Two jobs:
 
-1. **Dedup** — `okf_ingest` returns `already_ingested` with the existing `docId` instead of creating a duplicate document.
-2. **"Open source"** — the app resolves the document's original URL from here and from `sources` frontmatter, falling back to the stored `raw/` path.
+1. **Dedup** — `triggerIngest` looks here first. A hit returns the existing `docId` and starts no run.
+2. **The "Open source" target** — the reader pane's link resolves to the document's original URL, falling back to the stored `raw/` path when it was ingested from a file.
 
-Assets are recorded too, with `kind: "asset"`.
+## Inline-asset block
 
-## The inline-asset block
+The on-disk shape, as written into a chapter body:
 
 ```markdown
-![Request lifecycle & correlation-ID propagation](raw/assets/error-handling/correlation-flow.png)
+![Canary rollout console](raw/assets/deployment/canary-rollback-demo.mp4)
 
-> **Interpretation (LLM, at ingest):** Flow diagram: an inbound request enters the gateway where
-> a req_id is minted, then injected into the X-Request-Id header, the structured-log context, the
-> downstream RPC context, and the queue envelope. Every log line and child span carries the same
-> req_id, so one grep reconstructs the cross-service trace.
+> **Interpretation (LLM, at ingest):** Screen-capture of the deploy console: the canary pod set is bumped 0→5%, error-rate and p99 sparklines render live, and when the 5xx threshold trips an "Auto-rollback armed" banner appears and pods drain back to 0%.
 ```
 
-Rules the parser enforces:
+- The path is **bundle-relative** (`raw/assets/…`).
+- The blockquote's first line starts `**Interpretation` — that's the marker `extractAssets` parses on.
+- A failed asset still gets a block, with the interpretation marked unavailable. `okf_lint` reports it; the document is not failed.
 
-- the image target is **bundle-relative** and starts `raw/` (a `../../raw/…` form is accepted and normalized; an `http(s)` target is a remote reference, not a stored asset)
-- the interpretation is the blockquote run immediately following, whose first line starts `**Interpretation`
-- a block whose interpretation is missing or begins "Interpretation unavailable" is reported by `okf_lint` rather than silently passing
+`okf_read_concept` returns `assets: [{path, caption, kind, interpretation, interpretationAvailable}]` alongside the full body, so a reader gets the stored interpretation without re-running vision.
 
-The layering is Karpathy's: bytes in `raw/` (immutable), the interpretation as LLM-written wiki text, the markdown link as the edge. Because the interpretation is **stored text written once at ingest**, `okf_read_concept` hands an agent the diagram's knowledge with no vision call at query time — and `okf_search`'s deterministic pass could not have run vision anyway.
+## `links.json`
 
-## Job records — `<bundleRoot>/.jobs/jobs.json`
+```jsonc
+[{ "from": "api-design/versioning", "to": "deployment/canary", "label": "related" }]
+```
+
+`okf_add_link` writes the edge **twice**: as a markdown link under a `## Links` section in the source chapter's body (human-readable, OKF-portable) and here (cheap graph derivation). `okf_lint` reconciles drift between the two.
+
+## Graph shape (derived, on read)
 
 ```jsonc
 {
-  "seq": 1042,
-  "jobs": [{
-    "id": "run-1042",
-    "status": "queued | running | completed | failed",
-    "bundleId": "engineering",
-    "source": "raw/performance-budgets.md",
-    "queuedAt": "2026-10-09T11:58:00.000Z",
-    "startedAt": "2026-10-09T11:58:04.112Z",
-    "endedAt": null,
-    "durationMs": null,
-    "progress": "Interpreting raw/assets/…/perf-chart.png · writing 3 of 6 chapters",
-    "summary": { "chapters": 6, "concepts": 8, "assets": 1,
-                 "refsSkipped": 2, "refsFailed": 0, "written": ["…"] },
-    "error": null
-  }]
+  "bundle": "engineering",
+  "nodes": [
+    { "id": "api-design", "type": "doc", "label": "API Design Rules" },
+    { "id": "api-design/endpoint-naming", "type": "chap", "label": "Endpoint Naming Conventions" },
+    { "id": "concept:api-design", "type": "concept", "label": "api-design", "count": 2 }
+  ],
+  "edges": [
+    { "from": "api-design", "to": "api-design/endpoint-naming", "kind": "containment", "label": "contains" },
+    { "from": "api-design/endpoint-naming", "to": "concept:api-design", "kind": "coverage", "label": "covers" },
+    { "from": "api-design/versioning", "to": "deployment/canary", "kind": "link", "label": "related" }
+  ]
 }
 ```
 
-**Service-level, not bundle-level**: the Jobs tab is global, and a run must survive its target bundle being deleted mid-flight. **Operational state, not OKF content** — excluded from `okf_export_bundle`. Capped at 200 records. **Terminal states are final**, so a late callback can't resurrect a finished run — which is what makes it safe for both the sub-agent and the assistant's safety net to report the same run.
+Nothing here is stored. `containment` comes from `parent`, `coverage` from the concept index, `link` from `links.json`.
 
-## Path safety
+## Job record
 
-Every path operation goes through `safeJoin`, which resolves and verifies the result stays under its root. Bundle names match `^[A-Za-z0-9][A-Za-z0-9._-]*$`; concept ids allow `/` (chapters are nested) but reject `..`, leading `/`, and anything outside `[A-Za-z0-9._/-]`. Asset paths must start `raw/` and resolve inside the bundle. A traversal attempt throws before any read or write is attempted — including through the app's asset-proxy route.
+In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json`. Service-level, newest first, capped at 200.
+
+```jsonc
+{
+  "id": "run-1042",
+  "status": "queued | running | completed | failed",
+  "bundleId": "engineering",
+  "source": "https://example.com/performance-budgets",
+  "maxDepth": 1,
+  "maxWorkers": 3,
+  "queuedAt": "2026-10-09T11:58:00.000Z",
+  "startedAt": "2026-10-09T11:58:01.000Z",
+  "endedAt": "2026-10-09T12:03:11.000Z",
+  "durationMs": 310000,
+  "progress": null,
+  "summary": {
+    "chapters": 6, "concepts": 8, "assets": 1, "refsSkipped": 2, "refsFailed": 0,
+    "written": [],
+    "text": "Wrote 6 chapters…",
+    "toolCalls": 41
+  },
+  "error": null
+}
+```
+
+- `progress` is advanced by the launcher from the run's `{type:"tool"}` stream lines, and may be enriched by the agent via `POST /jobs/<id> {progress}`. It is cleared on a terminal transition.
+- `summary` exists on `completed`. The counts are read out of the agent's prose where it states them plainly; `text` keeps the report verbatim, and is the authority when a count reads 0 because the agent phrased it differently.
+- `error` exists on `failed`, including the reaper's "stale" reason.
+- **Terminal states are final.** A late transition against a terminal job is a recorded no-op, never a resurrection.
+- `.jobs/` is operational state, not OKF content: it is excluded from `okf_export_bundle`.
+
+## Export shape
+
+```jsonc
+{
+  "name": "engineering",
+  "files": [{ "path": "concept-index.md", "content": "…" }, { "path": "toc/api-design.md", "content": "…" }],
+  "assets": [{ "path": "raw/assets/deployment/canary.mp4", "bytes": 4210432, "contentType": "video/mp4" }],
+  "conceptIndexIncluded": true,
+  "tocsIncluded": 4
+}
+```
+
+Derived artifacts are **regenerated before the export**, so the manifest always carries a correct `concept-index.md` and every `toc/<docId>.md` — re-importing reproduces a queryable bundle. Binary assets are listed by path and size, not inlined.
+
+On import, the index is rebuilt **best-effort** and the result reports `indexNeedsRegeneration` when the imported chapters lack `parent`/`concepts`/`summary` — a pre-redesign or hand-rolled bundle is readable immediately and becomes fully searchable after a re-ingest, rather than being served as a silently half-built index.

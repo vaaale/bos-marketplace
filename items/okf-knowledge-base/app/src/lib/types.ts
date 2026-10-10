@@ -140,6 +140,13 @@ export interface JobSummary {
   refsSkipped: number;
   refsFailed: number;
   written?: string[];
+  /** The agent's own final message, verbatim. The counts above are read out
+   *  of it where it states them plainly; this is the authority when they
+   *  read 0 because the agent phrased something differently. */
+  text?: string;
+  /** How many tool calls the run made — a floor on what it actually did,
+   *  independent of what it said about itself. */
+  toolCalls?: number;
 }
 
 export interface Job {

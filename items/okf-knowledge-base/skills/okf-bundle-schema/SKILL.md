@@ -96,15 +96,37 @@ The point is that the interpretation is written **once, at ingest, as stored tex
 ## Ingest
 
 1. Read the conventions (this skill; the bundle's `schema.md` if it has one) and `okf_list_concepts` to see the existing vocabulary.
-2. POST the job `start` callback.
-3. Read the raw source from `raw/`. It stays there, immutable — `raw/` is append-only and never edited.
-4. Decide chapter boundaries at the source's headings.
+2. **Acquire the source with `output_path` pinned.** URL → `web_fetch({url, output_path})`; PDF/DOCX/PPTX/XLSX → `file_to_markdown({path, output_path})`; plain text → straight to `okf_add_raw_source({sourcePath})`. Then `okf_add_raw_source` registers it into `raw/`, which is append-only and never edited. Dropping `output_path` and passing the document back as `content` re-emits the whole thing as output tokens — it is the one mistake that makes this pipeline pointless.
+3. Read the raw source from `raw/` with `file_read`.
+4. Decide chapter boundaries at the source's headings. No headings = one chapter.
 5. Upsert the document stub (`type: document`, with the original URL in `sources`), then each chapter with `parent` / `concepts` / `summary`.
 6. Download, interpret and inline every non-HTML asset.
 7. Link new chapters to the existing ones they genuinely relate to.
-8. POST the job `complete` callback with honest numbers.
+8. Finish with an honest summary (below).
 
 The service rebuilds `concept-index.md` and `toc/<docId>.md` on every write. There is no manual index step.
+
+### Dedup — do not ingest the same thing twice
+
+`raw/sources.json` is the bundle's provenance ledger: normalized source key → `{rawFile, docId, ingestedAt}`. Every ingest consults it first.
+
+- A source already in the ledger returns `already_ingested` with the existing `docId`, and **no run is started**. That is the correct outcome, not an error — read what is there.
+- Before following a reference, check the ledger the same way. Skip-and-report beats re-fetch.
+- Re-ingest only when the source genuinely **changed**: pass its `raw/` path directly. `raw/` is append-only, so the new content lands as `<base>.v2.<ext>` and the old bytes stay exactly as they were.
+- An asset is deduped by its own URL under `raw/assets/<docId>/` on the same rule.
+
+### Who finalizes a run
+
+**Not the agent.** The service launches the ingest run and watches its stream, and writes the job's terminal state (`completed` / `failed`) from the run's own completion signal. There are no lifecycle callbacks to post. A `POST /jobs/<id>` with `{"progress": "…"}` is accepted as optional narration for the progress bar and is the only thing that route takes.
+
+### Report honestly
+
+The agent's final message becomes the run's report in the Jobs tab, so it has to be true:
+
+- chapters written vs. extended, concept terms assigned (flagging any coined rather than reused), assets interpreted and failed, references ingested and skipped with a one-word reason.
+- State counts plainly and in numerals — the service reads them out of the prose to fill the summary cells.
+- **A partial-but-honest run is a success.** Hitting the depth limit after three of eight references is a finished job with five skipped, not a failure. `failed` means the document did not get ingested at all. A summary implying full coverage when there wasn't is worse than no summary.
+- Never echo the source text back.
 
 ## Query
 

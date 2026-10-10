@@ -1,8 +1,8 @@
 {
   "id": "okf-knowledge-base",
   "name": "OKF Knowledge Base",
-  "version": "2.0.0",
-  "description": "A general-purpose, agent-managed knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Maintains a two-level derived index (bundle concept index + per-document TOC), serves deterministic concept-anchored search, and exposes 18 okf_* tools natively to the BOS assistant plus a loopback REST bridge for the standalone OKF Knowledge Base app.",
+  "version": "2.1.0",
+  "description": "A general-purpose, agent-managed knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Maintains a two-level derived index (bundle concept index + per-document TOC), serves deterministic concept-anchored search, auto-triggers ingest runs in a bundled least-privilege sub-agent and tracks them as jobs, and exposes 19 okf_* tools natively to the BOS assistant plus a loopback REST bridge for the standalone OKF Knowledge Base app.",
   "entry": "index.js",
   "deploymentMode": "tools",
   "toolGroups": [
@@ -35,7 +35,7 @@
       "port": {
         "type": "number",
         "default": 0,
-        "description": "HTTP port for the loopback REST bridge the OKF Knowledge Base app talks to. 0 lets the OS assign one automatically (recommended — never give this a fixed non-zero default)."
+        "description": "HTTP port for the loopback REST bridge the OKF Knowledge Base app talks to. 0 lets the OS assign one automatically (recommended \u2014 never give this a fixed non-zero default)."
       },
       "maxDepth": {
         "type": "number",
@@ -45,7 +45,12 @@
       "maxWorkers": {
         "type": "number",
         "default": 3,
-        "description": "How many references an ingest run ingests concurrently. Real parallelism: agent_delegate is parallel-safe, so sub-agent fan-out in one turn genuinely runs at once. Overridable per okf_ingest call."
+        "description": "How many references an ingest run ingests concurrently. Overridable per okf_ingest call."
+      },
+      "staleJobMs": {
+        "type": "number",
+        "default": 1800000,
+        "description": "How long (ms) an ingest job may sit queued or running before the reaper marks it failed(stale). The launcher writes a terminal state for every run it watches, so this only catches runs orphaned by a service or BOS restart. Default 1800000 (30 minutes) \u2014 comfortably longer than a real run."
       }
     }
   },

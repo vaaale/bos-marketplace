@@ -7,25 +7,36 @@
 // hands the sub-agent). Handlers validate shape and delegate to okf-core,
 // which owns all storage semantics.
 //
-// ── EXACTLY 18 TOOLS (spec FR-037 / SC-007, design.md §8.2) ──────────────
+// ── EXACTLY 19 TOOLS (spec FR-037 / SC-007, design.md §8.2 + the auto-trigger
+//    rework's okf_list_jobs) ─────────────────────────────────────────────
 //
-// The pre-redesign surface declared 31. This declares 18 and nothing else:
+// The pre-redesign surface declared 31. This declares 19 and nothing else:
 //
 //   Retrieval      okf_search · okf_read_toc · okf_read_concept · okf_list_concepts
 //   Concepts       okf_upsert_concept · okf_delete_concept · okf_merge_concepts
 //   Bundles        okf_list_bundles · okf_init_bundle · okf_import_bundle
 //                  okf_export_bundle · okf_delete_bundle
-//   Ingest         okf_ingest · okf_add_raw_source
+//   Ingest         okf_ingest · okf_add_raw_source · okf_list_jobs
 //   Organization   okf_add_link · okf_backlinks
 //   Health         okf_lint · okf_stale_report
 //
-// ADDED (3): okf_search, okf_read_toc, okf_merge_concepts.
-// REMOVED (16 by name, 13 net): okf_bundle_status (folded into
+// ADDED (4): okf_search, okf_read_toc, okf_merge_concepts, okf_list_jobs.
+//
+// okf_list_jobs is the 19th. Design.md's ADR-006 explicitly rejected a jobs
+// tool — but it rejected it as a way for the SUB-AGENT to report lifecycle,
+// which the launcher now owns instead. What that ADR never gave the agent was
+// a way to ANSWER "did that ingest finish?". Since okf_ingest returns a jobId
+// and nothing else, without this tool the only observer of a run would be the
+// app, and an agent that started an ingest would have no way to learn how it
+// went. It reads the same core.listJobs() records the Jobs tab renders — one
+// capability, two surfaces, like okf_search.
+//
+// REMOVED (16 by name, 12 net): okf_bundle_status (folded into
 // okf_list_bundles health), okf_find_concepts (-> okf_search),
 // okf_read_index, okf_read_bundle_schema (-> the okf-bundle-schema SKILL,
 // ADR-007), okf_append_log (the log is internal now), okf_get_as_of,
 // okf_set_status, okf_set_trust, okf_add_source, okf_attest, okf_provenance
-// (all five field-setters FOLDED into okf_upsert_concept's merge-on-fields
+// (all the field-setters FOLDED into okf_upsert_concept's merge-on-fields
 // frontmatter — the capability stays, the tools go), okf_remove_link,
 // okf_list_links, okf_neighbors, okf_shortest_path, okf_export_graph (graph
 // power-tools dropped: retrieval is index-based, and the app renders the
@@ -161,13 +172,10 @@ const DECLARATIONS = [
   {
     name: "okf_ingest",
     description:
-      "Ingest a source into a knowledge base as organized chapters. START HERE for any ingest — pass `source` as a URL, a VFS file path, or a raw/ path already in the bundle; you do not need to prepare anything first.\n\n" +
-      "This tool never fetches or decomposes anything itself. It records the run as a job and returns the exact next calls to make:\n" +
-      "• source not yet in the bundle → status 'acquisition_required' with a `steps` list. Run those calls verbatim (they pin output_path so the document streams to disk instead of through you), then call okf_ingest again with the resulting raw/ path.\n" +
-      "• source already in raw/ → status 'delegation_required' with a `delegate` block. Call agent_delegate with it; the 'okf-ingest' agent reads the source from the bundle and writes the chapters, concept terms, summaries, TOC and inline-asset interpretations.\n" +
-      "• source already ingested → status 'already_ingested' with the existing document id (no duplicate is created).\n\n" +
-      "AFTER agent_delegate returns: if it returned an error or an empty result, POST the returned `callbacks.fail` URL so the run does not sit in the Jobs tab as 'running' forever. That is the safety net for a sub-agent that dies without reporting.\n\n" +
-      "Follow the returned instructions literally rather than improvising an equivalent — the parameters they specify are what keep a long document out of your context.",
+      "Ingest a source into a knowledge base as organized chapters. ONE CALL — pass `source` as a URL, a VFS file path, or a raw/ path already in the bundle. You do not need to fetch, convert, stage or delegate anything first, and there is nothing for you to run afterwards.\n\n" +
+      "The service starts the run itself: it records a job and launches the bundled least-privilege `okf-ingest` agent, which acquires the source (streaming it to disk, never through anyone's context), decomposes it at its heading structure into chapters with concept terms and one-line summaries, interprets inline assets, and maintains the document TOC and the concept index.\n\n" +
+      "Returns IMMEDIATELY with `{jobId, status: 'queued'}` — your turn is not held open for the run. Check how it went with okf_list_jobs: it ends `completed` with a summary, or `failed` with an error.\n\n" +
+      "A source already in the bundle's provenance ledger returns `already_ingested` with the existing document id and starts no run.",
     inputSchema: required(
       {
         bundle: STRING,
@@ -203,6 +211,21 @@ const DECLARATIONS = [
       ["bundle"],
     ),
   },
+  readOnly({
+    name: "okf_list_jobs",
+    description:
+      "List ingest runs and how they went — the same records the app's Jobs tab shows. Each is `{id, status, bundleId, source, queuedAt, startedAt, endedAt, durationMs, progress, summary, error}`, newest first.\n\n" +
+      "This is how you follow up on an okf_ingest you started: the run is asynchronous and okf_ingest returns only a jobId, so this is the only way to learn whether it completed (with a summary) or failed (with a reason). Filter by `bundle`, by `status`, or pass the `jobId` you were given.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        bundle: { type: "string", description: "Only runs against this bundle." },
+        status: { type: "string", enum: ["queued", "running", "completed", "failed"] },
+        jobId: { type: "string", description: "Return just this one run." },
+        limit: { type: "number", description: "Most recent N runs (default: all)." },
+      },
+    },
+  }),
 
   // ── Organization ───────────────────────────────────────────────────────
   {
@@ -230,162 +253,20 @@ const DECLARATIONS = [
   }),
 ];
 
-const CONVERTIBLE = /\.(pdf|docx|pptx|xlsx|doc|ppt|xls)$/i;
-
-/** Filesystem-safe slug for the staged copy's filename. */
-function stagedName(source) {
-  const base =
-    source
-      .replace(/[?#].*$/, "")
-      .replace(/\/+$/, "")
-      .split("/")
-      .filter(Boolean)
-      .pop() || "source";
-  const slug = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "source";
-  return slug.replace(CONVERTIBLE, "") + ".md";
-}
-
-/**
- * If `source` still needs acquiring, return the exact tool calls that put it
- * in the bundle's raw/ without its text passing through the model. Returns
- * null when `source` already names something in raw/ (nothing to acquire).
- *
- * Every step pins `output_path`, because that parameter is the whole
- * mechanism: with it the content streams to the VFS and the tool returns a
- * receipt; without it the content comes back as a tool result and the only
- * way to store it is for the model to re-emit the entire document.
- */
-function plannedAcquisition(source, bundle, bundleExists) {
-  const isUrl = /^https?:\/\//i.test(source);
-  const isAbsPath = source.startsWith("/");
-  if (!isUrl && !isAbsPath) return null;
-
-  const staged = `/workspace/okf-staged-${stagedName(source)}`;
-  const fetchStep = isUrl
-    ? { tool: "web_fetch", args: { url: source, output_path: staged } }
-    : CONVERTIBLE.test(source)
-      ? { tool: "file_to_markdown", args: { path: source, output_path: staged } }
-      : null;
-
-  const sourcePath = fetchStep ? staged : source;
-  const steps = [
-    ...(bundleExists ? [] : [{ tool: "okf_init_bundle", args: { name: bundle } }]),
-    ...(fetchStep ? [fetchStep] : []),
-    { tool: "okf_add_raw_source", args: { bundle, sourcePath, ...(isUrl ? { originUrl: source } : {}) } },
-    { tool: "okf_ingest", args: { bundle, source: "<the rawFile returned by the previous step>" } },
-  ];
-  return { steps };
-}
-
-/** The sub-agent's job-lifecycle callback URLs (ADR-006). */
-function jobCallbacks(ctx, jobId) {
-  const runtime = typeof ctx.getRuntime === "function" ? ctx.getRuntime() : null;
-  const base = runtime && runtime.port ? `http://127.0.0.1:${runtime.port}` : "";
-  return {
-    start: `${base}/jobs/${jobId}/start`,
-    progress: `${base}/jobs/${jobId}/progress`,
-    complete: `${base}/jobs/${jobId}/complete`,
-    fail: `${base}/jobs/${jobId}/fail`,
-  };
-}
-
-/**
- * The okf_ingest DISPATCHER. It plans, it never acts: the worker runs outside
- * the Next.js process with no web_fetch, no file_to_markdown and no agent
- * loop, so it validates the source, dedups against the bundle's provenance
- * ledger, mints the job record, and hands back the exact next calls.
- *
- * Shared deliberately by two callers: the `okf_ingest` tool (the agent path)
- * and the app's `POST /bundles/<b>/ingest` route (the Ingest modal, which
- * queues the run and shows the user the delegation to hand the assistant).
- * Same function, so the job a user queues and the job an agent queues are
- * the same record with the same callbacks — and the app still adds no tool.
- */
-async function planIngest(core, args, ctx) {
-
-    const source = String(args.source || "").trim();
-    if (!source) throw new Error("source is required — a URL, a /workspace path, or a raw/ path");
-    const maxDepth = Number.isFinite(args.maxDepth) ? args.maxDepth : ctx.ingestDefaults.maxDepth;
-    const maxWorkers = Number.isFinite(args.maxWorkers) ? args.maxWorkers : ctx.ingestDefaults.maxWorkers;
-    const bDir = core.safeJoin(ctx.bundleRoot, args.bundle);
-    const bundleExists = await ctx.vfs.exists(bDir).catch(() => false);
-
-    // FR-018 dedup: a source already in the bundle's provenance ledger
-    // updates its existing document — it is never ingested as a duplicate.
-    if (bundleExists && !source.startsWith("raw/")) {
-      const known = await core.findSource(ctx.bundleRoot, args.bundle, source).catch(() => null);
-      if (known) {
-        return {
-          status: "already_ingested",
-          instructions:
-            "This source is already in the bundle's provenance ledger, so it was NOT re-ingested as a duplicate. Read what is already there; only re-ingest (by passing the raw/ path directly) if the source content has genuinely changed, in which case a new raw/ version is written and the existing document is updated in place.",
-          bundle: args.bundle,
-          source,
-          docId: known.docId,
-          rawFile: known.rawFile,
-          ingestedAt: known.ingestedAt,
-          next: [{ tool: "okf_read_toc", args: { bundle: args.bundle, docId: known.docId } }],
-        };
-      }
-    }
-
-    const acquisition = plannedAcquisition(source, args.bundle, bundleExists);
-    if (acquisition) {
-      const job = await core.createJob(ctx.bundleRoot, { bundleId: args.bundle, source, maxDepth, maxWorkers });
-      return {
-        status: "acquisition_required",
-        instructions:
-          "This source is not in the bundle's raw/ yet, and I cannot fetch it from here. " +
-          "Run the calls in `steps` IN ORDER, exactly as given — then call okf_ingest again with the raw/ path from the okf_add_raw_source step. " +
-          "Pass `output_path` exactly as specified: it makes the fetch write straight to disk and return only a receipt, " +
-          "so the document never enters your context and you never have to reproduce it.",
-        steps: acquisition.steps,
-        bundle: args.bundle,
-        source,
-        jobId: job.id,
-        job,
-      };
-    }
-
-    const rel = source.startsWith("raw/") ? source : `raw/${source}`;
-    if (!(await ctx.vfs.exists(core.safeJoin(bDir, rel)))) {
-      throw new Error(`no such raw source: ${rel} — call okf_add_raw_source first`);
-    }
-
-    const job = await core.createJob(ctx.bundleRoot, { bundleId: args.bundle, source: rel, maxDepth, maxWorkers });
-    const callbacks = jobCallbacks(ctx, job.id);
-    return {
-      status: "delegation_required",
-      instructions:
-        "Do NOT read the raw source yourself — that would pull its full text into your context, which this flow exists to avoid. " +
-        "Call agent_delegate with agent='okf-ingest' and the task below. When it returns: if the result is an error or empty, " +
-        `POST ${callbacks.fail} with {"error": "<what went wrong>"} so the run does not sit in the Jobs tab as running forever.`,
-      delegate: {
-        agent: "okf-ingest",
-        task:
-          `Ingest the raw source \`${rel}\` in OKF bundle "${args.bundle}" into organized chapters. jobId: ${job.id}.\n\n` +
-          `Read the source from the bundle yourself; do not expect it inline. Decompose it at its natural heading structure into chapters ` +
-          `(\`concepts/<docId>/<chId>.md\`, type: section), each carrying \`parent\`, the \`concepts\` terms it covers, and a one-line \`summary\` — ` +
-          `those three fields are what the concept index and the document TOC are derived from. Upsert the document stub (\`concepts/<docId>.md\`, type: document) too.\n\n` +
-          `For every NON-HTML asset in a chapter's scope: web_fetch it into \`raw/assets/<docId>/\`, register it with ` +
-          `okf_add_raw_source({asset:true, docId, sourcePath}), interpret it with view_image or video_keyframes, and write the stored link ` +
-          `plus a \`> **Interpretation (LLM, at ingest):** …\` blockquote into the chapter body. Ordinary HTML hyperlinks stay remote references — do not download them.\n\n` +
-          `Job lifecycle (required): POST ${callbacks.start} before your first write; POST ${callbacks.complete} with ` +
-          `{"summary": {"chapters": n, "concepts": n, "assets": n, "refsSkipped": n, "refsFailed": n, "written": ["chapter titles"]}} on success; ` +
-          `POST ${callbacks.fail} with {"error": "…"} if you cannot finish. Optionally POST ${callbacks.progress} with {"progress": "…"} between chapters.\n\n` +
-          `Follow at most ${maxDepth} hop(s) of references beyond this seed source, ingesting at most ${maxWorkers} reference(s) concurrently ` +
-          `(issue that many agent_delegate calls in a single turn — they run in parallel). Skip any reference already in the bundle's provenance.\n\n` +
-          `Report back only a compact summary: chapters written/updated, concept terms assigned, assets interpreted, references ingested and skipped (with reason). Never echo the source text.`,
-      },
-      bundle: args.bundle,
-      source: rel,
-      jobId: job.id,
-      job,
-      callbacks,
-      maxDepth,
-      maxWorkers,
-    };
-}
+// ── The dispatcher is gone ───────────────────────────────────────────────
+//
+// This file used to carry ~140 lines of planning machinery: plannedAcquisition
+// (which tool calls would stage the source), jobCallbacks (the four loopback
+// URLs the sub-agent was told to POST), and planIngest (which assembled an
+// `acquisition_required` / `delegation_required` instruction block for the
+// caller to execute).
+//
+// All of it existed because the worker could not start an agent run. It can
+// (`lib/delegate-bridge.js` → `POST /api/subagents/delegate`), so okf_ingest
+// now triggers the run itself and the planning layer has no job. The
+// acquisition steps did not disappear — they moved into the sub-agent's task,
+// built by `core.buildIngestTask`, where the service still pins every
+// `output_path` and the caller can no longer forget one.
 
 function makeHandlers(core) {
   return {
@@ -439,13 +320,40 @@ function makeHandlers(core) {
       });
     },
 
-    // Dispatcher, not a writer. The worker thread runs outside the Next.js
-    // process and so cannot invoke agent_delegate itself — it validates that
-    // the raw source really exists, dedups against the bundle's provenance,
-    // mints the job record, and hands back the exact delegation the caller
-    // should issue. The calling assistant (which IS in-process) makes that
-    // agent_delegate call, and owns the failure safety-net on its return.
-    okf_ingest: (args, ctx) => planIngest(core, args, ctx),
+    // THE auto-trigger. One call: the service dedups, creates the job,
+    // launches the okf-ingest agent over the loopback delegate endpoint, and
+    // returns {jobId, status:"queued"} before the run has started doing
+    // anything. No instruction block, nothing for the caller to execute, and
+    // the caller's turn is not held open for a multi-minute run.
+    okf_ingest: (args, ctx) =>
+      core.triggerIngest(ctx.bundleRoot, {
+        bundle: args.bundle,
+        source: args.source,
+        maxDepth: args.maxDepth,
+        maxWorkers: args.maxWorkers,
+        defaults: ctx.ingestDefaults,
+      }),
+
+    // The run observer. Reads the SAME core.listJobs() records the app's Jobs
+    // tab renders — so what an agent sees and what the user sees can never
+    // disagree about a run.
+    okf_list_jobs: async (args, ctx) => {
+      if (args.jobId) {
+        const job = await core.getJob(ctx.bundleRoot, args.jobId);
+        if (!job) throw new Error(`job not found: ${args.jobId}`);
+        return { jobs: [job], count: 1 };
+      }
+      const jobs = await core.listJobs(ctx.bundleRoot, {
+        bundleId: args.bundle,
+        status: args.status,
+        limit: args.limit,
+      });
+      return {
+        jobs,
+        count: jobs.length,
+        active: jobs.filter((j) => j.status === "running" || j.status === "queued").length,
+      };
+    },
 
     // ── Organization ─────────────────────────────────────────────────────
     okf_add_link: (args, ctx) => core.addLink(ctx.bundleRoot, args.bundle, args.id, args.target, { label: args.label }),
@@ -457,4 +365,4 @@ function makeHandlers(core) {
   };
 }
 
-module.exports = { DECLARATIONS, makeHandlers, planIngest, plannedAcquisition, jobCallbacks };
+module.exports = { DECLARATIONS, makeHandlers };

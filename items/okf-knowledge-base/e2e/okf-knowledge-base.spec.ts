@@ -23,13 +23,18 @@
 //     resolves it, via GET /api/services/okf-knowledge-base/config, taking
 //     `httpPath` when the Supervisor fronts the service and the bound
 //     `runtime.port` otherwise (services.md §11). This is where the tool
-//     surface, the derived index, search determinism, the job lifecycle and
-//     graph derivation are asserted.
+//     surface, the derived index, search determinism, the auto-trigger
+//     contract, the job reaper and graph derivation are asserted.
 //   • the APP, launched from the BOS shell the way a user launches it, and
 //     driven inside its iframe by testid.
 //
 // Fixtures are created through the service itself and torn down after, so the
 // suite never depends on a particular bundle already existing.
+//
+// TWO TESTS HAVE SIDE EFFECTS beyond the fixture bundles, and say so where
+// they are: the lifecycle test performs a REAL headless agent run (on a tiny
+// source), and the reaper test RESTARTS the service (re-resolving the base
+// afterwards, because the port is OS-assigned and can move).
 
 import { expect, request, test, type APIRequestContext, type FrameLocator, type Page } from "@playwright/test";
 
@@ -37,7 +42,7 @@ import { expect, request, test, type APIRequestContext, type FrameLocator, type 
 const BASE = process.env.BOS_PREVIEW_URL || "http://localhost:8090";
 const SERVICE_ID = "okf-knowledge-base";
 
-/** The 18 declared tools (spec FR-037 / SC-007). */
+/** The 19 declared tools (spec FR-037 / SC-007 + okf_list_jobs). */
 const EXPECTED_TOOLS = [
   "okf_search",
   "okf_read_toc",
@@ -53,13 +58,20 @@ const EXPECTED_TOOLS = [
   "okf_delete_bundle",
   "okf_ingest",
   "okf_add_raw_source",
+  "okf_list_jobs",
   "okf_add_link",
   "okf_backlinks",
   "okf_lint",
   "okf_stale_report",
 ].sort();
 
-/** The 16 removed by name (FR-037). None may still be declared. */
+/** The 16 removed BY NAME (FR-037). None may still be declared.
+ *
+ *  The net change is 31 -> 19, i.e. 12 fewer, because four were added
+ *  (okf_search, okf_read_toc, okf_merge_concepts, okf_list_jobs) alongside
+ *  these sixteen removals. Asserting all sixteen names are gone is the
+ *  stronger check, and the one that catches a tool quietly surviving the
+ *  rework. */
 const REMOVED_TOOLS = [
   "okf_bundle_status",
   "okf_find_concepts",
@@ -86,6 +98,7 @@ const READ_ONLY_TOOLS = [
   "okf_list_concepts",
   "okf_list_bundles",
   "okf_export_bundle",
+  "okf_list_jobs",
   "okf_backlinks",
   "okf_lint",
   "okf_stale_report",
@@ -226,15 +239,18 @@ test.afterAll(async () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════
-//  SC-007 / FR-037 / FR-038 — the tool surface is exactly 18
+//  SC-007 / FR-037 / FR-038 — the tool surface is exactly 19
 // ════════════════════════════════════════════════════════════════════════
 
-test("SC-007: the service declares exactly the 18 okf_* tools and none of the 16 removed", async () => {
+test("SC-007: the service declares exactly the 19 okf_* tools and none of the 16 removed", async () => {
   const res = await api.get("tools");
   expect(res.ok()).toBeTruthy();
   const { count, tools } = await res.json();
 
-  expect(count).toBe(18);
+  // The badge in the app and this assertion both read the service's OWN
+  // declaration list — neither hardcodes the number anywhere but here.
+  expect(count).toBe(19);
+  expect(tools.length).toBe(19);
   expect(tools.map((t: { name: string }) => t.name).sort()).toEqual(EXPECTED_TOOLS);
 
   const names = new Set(tools.map((t: { name: string }) => t.name));
@@ -638,77 +654,204 @@ test("FR-045: the knowledge graph is derived on read — 3 node types, 3 typed d
 });
 
 // ════════════════════════════════════════════════════════════════════════
-//  US8 / FR-041 / FR-044 / SC-011 — the ingest job lifecycle
+//  US8 / FR-041 / FR-044 / FR-049 / SC-011 — the AUTO-TRIGGER contract
 // ════════════════════════════════════════════════════════════════════════
+//
+// okf_ingest used to be a dispatcher: it returned `acquisition_required` or
+// `delegation_required` with an instruction block the CALLER had to execute.
+// It is now an auto-trigger: the service starts the run itself over BOS's
+// loopback /api/subagents/delegate endpoint and returns {jobId} at once.
+//
+// These tests assert the three halves of that contract: the SHAPE of the
+// response (a jobId, and crucially NO instruction block), the LIFECYCLE
+// (the launcher writes a terminal state derived from the run's own signal),
+// and the REAPER (a run orphaned by a restart is admitted to be lost rather
+// than spinning forever).
 
-test("FR-044/SC-011: a run moves queued -> running -> completed through the real callback routes", async () => {
-  // Queue a run exactly the way okf_ingest does (same dispatcher, same job
-  // record, same callback URLs) — the raw source is already in the bundle.
-  await api.post(`bundles/${B.main}/import`, { data: { files: [{ path: "raw/e2e-lifecycle.md", content: "# lifecycle source\n" }] } });
-  const planned = await (await api.post(`bundles/${B.main}/ingest`, { data: { source: "raw/e2e-lifecycle.md" } })).json();
+test("FR-016: okf_ingest auto-triggers — it returns {jobId} with NO instruction block", async () => {
+  await api.post(`bundles/${B.main}/import`, { data: { files: [{ path: "raw/e2e-trigger.md", content: "# trigger source\n\nShort body.\n" }] } });
 
-  expect(planned.status).toBe("delegation_required");
-  expect(planned.delegate.agent).toBe("okf-ingest");
-  expect(planned.jobId).toMatch(/^run-\d+$/);
-  // the delegation carries the jobId and the lifecycle obligation, so the
-  // sub-agent can report without any extra tool (ADR-006)
-  expect(planned.delegate.task).toContain(planned.jobId);
-  expect(planned.delegate.task).toContain("/complete");
-  expect(planned.callbacks.start).toMatch(/\/jobs\/run-\d+\/start$/);
+  const res = await api.post("jobs", { data: { bundle: B.main, source: "raw/e2e-trigger.md" } });
+  expect(res.ok()).toBeTruthy();
+  const started = await res.json();
 
-  const id = planned.jobId;
-  expect((await (await api.get(`jobs/${id}`)).json()).status).toBe("queued");
+  // the WHOLE response shape: a queued job, nothing to go and do
+  expect(started.status).toBe("queued");
+  expect(started.jobId).toMatch(/^run-\d+$/);
+  expect(started.bundle).toBe(B.main);
 
-  // the Jobs list shows it as active
+  // the dispatcher's instruction block is GONE. Any of these reappearing
+  // means the caller is being asked to perform the run again.
+  expect(started.steps, "acquisition steps must not come back to the caller").toBeUndefined();
+  expect(started.delegate, "a delegation block must not come back to the caller").toBeUndefined();
+  expect(started.callbacks, "sub-agent lifecycle callback URLs are gone").toBeUndefined();
+  expect(JSON.stringify(started)).not.toContain("acquisition_required");
+  expect(JSON.stringify(started)).not.toContain("delegation_required");
+  expect(JSON.stringify(started)).not.toContain("agent_delegate");
+
+  // and the job exists immediately, visible to both surfaces
+  const job = await (await api.get(`jobs/${started.jobId}`)).json();
+  expect(job.id).toBe(started.jobId);
+  expect(["queued", "running", "completed", "failed"]).toContain(job.status);
+  expect(job.bundleId).toBe(B.main);
+});
+
+test("the trigger returns before the run does — the caller's turn is not held open", async () => {
+  await api.post(`bundles/${B.main}/import`, { data: { files: [{ path: "raw/e2e-fast-return.md", content: "# fast\n\nbody\n" }] } });
+  const t0 = Date.now();
+  const res = await api.post("jobs", { data: { bundle: B.main, source: "raw/e2e-fast-return.md" } });
+  const elapsed = Date.now() - t0;
+  expect(res.ok()).toBeTruthy();
+  // An agent run is tens of seconds at best. Anything under a few seconds
+  // proves the response is not waiting for it.
+  expect(elapsed, "POST /jobs must return without awaiting the agent run").toBeLessThan(5000);
+});
+
+test("FR-044/SC-011: the LAUNCHER writes the terminal state — completed with a summary, or failed with an error", async () => {
+  // NOTE: this performs a REAL headless agent run against whatever provider
+  // the preview is configured with. The source is deliberately tiny. The
+  // assertion is about the CONTRACT, not about the agent's judgement: either
+  // terminal state is a pass, because what is under test is that the service
+  // — which launched the run and watched its stream — records an honest
+  // outcome instead of leaving the job hanging.
+  await api.post(`bundles/${B.main}/import`, {
+    data: { files: [{ path: "raw/e2e-lifecycle.md", content: "# Lifecycle Probe\n\n## One\n\nFirst section.\n\n## Two\n\nSecond section.\n" }] },
+  });
+  const started = await (await api.post("jobs", { data: { bundle: B.main, source: "raw/e2e-lifecycle.md" } })).json();
+  const id = started.jobId;
+
+  // the list surface sees it as active while it runs
   const listed = await (await api.get("jobs")).json();
   expect(listed.jobs.some((j: { id: string }) => j.id === id)).toBe(true);
-  expect(listed.active).toBeGreaterThan(0);
 
-  // → running (what the sub-agent posts before its first write)
-  expect((await api.post(`jobs/${id}/start`)).ok()).toBeTruthy();
-  const running = await (await api.get(`jobs/${id}`)).json();
-  expect(running.status).toBe("running");
-  expect(running.startedAt).toBeTruthy();
+  let job: Record<string, unknown> = {};
+  await expect
+    .poll(
+      async () => {
+        job = await (await api.get(`jobs/${id}`)).json();
+        return job.status as string;
+      },
+      {
+        message: `run ${id} never reached a terminal state — the launcher is not writing one`,
+        timeout: 240_000,
+        intervals: [2000],
+      },
+    )
+    .toMatch(/^(completed|failed)$/);
 
-  // → live progress (optional, best-effort)
-  await api.post(`jobs/${id}/progress`, { data: { progress: "writing 3 of 6 chapters" } });
-  expect((await (await api.get(`jobs/${id}`)).json()).progress).toBe("writing 3 of 6 chapters");
+  expect(job.endedAt).toBeTruthy();
+  expect(job.durationMs).not.toBeNull();
+  expect(job.progress, "progress is cleared on a terminal transition").toBeNull();
 
-  // → completed, with the summary the Jobs detail renders
-  const summary = { chapters: 6, concepts: 8, assets: 1, refsSkipped: 2, refsFailed: 0, written: ["Perf Budget Basics"] };
-  expect((await api.post(`jobs/${id}/complete`, { data: { summary } })).ok()).toBeTruthy();
-  const done = await (await api.get(`jobs/${id}`)).json();
-  expect(done.status).toBe("completed");
-  expect(done.summary).toMatchObject(summary);
-  expect(done.durationMs).not.toBeNull();
-  expect(done.progress).toBeNull();
-});
-
-test("FR-044: the assistant safety net fails a run the sub-agent abandoned", async () => {
-  await api.post(`bundles/${B.main}/import`, { data: { files: [{ path: "raw/e2e-abandoned.md", content: "# abandoned\n" }] } });
-  const planned = await (await api.post(`bundles/${B.main}/ingest`, { data: { source: "raw/e2e-abandoned.md" } })).json();
-  const id = planned.jobId;
-
-  await api.post(`jobs/${id}/start`);
-  // agent_delegate returns an error and the sub-agent never reported — the
-  // calling assistant closes the gap over the same loopback route
-  const failed = await (await api.post(`jobs/${id}/fail`, { data: { error: "agent_delegate returned an error" } })).json();
-  expect(failed.status).toBe("failed");
-  expect(failed.error).toContain("agent_delegate");
-  expect(failed.endedAt).toBeTruthy();
-});
-
-test("FR-018: re-ingesting a source already in the provenance ledger does not duplicate it", async () => {
-  const url = "https://engineering.example.com/handbook/dedup-probe";
-  const first = await (await api.post(`bundles/${B.main}/ingest`, { data: { source: url } })).json();
-  expect(first.status).toBe("acquisition_required");
-  // every acquisition step pins output_path — that is what keeps the document
-  // out of the calling model's context (FR-016)
-  for (const step of first.steps) {
-    if (step.tool === "web_fetch" || step.tool === "file_to_markdown") {
-      expect(step.args.output_path, `${step.tool} must pin output_path`).toBeTruthy();
+  if (job.status === "completed") {
+    expect(job.summary, "a completed run must carry a summary").toBeTruthy();
+    const summary = job.summary as Record<string, unknown>;
+    for (const key of ["chapters", "concepts", "assets", "refsSkipped", "refsFailed"]) {
+      expect(typeof summary[key], `summary.${key} must be a number`).toBe("number");
     }
+  } else {
+    expect(job.error, "a failed run must say why").toBeTruthy();
+    expect(String(job.error).length).toBeGreaterThan(0);
   }
+});
+
+test("ADR-006: a terminal run is final — it cannot be resurrected or re-declared", async () => {
+  const { jobs } = await (await api.get("jobs")).json();
+  const terminal = jobs.find((j: { status: string }) => j.status === "completed" || j.status === "failed");
+  expect(terminal, "the lifecycle test above left a terminal run on record").toBeTruthy();
+
+  // Terminal state belongs to the launcher. The one remaining POST route
+  // takes progress and nothing else — a status field is a 400, which is what
+  // stops an agent (or anything else) declaring a run finished.
+  const rejected = await api.post(`jobs/${terminal.id}`, { data: { status: "running" } });
+  expect(rejected.status()).toBe(400);
+  expect(JSON.stringify(await rejected.json())).toMatch(/owned by the service that launched the run/i);
+
+  expect((await (await api.get(`jobs/${terminal.id}`)).json()).status).toBe(terminal.status);
+});
+
+test("the sub-agent may enrich progress on a live run, and nothing more", async () => {
+  await api.post(`bundles/${B.main}/import`, { data: { files: [{ path: "raw/e2e-progress.md", content: "# progress probe\n" }] } });
+  const started = await (await api.post("jobs", { data: { bundle: B.main, source: "raw/e2e-progress.md" } })).json();
+
+  const ok = await api.post(`jobs/${started.jobId}`, { data: { progress: "writing 3 of 6 chapters" } });
+  // either it took the progress, or the run already finished (terminal states
+  // clear progress) — both are correct; a 500 would not be
+  expect([200, 400, 404]).toContain(ok.status());
+  if (ok.status() === 200) {
+    const job = await ok.json();
+    if (job.status === "running" || job.status === "queued") expect(job.progress).toBe("writing 3 of 6 chapters");
+  }
+
+  const missing = await api.post(`jobs/${started.jobId}`, { data: {} });
+  expect(missing.status()).toBe(400);
+});
+
+test("FR-049: a run orphaned by a restart is reaper-marked failed(stale), not left spinning", async () => {
+  // The reaper's job is the one case driveRun cannot cover: the process dying
+  // mid-run. Rather than wait out the 30-minute window, seed a job record
+  // that is already days old directly into the persisted store, then restart
+  // the service — the STARTUP SWEEP is the half of the reaper that exists
+  // precisely for this event, and it runs before the service serves a
+  // request.
+  const shell = await request.newContext();
+  const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
+  const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
+  const jobsFile = `${bundleRoot}/.jobs/jobs.json`;
+
+  const existing = await shell.get(`${BASE}/api/fs?op=read&path=${encodeURIComponent(jobsFile)}`);
+  const store = existing.ok() ? JSON.parse((await existing.json()).content) : { jobs: [], seq: 1000 };
+
+  const staleId = `run-e2e-stale-${Date.now()}`;
+  const longAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  store.jobs.unshift({
+    id: staleId,
+    status: "running",
+    bundleId: B.main,
+    source: "raw/e2e-orphaned.md",
+    maxDepth: 1,
+    maxWorkers: 3,
+    queuedAt: longAgo,
+    startedAt: longAgo,
+    endedAt: null,
+    durationMs: null,
+    progress: "writing 2 of 9 chapters",
+    summary: null,
+    error: null,
+  });
+  const wrote = await shell.post(`${BASE}/api/fs`, { data: { op: "write", path: jobsFile, content: JSON.stringify(store, null, 2) + "\n" } });
+  expect(wrote.ok(), "could not seed the job store").toBeTruthy();
+
+  const restarted = await shell.post(`${BASE}/api/services/${SERVICE_ID}`, { data: { action: "restart", reason: "e2e reaper check" } });
+  expect(restarted.ok()).toBeTruthy();
+
+  // the port is OS-assigned, so a restart can move it — re-resolve, never reuse
+  await api.dispose();
+  serviceBase = await resolveServiceBase(shell);
+  api = await request.newContext({ baseURL: serviceBase });
+
+  let reaped: Record<string, unknown> = {};
+  await expect
+    .poll(
+      async () => {
+        const res = await api.get(`jobs/${staleId}`);
+        if (!res.ok()) return "unreachable";
+        reaped = await res.json();
+        return reaped.status as string;
+      },
+      { message: "the startup sweep never reaped the orphaned run", timeout: 60_000, intervals: [1000] },
+    )
+    .toBe("failed");
+
+  expect(String(reaped.error)).toMatch(/stale/i);
+  expect(reaped.endedAt).toBeTruthy();
+  expect(reaped.progress, "a reaped run stops pretending to be in progress").toBeNull();
+
+  await shell.dispose();
+});
+
+test("FR-018: re-ingesting a source already in the provenance ledger starts no run", async () => {
+  const url = "https://engineering.example.com/handbook/dedup-probe";
 
   // register it, which writes the provenance ledger entry
   await api.post(`bundles/${B.main}/import`, { data: { files: [{ path: "raw/dedup-probe.md", content: "# probe\n" }] } });
@@ -721,27 +864,23 @@ test("FR-018: re-ingesting a source already in the provenance ledger does not du
     },
   });
 
-  const second = await (await api.post(`bundles/${B.main}/ingest`, { data: { source: url } })).json();
-  expect(second.status).toBe("already_ingested");
-  expect(second.docId).toBe("dedup-probe");
-});
-
-test("ADR-006: a terminal run cannot be resurrected — the safety net is a no-op after a real report", async () => {
-  const { jobs } = await (await api.get("jobs")).json();
-  const terminal = jobs.find((j: { status: string }) => j.status === "completed" || j.status === "failed");
-  expect(terminal, "the lifecycle test above left a terminal run on record").toBeTruthy();
-
-  const before = terminal.status;
-  const res = await api.post(`jobs/${terminal.id}/fail`, { data: { error: "late safety-net call" } });
-  expect(res.ok()).toBeTruthy();
-  const body = await res.json();
-  expect(body.ignored).toBe(true);
-  expect((await (await api.get(`jobs/${terminal.id}`)).json()).status).toBe(before);
+  const before = (await (await api.get("jobs")).json()).jobs.length;
+  const again = await (await api.post("jobs", { data: { bundle: B.main, source: url } })).json();
+  expect(again.status).toBe("already_ingested");
+  expect(again.docId).toBe("dedup-probe");
+  expect(again.jobId, "a deduped source must not create a job").toBeNull();
+  expect((await (await api.get("jobs")).json()).jobs.length).toBe(before);
 });
 
 test("an unknown job is a clean 404, not a 500", async () => {
   const res = await api.get("jobs/run-does-not-exist");
   expect(res.status()).toBe(404);
+});
+
+test("POST /jobs validates its input rather than starting a run it cannot describe", async () => {
+  expect((await api.post("jobs", { data: { source: "raw/x.md" } })).status()).toBe(400);
+  expect((await api.post("jobs", { data: { bundle: B.main } })).status()).toBe(400);
+  expect((await api.post("jobs", { data: { bundle: "e2e-okf-does-not-exist", source: "raw/x.md" } })).status()).toBeGreaterThanOrEqual(400);
 });
 
 // ════════════════════════════════════════════════════════════════════════
@@ -763,8 +902,12 @@ test("FR-035: the app is a standalone master-detail app with Overview / Jobs / Q
   await expect(app.getByTestId("tab-overview")).toBeVisible();
   await expect(app.getByTestId("tab-jobs")).toBeVisible();
   await expect(app.getByTestId("tab-query")).toBeVisible();
-  // the badge reports the service's REAL declared count
-  await expect(app.getByTestId("tool-badge")).toContainText("18 okf_* tools");
+  // The badge reports the service's REAL declared count — and this asserts
+  // it against GET /tools rather than a literal, so the two can only agree
+  // by actually agreeing.
+  const { count } = await (await api.get("tools")).json();
+  await expect(app.getByTestId("tool-badge")).toContainText(`${count} okf_* tools`);
+  expect(count).toBe(19);
 });
 
 test("US7 AS1/AS2/AS3: Overview browses health, the concept index, a document TOC and a full chapter", async ({ page }) => {
@@ -817,7 +960,7 @@ test("US8/SC-011: the Jobs tab lists runs with their lifecycle status and expand
   const app = await openApp(page);
   await app.getByTestId("tab-jobs").click();
 
-  // the lifecycle tests above ran first (serial file), so runs exist
+  // the auto-trigger tests above ran first (serial file), so runs exist
   await expect(app.getByTestId("jobs-list")).toBeVisible({ timeout: 15000 });
   await expect(app.getByTestId("jobs-badge")).toBeVisible();
 
@@ -838,6 +981,57 @@ test("US8/SC-011: the Jobs tab lists runs with their lifecycle status and expand
     queued: app.getByTestId(`job-queued-${id}`),
   }[status.trim() as "completed" | "failed" | "running" | "queued"];
   await expect(panel).toBeVisible();
+});
+
+test("FR-041: the Jobs tab shows exactly the records core.listJobs returns — the same ones okf_list_jobs reads", async ({ page }) => {
+  // okf_list_jobs, GET /jobs and the Jobs tab are one capability on three
+  // surfaces: the tool and the route both call core.listJobs(), and the tab
+  // renders the route's response. So asserting the tab against GET /jobs
+  // asserts it against what the agent sees too — they cannot disagree
+  // without one of them growing its own source of records.
+  const { jobs } = await (await api.get("jobs")).json();
+  expect(jobs.length, "earlier tests left runs on record").toBeGreaterThan(0);
+
+  const app = await openApp(page);
+  await app.getByTestId("tab-jobs").click();
+  await expect(app.getByTestId("jobs-list")).toBeVisible({ timeout: 15000 });
+
+  for (const job of jobs.slice(0, 5)) {
+    await expect(app.getByTestId(`job-${job.id}`)).toBeVisible();
+    await expect(app.getByTestId(`job-status-${job.id}`)).toHaveText(job.status);
+  }
+  await expect(app.getByTestId("jobs-count")).toContainText(`${jobs.length} run`);
+});
+
+test("FR-016: the app's Ingest modal starts a real run and it appears in the Jobs tab", async ({ page }) => {
+  await api.post(`bundles/${B.main}/import`, { data: { files: [{ path: "raw/e2e-from-app.md", content: "# from the app\n\nbody\n" }] } });
+  const before = new Set<string>(
+    (await (await api.get("jobs")).json()).jobs.map((j: { id: string }) => j.id),
+  );
+
+  const app = await openApp(page);
+  await expect(app.getByTestId(`bundle-row-${B.main}`)).toBeVisible({ timeout: 15000 });
+  await app.getByTestId(`bundle-row-${B.main}`).click();
+  await app.getByTestId("ingest-btn").click();
+  await expect(app.getByTestId("modal-ingest")).toBeVisible();
+
+  // the modal no longer tells the user to go and ask an assistant
+  await expect(app.getByTestId("modal-ingest")).not.toContainText("agent_delegate");
+  await expect(app.getByTestId("modal-ingest")).not.toContainText("Copy call");
+
+  await app.getByTestId("ingest-source").fill("raw/e2e-from-app.md");
+  await app.getByTestId("start-ingest").click();
+  await expect(app.getByTestId("ingest-started")).toBeVisible({ timeout: 20000 });
+  await expect(app.getByTestId("ingest-started")).toContainText(/Run run-\d+ started/);
+
+  // the run is real: it exists on the service, and the Jobs tab shows it
+  const after = (await (await api.get("jobs")).json()).jobs as { id: string; source: string }[];
+  const created = after.find((j) => !before.has(j.id));
+  expect(created, "the modal must create a job, not just describe one").toBeTruthy();
+  expect(created!.source).toBe("raw/e2e-from-app.md");
+
+  await app.getByTestId("tab-jobs").click();
+  await expect(app.getByTestId(`job-${created!.id}`)).toBeVisible({ timeout: 15000 });
 });
 
 test("US9/FR-042: the Query tab's Graph fills its pane with category-coloured nodes and labelled edges", async ({ page }) => {

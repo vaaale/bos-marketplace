@@ -1,84 +1,79 @@
-# Troubleshooting — OKF Knowledge Base
+# Troubleshooting
 
-## The app says "Service unreachable"
+## "I know it's in there, but search returns nothing"
 
-The app is a window onto the Knowledge Base **service**; with the service stopped there is nothing to show.
+This is the one that surprises people, so it's first.
 
-1. **Settings → Plugins** — find *OKF Knowledge Base* and check it is running. Start it if it isn't.
-2. If it was just installed or updated, give it a few seconds: the app polls for up to ~15 seconds while the service binds its port, then reports offline.
-3. **Settings → Apps → OKF Knowledge Base** — the app needs the **`services:read`** capability. Without it, an app installed from a remote marketplace can't reach its own service and this is the error you get.
-4. Still stuck? The service writes startup messages to its log in Settings → Plugins. A line like `could not pre-create bundleRoot` is harmless at startup; a repeated crash is not.
+**Search is concept-anchored, not full-text.** It matches your query against two things only: the bundle's **concept term names**, and the **one-line summary** stored for each chapter. It does not scan chapter bodies. A query that paraphrases something buried in a paragraph, using words that appear neither in the vocabulary nor in any summary, correctly returns nothing.
 
-## My search returns nothing, but I can see the words in a chapter
+An empty result is a real answer. What to do with it:
 
-**This is expected.** Search here is *concept-anchored*, not full text. It matches two things:
+1. **Widen the query.** Fewer words, more topical ones. "rollback" beats "what happens if the canary deploy goes wrong".
+2. **Read the vocabulary.** Overview → Concept Index, or ask the assistant for `okf_list_concepts`. Pick the term that's actually there and search that. This is almost always the fastest fix.
+3. **Browse the document.** Overview → Documents → the document's TOC. If the knowledge is in a chapter whose summary didn't capture it, you'll see it here.
+4. **Improve the summary.** If a chapter is genuinely about something its one-line summary doesn't say, that summary is the bug. Ask the assistant to update it (`okf_upsert_concept` with a better `summary`) — it is the retrieval surface, so it's worth getting right.
 
-- the bundle's **concept terms** (its vocabulary), and
-- the **one-line summary** stored for each chapter.
+The trade is deliberate: a deterministic match over a small vocabulary is fast, explainable (every row names the term that matched), and can't hallucinate a row. Full-text and fuzzy matching would return things that merely contain your words.
 
-A phrase that appears only in a chapter's body matches neither. Options:
+## Two terms mean the same thing
 
-- Search a broader topic word instead of a phrase.
-- Open **Overview → Concept Index** and read the actual vocabulary — then search a term you see there.
-- If a chapter genuinely covers a topic its summary doesn't mention, that's a gap in the chapter, not in the search. Ask the assistant to improve it:
-  > In the `engineering` KB, update `api-design/endpoint-naming`'s summary to mention versioned paths.
+Vocabularies grow organically, and eventually you get `api-design` and `api-conventions` covering the same chapters. Overview → Concept Index → **Merge** consolidates them: every chapter that referenced either ends up with the single canonical term, and the index and TOCs follow.
 
-This trade is deliberate: it is what keeps retrieval cheap and explainable (every result tells you which concept matched), and it is why there is no vector database here.
+The assistant can do the same with `okf_merge_concepts({bundle, from, to})`.
 
-## A bundle shows "this bundle's derived index is partial"
+Merging is the only way to undo a near-duplicate, which is why the ingest agent checks the existing vocabulary before coining a term.
 
-Its chapters are missing the `parent` / `concepts` / `summary` frontmatter the index is built from — almost always a bundle created before the redesign, or one imported from elsewhere.
+## Something says it's stale
 
-Nothing was lost or rewritten: the content is all there and readable, the routing is just incomplete. To fix it, either re-ingest the sources, or ask the assistant to fill in the missing fields:
+Overview → Health shows the **stale report**: chapters past their `stale_after` date, and chapters marked `deprecated`.
 
-> For every chapter in the `legacy-kb` knowledge base that has no `concepts`, read it and set `concepts` and a one-line `summary`.
+Stale does not mean wrong — it means *nobody has vouched for it lately*. The content is still there and still retrievable; search results carry the flag so you can weigh it. Re-ingest the source to refresh it, or ask the assistant to update the chapter's `status` / `stale_after` if it's still good.
 
-## An ingest run sits at "queued" or "running" forever
+## A run is stuck on "running"
 
-- **Queued** means the service recorded the run but the ingest agent hasn't started writing. If the assistant's turn ended without delegating, nothing is running — just ask again.
-- **Running with no progress** is normal for a short document; the progress line is optional.
-- **Running for a very long time** usually means the agent stopped without reporting. The next thing to check is the assistant's own transcript for that turn — it reports the delegation's outcome, and it marks the run failed when the delegation errors.
+First, give it a minute: a long document with assets and references genuinely takes a while, and the elapsed clock is live.
 
-Nothing is left half-written either way: each file write is atomic and the index is rebuilt from content, so a dead run leaves the bundle consistent.
+If it really is stuck — the usual cause is BOS or the service restarting while the run was in flight, which orphans it — the **reaper** handles it. Any run still queued or running past the staleness limit (30 minutes by default) is marked **failed** with a "stale" reason explaining what happened. The reaper also sweeps immediately whenever the service starts, because a restart is exactly the event that orphans runs: it doesn't wait out the interval to admit a run it knows it isn't running.
 
-## An ingest failed
+A reaped run is not destructive. Every write is atomic and the derived index rebuilds from content, so a half-finished run leaves a smaller bundle, not a broken one. Re-run the ingest to finish the job.
 
-Open the run in **Jobs** and read the error. Common ones:
+You can change the limit (`staleJobMs`) in the service's settings. Raise it if you routinely ingest very large documents; don't lower it below a realistic run time or healthy runs will be killed off as stale.
 
-| Error | What it means |
-|---|---|
-| `Source unreachable (HTTP 4xx/5xx)` | The fetch failed before decomposition. Nothing was written. |
-| `no such raw source: raw/…` | `okf_ingest` was called with a path that isn't in the bundle. Ingest the original URL or file path instead — it plans the acquisition for you. |
-| `bundle not found` | Create the knowledge base first (Overview → **+ New Knowledge Base**). |
+## A run failed — now what?
 
-Retry by asking the assistant to ingest the same source again.
+Expand the row in Jobs. The error card says what stopped it. Common ones:
 
-## A figure shows as "Interpretation unavailable"
+- **The source couldn't be fetched** — bad URL, site refused the request, file not found. Fix the source and re-run.
+- **The run hit its step budget** (`max_steps`). The document was too big or too tangled to finish in one run. Some of it was probably written; check the bundle's Documents view, then re-run, or ingest sections separately.
+- **The service couldn't reach the agent** — the ingest agent isn't installed, or BOS's own API wasn't up. Check Settings → Plugins.
 
-The asset was recorded but couldn't be downloaded or interpreted at ingest. The chapter keeps the block (so you can see something is missing) and **Health → Lint** counts it under *Broken inline-asset links*. Re-ingesting the source retries it.
+Re-running is always safe: `raw/` is append-only and chapter writes are merge-on-fields, so nothing is clobbered.
 
-## Health shows index or TOC drift
+## "Service unreachable" in the app
 
-Drift means the derived files no longer match the chapters — usually after editing files directly, a git pull, or another tool writing into the bundle. **Running the lint rebuilds them**, which is why the counts drop to zero after you press *Re-run lint*. Nothing is patched by hand; the index is regenerated from the chapters, which are the source of truth.
+Two causes, in order of likelihood:
 
-## I deleted a chapter and the concept term vanished
+1. **The app hasn't been granted `services:read`.** The app reaches its service over that service's own loopback port, and that capability is what lets it look the port up. Grant it in **Settings → Apps**. One-time.
+2. **The service isn't running.** Check **Settings → Plugins** and start it. The assistant's `okf_*` tools vanish when the service stops too — if those are also missing, this is the cause.
 
-Expected. Concept terms aren't files — a term exists exactly as long as some chapter lists it in `concepts`. Delete the last chapter covering a term and the term leaves the index on the next rebuild.
+The app retries for about fifteen seconds while the service is binding its port, so a message that appears right after a restart may clear on its own.
 
-## Two concept terms mean the same thing
+## The tools aren't there
 
-Merge them from **Overview → Concept Index**: the layers button on a term opens a picker for the canonical term to keep. Or ask the assistant:
+The 19 `okf_*` tools are declared by the service at startup and removed when it stops. If the assistant says it has no such tool, the service isn't running — Settings → Plugins.
 
-> In the `engineering` KB, merge the concept term `rate-limit` into `rate-limiting`.
+If the service is running but tools are missing, check its log in Settings → Plugins: a declaration rejected at startup reports its reason there.
 
-Either way it rewrites every affected chapter's frontmatter; the index and the document TOCs follow automatically, because both are derived.
+## Import and export
 
-## Export / import
+**Export** (Overview → Import · Export) produces a spec-conformant OKF manifest: every document, every chapter, the concept index, and every document TOC. The derived artifacts are regenerated before the export, so what you get is always current. Binary assets are listed by path and size rather than inlined.
 
-- **Export** regenerates the derived files first, so the manifest always carries a correct `concept-index.md` and every `toc/*.md`. The Import/Export tab reports both, so you can see it rather than assume it.
-- **Import** takes a flat manifest or a VFS directory path. For a **git repo or a tarball**, ask the assistant to fetch and unpack it into the VFS first, then import that directory — the service has no shell of its own.
-- Binary inline assets are listed by path in an export manifest rather than inlined; copy the directory to move them.
+**Import** takes a directory already in the VFS. Point it at the path and give the new bundle a name.
 
-## Where to look when all else fails
+Importing from a **git URL or a tarball**? Ask the assistant to fetch and unpack it into the VFS first, then import that directory by path — the service runs in a worker thread and has no shell of its own.
 
-The bundle is plain files at `/KnowledgeBase/<bundle>/` in the Files app. Chapters are under `concepts/`, sources under `raw/`, and the operational history is in `log.md`. If the app and the files disagree, the files are right — run a lint and the derived views catch up.
+A bundle imported from somewhere else (or created before this version) may not carry the `parent` / `concepts` / `summary` frontmatter the index is derived from. The index is then rebuilt **best-effort** and the result says so plainly rather than quietly serving a half-built index. Those documents are still readable; to make them fully searchable, re-ingest their sources.
+
+## Where the files actually are
+
+`/KnowledgeBase/<bundle>/` in the Files app — plain Markdown, editable by hand, under git if you want. The derived `concept-index.md` and `toc/*.md` are rebuilt from the chapters on the next read, so hand-editing content is safe; editing those two is pointless rather than harmful.

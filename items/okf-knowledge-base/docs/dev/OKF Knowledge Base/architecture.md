@@ -1,134 +1,165 @@
-# Architecture — OKF Knowledge Base
+# Architecture
 
-The item is one marketplace item with three facets: a **service** (worker thread), a **standalone app** (dock-openable iframe), and a **bundled agent + skill**. Nothing in BOS `src/` is touched.
+The OKF Knowledge Base ships as one marketplace item with four facets: a **service** (worker thread), a **standalone app**, a bundled **sub-agent**, and a bundled **skill**.
 
 ```
-Next.js app process                     marketplace item (worker thread, own loopback port)
-┌──────────────────────────────┐        ┌──────────────────────────────────────────────┐
-│ Top-level assistant          │        │ services/index.js      worker entry           │
-│   └─ okf_* tool_call ────────┼──IPC──▶│ services/lib/tools.js  18 declarations        │
-│ agent_delegate → okf-ingest  │        │ services/lib/okf-core.js  storage + index +   │
-│   └─ job callbacks ──────────┼─HTTP──▶│                           search + graph      │
-│ App iframe (Overview/Jobs/   │        │ services/lib/http-bridge.js  app REST         │
-│   Query) ────────────────────┼─HTTP──▶│ services/lib/vfs-bridge.js ──┐                │
-└──────────────────────────────┘        └──────────────────────────────┼────────────────┘
-                                                                        │ loopback /api/fs
-                                                              /KnowledgeBase/<bundle>/
+┌─ Next.js process (BOS core) ───────────────────────────────────────────┐
+│                                                                        │
+│  assistant ──okf_* tool_call (IPC)──▶ ServiceManager ──▶ ┌───────────┐ │
+│                                                           │  worker   │ │
+│  app iframe ──httpPath | runtime.port──────────────────▶ │  thread   │ │
+│                                                           └─────┬─────┘ │
+│  /api/fs            ◀── loopback ────────────────────────────────┤      │
+│  /api/fs/raw        ◀── loopback ────────────────────────────────┤      │
+│  /api/subagents/delegate ◀── loopback (NDJSON) ──────────────────┘      │
+│         │                                                               │
+│         └─▶ okf-ingest sub-agent (narrow allowlist, in-process)         │
+│                    │                                                    │
+│                    └─ okf_* tool_call (IPC) ──▶ ServiceManager ──▶ worker│
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Service facet
+## The service
 
-A worker thread in `deploymentMode: "tools"` (the 039 Service Tool Exposure contract). It binds its own HTTP port (`port: 0` — OS-assigned, never fixed) and does three things:
+`services/index.js` is the worker entry. Its ordering is load-bearing:
 
-1. **Declares 18 `okf_*` tools** over `tool_declare` at startup. See [tools.md](tools.md).
-2. **Owns OKF storage** under `/KnowledgeBase/`, reached only through the loopback VFS bridge.
-3. **Serves the app's REST surface** on its loopback port.
+1. **Bind the HTTP server, then send `initialized` / `bound` / `tool_declare` — before any VFS call.** Tool registration must not be gated on BOS's own API routes being up and fast. They often aren't at cold start (Next.js dev compiles, many services' startup sweeps competing for the same request queue), and a worker that spends that time doing I/O gets terminated by `ServiceManager`'s startup timeout with no tool ever declared.
+2. *Then*, best-effort and in the background: `mkdir(bundleRoot)`, legacy-bundle migration, job-store warm-up, the reaper's startup sweep, and arming the reaper timer.
 
-### Startup ordering (don't reorder this)
+`tool_call` messages dispatch to `handlers[name]` from `lib/tools.js`. Errors come back in-band as `tool_error`; the worker never crashes on a bad call.
 
-`index.js` binds the HTTP server and posts `initialized` / `bound` / `tool_declare` **before** touching the VFS. The VFS bridge is a loopback HTTP call into BOS's own `/api/fs`, which at cold start may not be up yet; gating the tool handshake on it once meant the worker blew past the ServiceManager startup timeout and *no* `okf_*` tool got registered for that boot. The `mkdir`, the legacy-bundle migration and the job-store warm-up are all best-effort work that happens after the handshake.
+### The modules
 
-### The VFS bridge
+| Module | Owns |
+|---|---|
+| `lib/okf-core.js` | Everything about storage and derivation: frontmatter parse/serialize, path safety, atomic writes, the two-level derived index, `search`, `graph`, lint, the job store, and `triggerIngest`. |
+| `lib/vfs-bridge.js` | The loopback client for `/api/fs` (text) and `/api/fs/raw` (binary). The only way this service touches storage. |
+| `lib/delegate-bridge.js` | The loopback client for `/api/subagents/delegate`. How the service starts an agent run. |
+| `lib/http-bridge.js` | The app-facing REST surface, loopback-guarded. |
+| `lib/tools.js` | The 19 `okf_*` declarations + handlers. |
 
-`vfs-bridge.js` reaches the VFS over loopback HTTP (`/api/fs` for text, `/api/fs/raw` for bytes). A worker-thread service cannot `import "@/os/vfs"`, and it must not touch the host filesystem: an earlier version derived a host path from the service config directory and wrote every bundle into BOS's internal `system/` tree, invisible to the Files app while appearing to work.
+`okf-core` never touches the host filesystem. Every path it handles is a BOS **VFS** path, and every read/write goes through `vfs-bridge` into `/api/fs`. (An earlier version remapped `bundleRoot` onto a host path derived from the service's config directory; every bundle landed inside BOS's internal `system/` directory, invisible to the Files app and to everything else that reads `/KnowledgeBase` — while the service and its app, which only ever talked to each other, looked fine. The one-time migration for that is still in `index.js`.)
 
-Binary goes through `readRaw` / `writeBinary` and is used for exactly two things: serving an inline asset to the app, and copying an asset a caller staged elsewhere. The *ingest* path never streams bytes through the worker — the `okf-ingest` agent `web_fetch`es an asset directly to its `output_path` inside `raw/assets/`, so a large video never sits in a worker-thread buffer.
+## Two surfaces, one core
 
-### Trust boundary
+The agent reaches the service over 039 tool IPC. The app reaches it over loopback HTTP. **Both call the same `okf-core` functions.**
 
-`http-bridge.js` binds `127.0.0.1` **and** independently checks the TCP peer is loopback. A reverse proxy in front could otherwise forward an off-host request; a forwarded header can't launder a non-loopback peer. A loopback peer *is* the boundary — it's either a local caller or the Supervisor's `httpPath` proxy relaying a browser request, which legitimately carries an `X-Forwarded-For`.
+That is not a style preference — it is what makes `okf_search` and `GET /bundles/<b>/search` incapable of disagreeing. Adding an app view adds zero tools; adding a tool adds zero routes. See [tool-surface.md](tool-surface.md) for the agent side and §"App-facing REST" below for the HTTP side.
+
+The app is a sandboxed iframe, so it resolves its base URL as **`httpPath` if present, else `runtime.port`** (read from `/api/services/okf-knowledge-base/config`), with a fallback to the parent frame's `window.__bos.services.call` broker when the iframe has an opaque origin. That needs the app's **`services:read`** capability. `app/src/lib/serviceClient.ts` is the single place this logic lives.
+
+**Trust boundary:** the HTTP bridge binds `127.0.0.1` *and* independently verifies the TCP peer is loopback. A forwarded `X-Forwarded-For` cannot launder a non-loopback peer. Loopback is the boundary; there is no per-request token, because a process that can open the port is already inside BOS.
 
 ## The two-level derived index
 
-This is the redesign's core mechanism.
+Retrieval is backed by two **derived, regenerable** Markdown artifacts, both with machine-readable frontmatter and a human-readable body:
 
-| Level | Artifact | Content | Size |
-|---|---|---|---|
-| 1 | `concept-index.md` | concept term → covering (document, chapter, one-line description) | **O(V)** — distinct terms |
-| 2 | `toc/<docId>.md` | one document's chapters with descriptions + covered terms | O(chapters in that doc) |
+- **`concept-index.md`** (level 1) — `term → [(docId, chId, description, status, stale)]`. The O(V) routing table, bounded by distinct *vocabulary*, not by corpus size.
+- **`toc/<docId>.md`** (level 2) — one document's chapters, each with its summary, concepts and status.
 
-Both are **`.md` files with the machine-readable data in frontmatter and a human-readable listing in the body**, so one artifact is simultaneously the search input, a greppable file, and something the app renders directly.
+Both are rebuilt from chapter frontmatter on every write that can change them, and stamped `index_generated_at`. On read, `getModel()` compares that stamp against the newest chapter's `updated_at`: a drifted or missing artifact rebuilds once, transparently. `rebuildIndex` / `rebuildToc` are also callable directly for repair.
 
-**Both are derived and never the sole source of truth.** The canonical content is `concepts/**/*.md` — chapter frontmatter (`parent`, `concepts`, `summary`) plus bodies. `rebuildDerived()` regenerates both levels from that content and stamps `index_generated_at`.
+Neither artifact is ever the sole source of truth — `concepts/**` and `raw/**` are. That is what lets a bundle survive a hand edit, a git merge, or an external tool: the derived layer repairs itself from content instead of silently serving something rotten. Both are included in exports and re-imported.
 
-Rebuild happens on **every write that can change them** (upsert, delete, merge, link, import, init) so an export always carries a correct index. It *also* happens on read when drift is detected: `getModel()` compares `index_generated_at` against the newest chapter `updated_at` and rebuilds if the index is older. That read-through path is what makes an externally-edited bundle — a git pull, an editor, another tool — repair itself instead of silently serving a rotten index, and it is why a pre-redesign bundle with no `concept-index.md` at all simply generates one on first read.
+**No database, no embeddings.** The escalation threshold is documented and deliberate: a keyword/BM25 pre-filter over term names and descriptions becomes the first escalation only once one deterministic pass over the index exceeds roughly 50k tokens of index text or ~2s wall-clock at p95. Embeddings only after that is insufficient. Until then, the deterministic pass is the whole of search.
 
-`okf_lint` reports drift and rebuilds it rather than patching, because patching a derived artifact is how you end up with two sources of truth.
+## Search
 
-### Pre-redesign bundles
+`core.search()` is the one implementation. Tokenize the query; walk `index.terms`; a token hitting a **term name** outranks a token hitting a **description**; a chapter covering two matching terms is deduplicated to one row; rank by (term-hit tier, distinct tokens matched, then a deterministic `(docId, chId)` tiebreak); default limit 25; empty on no match.
 
-`classifyBundle()` handles chapters that predate `type`/`parent`/`concepts`/`summary` **best-effort and non-destructively**: a nested legacy concept (`ai/attention`) reads as a chapter of document `ai`; a flat one reads as a document; terms come from `concepts`, else `tags`, else `topics`; descriptions from `summary`, else `description`, else the first line of prose. Nothing is rewritten. `needsRegeneration` is reported so the app can say the routing is partial — the honest answer — rather than pretend the bundle is fully indexed or silently re-derive over the user's data.
-
-## `okf_search` — deterministic, one implementation
-
-```
-tokenize(query)
-  → match tokens against concept-term NAMES and the index's one-line DESCRIPTIONS
-  → collect the covering chapters
-  → rank: term-name matches above description-only; then by distinct tokens matched;
-          then (docId, chId) for a stable order
-  → return TOC rows {docId, docTitle, chId, chTitle, description, matchedConcept, status, stale}
-```
-
-**No LLM is in the match.** The LLM does routing (what to ask) and synthesis (reading the chapters it then fetches); this is the deterministic bridge. The pass is over `terms`, so cost is bounded by vocabulary size, not corpus size.
-
-`core.search()` is called by **both** the `okf_search` tool and the app's `/search` route — one implementation, two surfaces, so the UI can't drift from what an agent sees. Identical input gives byte-identical rows.
-
-Empty is a valid result. The match is concept-anchored, not full-text: a paraphrase that misses both the vocabulary and the stored descriptions returns nothing, and both surfaces say so rather than inventing rows. The escalation path if a vocabulary ever outgrows one pass (~50k tokens of index text, or >2s p95) is a keyword/BM25 pre-filter over term names and descriptions — still no vector store. That is documented, not built.
+No LLM is in the match. The model does *routing* (which query to issue) and *synthesis* (reading what comes back). Every row names its `matchedConcept`, so a result is explainable. Same query, same rows, always — which is what makes the e2e determinism assertion possible.
 
 ## Graph derivation
 
-`core.graph()` computes `{nodes, edges}` **on read** — nothing is stored:
+`core.graph()` computes `{nodes, edges}` **on read** — there is no stored graph.
 
-- nodes: one per document, one per chapter, one per concept term (term radius scales with its coverage count)
-- `containment` document → chapter, from `parent`
-- `coverage` chapter → concept term, from the concept index
-- `link` explicit `okf_add_link` edges, from `links.json`
+- Nodes: `doc` (one per document stub), `chap` (one per chapter), `concept` (one per index term, with a `count` that drives node radius).
+- Edges, typed and directed: `containment` (doc→chap, from each chapter's `parent`), `coverage` (chap→concept, from the concept index), `link` (from `links.json`, written by `okf_add_link` alongside the markdown link in the body).
 
-A stored graph would reintroduce exactly the "second thing to keep in sync" problem the derived index exists to kill. Derivation walks frontmatter the index already reads, so it's cheap and always consistent. The app's hover-to-trace-neighbours is computed client-side from the returned edge list — no `neighbors` or `shortest_path` tool is needed, which is why both were dropped from the surface.
+Storing the graph would reintroduce the second-thing-to-sync problem the derived layer exists to kill. Derivation walks the same frontmatter search already reads, so it is cheap and always consistent. The app's hover-to-trace-neighbours is computed client-side from the returned edge list; there are no `neighbors` / `shortest_path` tools.
 
-## Ingest and job observability
+## The auto-trigger
 
-`okf_ingest` is a **dispatcher, not a writer**. The worker runs outside Next.js: it has no `web_fetch`, no `file_to_markdown`, and cannot start an agent loop. So it validates, dedups against `raw/sources.json`, mints a job record, and returns the exact next calls:
+`okf_ingest` used to be a **dispatcher**. The worker has no agent loop, so the tool could only plan: it returned `acquisition_required` with steps to run, or `delegation_required` with an `agent_delegate` call to issue, and the caller executed the ritual. Three calls deep, and the job's terminal state depended on the sub-agent remembering to post lifecycle callbacks.
 
-- source not in the bundle → `acquisition_required` with `steps` that **pin `output_path`**. That parameter is the entire mechanism: the document streams to disk and the tool returns a receipt, instead of the content coming back as a tool result that the model must re-emit to store.
-- source already in `raw/` → `delegation_required` with an `agent_delegate` block naming the `okf-ingest` agent, the `jobId` and the callback URLs.
-- source already ingested → `already_ingested` with the existing `docId`.
-
-### The job lifecycle, and why it looks like this
-
-The service creates the job, but the sub-agent runs in the **main Next.js process** — the worker cannot observe an agent loop across that boundary. The only channels are the agent's tool calls and the service's own loopback HTTP. So:
+BOS exposes `POST /api/subagents/delegate` over plain loopback HTTP — the same transport the service already used for `/api/fs`. The worker *can* start a run. So:
 
 ```
-okf_ingest            → job {queued}, jobId + callbacks embedded in the delegation task
-sub-agent, first write→ POST /jobs/<id>/start      {running}
-sub-agent, optionally → POST /jobs/<id>/progress   {progress: "writing 3 of 6 chapters"}
-sub-agent, success    → POST /jobs/<id>/complete   {summary: {...}}
-sub-agent, failure    → POST /jobs/<id>/fail       {error}
-assistant safety net  → on agent_delegate returning an error/empty, POST .../fail
-app Jobs tab          → polls GET /jobs
+okf_ingest({bundle, source})
+  └─ core.triggerIngest()
+       ├─ dedup against raw/sources.json  →  already_ingested, no run
+       ├─ createJob(queued)
+       ├─ void driveRun(...)              ← detached, NOT awaited
+       └─ return {jobId, status: "queued"}   ← the caller is free, now
 ```
 
-Polling was rejected (a stalled agent looks "running" forever; a partial write looks "done"). A tool for the assistant to mark jobs was rejected (a 19th tool). These callbacks are **plain HTTP on the service's own port, not `tool_declare`d tools** — which is how run observability is added without touching the 18-tool surface at all.
+`driveRun` builds the task (embedding `jobId`, bundle, source, and the per-source acquisition first steps, **each pinning `output_path`**), POSTs it to the delegate endpoint, and consumes the NDJSON stream:
 
-**Terminal states are final.** A late callback arriving after the safety net already failed a run (or vice-versa) is recorded as a no-op rather than resurrecting a finished run. That is what makes it safe for *both* paths to report, which is what closes the gap when one of them lapses.
+- `{type:"tool"}` lines advance `job.progress`.
+- `{type:"done"}` carries `result.endedReason`: `"completed"` → `updateJob(completed)` with a summary parsed from `result.output`; `"error"` or `"max_steps"` → `updateJob(failed)` with `result.error`.
+- `{type:"error"}` → failed.
+- Stream ends with no terminal line → failed. We don't know it succeeded, so it didn't.
 
-Jobs are **service-level**, in `<bundleRoot>/.jobs/jobs.json`: the Jobs tab is global, and a run must survive the bundle it targets being deleted mid-flight. They are operational state, deliberately excluded from `okf_export_bundle` — not part of the OKF content contract.
+**The launcher owns terminal state.** The thing that watched the run writes the outcome. The agent's only job-facing duty is its final summary text — it cannot declare itself finished, and `POST /jobs/<id>` rejects a `status` field for exactly that reason. An agent that dies, loops, or goes quiet still produces an honest record.
+
+`max_steps` is deliberately **not** a success: the bundle may hold a half-decomposed document, and recording that as completed would be the job store lying about its own data.
+
+## The reaper
+
+`driveRun` writes a terminal state on every path it controls. It cannot cover the process dying under it — a service restart, a BOS reload, a killed Next.js. Those orphan a job in `queued`/`running` with nobody watching.
+
+`core.reapStaleJobs(bundleRoot, staleJobMs)` marks any non-terminal job older than `staleJobMs` (default 30 min) as `failed` with a "stale" reason that says what probably happened. It runs **on a timer** (every 5 minutes, `unref`'d so it never holds the worker open) **and as a sweep on every (re)start**.
+
+The startup sweep is the important half: a restart is precisely the event that orphans jobs, and the first thing a service should do about jobs it finds `running` — when it knows for a fact it is running none of them — is admit they are lost.
+
+## The job store
+
+In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json` so the Jobs tab survives a restart. Service-level, not bundle-level: the tab is global, and a run must outlive the bundle it targeted being deleted mid-flight. History is capped at 200. `.jobs/` is operational state, not OKF content, and is **excluded from export**.
+
+Terminal states are **final**: a late transition against an already-terminal job is recorded as a no-op rather than resurrecting a finished run.
 
 ## Inline assets
 
-At ingest, for every non-HTML asset in a chapter's scope: download a local immutable copy into `raw/assets/<docId>/`, interpret it with `view_image` or `video_keyframes`, and write the chapter with the link plus a `> **Interpretation (LLM, at ingest):** …` blockquote beneath it.
+At ingest, for every non-HTML asset in a chapter's scope: download an immutable copy to `raw/assets/<docId>/<name>`, interpret it with `view_image` or `video_keyframes`, and write the chapter with the link plus a `> **Interpretation (LLM, at ingest):** …` blockquote directly beneath.
 
-The layering is deliberate — bytes in `raw/` (immutable), the interpretation as LLM-written wiki text, the markdown link as the edge between them. Because the interpretation is **stored text written once**, `okf_read_concept` returns it without re-running vision at query time. Re-running vision per read was rejected: it burns tokens on every retrieval and can't run inside `okf_search`'s deterministic pass at all.
+HTML pages stay remote references. The interpretation is written **once** and stored as text, so `okf_read_concept` returns the asset's knowledge with no vision call at query time. A failed download or interpretation marks the block unavailable, is counted in the run summary and reported by `okf_lint`, and does not fail the document.
 
-HTML hyperlinks stay remote references. A failed download or interpretation writes the block marked unavailable and counts in `refsFailed`; it does not fail the document.
+The app's reader pane renders thumbnails through `GET /bundles/<b>/assets/<path>`, because an opaque-origin iframe can't reach `/api/fs/raw` itself.
 
-## App facet
+## App-facing REST
 
-A standalone master-detail app (Overview / Jobs / Query), not a settings page. It reaches the service over the service's **`httpPath`** (Supervisor-fronted) else its bound `runtime.port`, resolved once from `GET /api/services/okf-knowledge-base/config` — the port is OS-assigned and never hardcoded. An opaque-origin install (remote marketplace) falls back to the parent frame's `window.__bos.services` broker, which is why the app declares `services:read`.
+All loopback-guarded, all reusing the same `core` functions as the tools. None of them are `tool_declare`d.
 
-The app calls the REST surface, **not** the `okf_*` tools: an iframe is not an agent, and the tools are an IPC-dispatched, schema-gated agent surface. Adding app views therefore adds nothing to the 18-tool surface — the route table is in [tools.md](tools.md). Three of those routes deliberately reuse a *shared* function rather than reimplementing it, which is what keeps the two surfaces from drifting: `/search` → `core.search`, `/merge` → `core.mergeConcepts`, `/ingest` → the same `planIngest` dispatcher `okf_ingest` runs. The app renders what the service computes — it has no retrieval logic of its own. Its one dependency-free piece of machinery is the force simulation for the graph (ported from the approved mockup rather than adding `d3-force`).
+| Route | Core |
+|---|---|
+| `GET /config` | runtime (`httpPath`, `port`, `bundleRoot`) |
+| `GET /tools` | the **real** declared list — the app's titlebar badge and the e2e count assertion read this, never a literal |
+| `GET /bundles` · `POST /bundles` | `listBundles` · `initBundle` |
+| `GET /bundles/<b>` · `DELETE /bundles/<b>` | `bundleDetail` · `deleteBundle` |
+| `GET /bundles/<b>/toc/<docId>` | `readToc` |
+| `GET /bundles/<b>/concept/<id>` | `readConcept` |
+| `GET\|POST /bundles/<b>/search` | `search` — identical rows to `okf_search` |
+| `GET /bundles/<b>/graph` | `graph` |
+| `GET /bundles/<b>/assets/<p>` | `readAsset` → `vfs.readRaw` (bytes) |
+| `GET /bundles/<b>/lint` · `/stale` | `lintBundle` · `staleReport` |
+| `GET /bundles/<b>/export` · `POST /bundles/<b>/import` | `exportBundle` · `importBundle` |
+| `POST /bundles/<b>/merge` | `mergeConcepts` |
+| `POST /jobs` | **`triggerIngest`** — the app-side auto-trigger |
+| `GET /jobs` · `GET /jobs/<id>` | the job store |
+| `POST /jobs/<id>` | progress enrichment **only**; a `status` field is rejected |
 
-## What the item does not implement
+`POST /bundles/<b>/ingest` is gone — `POST /jobs` supersedes it.
 
-`web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`, the tool-result attachment mechanism, and marketplace-item agent/skill copy-install with provenance are **platform capabilities this item calls**. They are not reimplemented here. If one is missing, that is a BOS-source gap, not an item gap.
+## The app
+
+`app/src/main.tsx` mounts `App` into `#root`. React is provided by the bundler; the item installs no npm packages and the app has **zero runtime dependencies** — including the force-directed graph, which is an in-app simulation (`query/forceSim.ts`) rather than d3 or vis.js.
+
+Three tabs share one state root, so a run started in Overview immediately bumps the Jobs badge. The Jobs poll (3s) runs on *every* tab, not only while Jobs is open, or a run started from Overview would look like nothing happened.
+
+The Query tab mounts only while visible: its force simulation sizes its viewBox from real container dimensions, which are 0 under `display: none`.
+
+## See also
+
+- [data-model.md](data-model.md) — bundle layout, frontmatter, index/TOC format, the job record.
+- [tool-surface.md](tool-surface.md) — the 19 tools.
+- [extension.md](extension.md) — where to add a convention, and why the skill is the seam.

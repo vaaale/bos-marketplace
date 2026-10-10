@@ -4,10 +4,11 @@
 // expanding into its detail.
 //
 // The job records come from the service's GET /jobs, polled by App.tsx, so a
-// run genuinely moves queued → running → completed|failed on screen as the
-// okf-ingest sub-agent reports its lifecycle back over the loopback bridge.
-// Nothing here simulates progress: a `running` row with no reported progress
-// string shows a static running state rather than a fake bar.
+// run genuinely moves queued → running → completed|failed on screen. The
+// service launched the run and watched its stream, so the terminal state is
+// derived from the run's own completion signal — not from the agent choosing
+// to report. Nothing here simulates progress: a `running` row with no
+// reported progress string shows a static running state, not a fake bar.
 
 import React from "react";
 import { Icon } from "../lib/icons";
@@ -61,8 +62,9 @@ export default function JobsTab({ jobs, activeJobs }: { jobs: Job[]; activeJobs:
         <div className="empty" data-testid="jobs-empty">
           <h3>No ingest runs</h3>
           <p>
-            Ask the assistant to ingest a document (or call <b>okf_ingest</b>) and the run appears here with a live
-            status — queued → running → completed / failed.
+            Start one from a bundle&apos;s <b>Ingest</b> button in Overview, or ask the assistant to call{" "}
+            <b>okf_ingest</b>. Either way the run appears here with a live status — queued → running → completed /
+            failed.
           </p>
         </div>
       </div>
@@ -81,8 +83,8 @@ export default function JobsTab({ jobs, activeJobs }: { jobs: Job[]; activeJobs:
       <div className="note">
         <Icon name="info" size={14} />
         <span>
-          <b>Ingest runs (jobs)</b> — each is one delegated invocation of the <code>okf-ingest</code> agent against a
-          bundle. Statuses: <span className="dot queued" style={{ margin: "0 4px" }} />
+          <b>Ingest runs (jobs)</b> — each is one run of the <code>okf-ingest</code> agent against a bundle, launched
+          by the service itself. Statuses: <span className="dot queued" style={{ margin: "0 4px" }} />
           queued <span className="dot running" style={{ margin: "0 4px" }} />
           running <span className="dot green" style={{ margin: "0 4px" }} />
           completed <span className="dot red" />

@@ -1,18 +1,15 @@
 // Modals.tsx — New / Import / Ingest / Delete, as the mockup specifies.
 //
-// One honest deviation from a naive reading of the mockup, worth stating:
-// the INGEST modal does not start an ingest from the browser. Ingest is a
-// delegated agent run (`okf_ingest` → `agent_delegate` → the okf-ingest
-// sub-agent), and an iframe is not an agent — the service's own dispatcher
-// deliberately cannot fetch or decompose anything either (ADR-005). So this
-// modal hands the user the exact call to give the assistant, and then points
-// at the Jobs tab, where the run they trigger shows up live. Pretending to
-// kick off a run from here and silently doing nothing would be worse than a
-// modal that says plainly where the button actually is.
+// The INGEST modal really starts the run. It used to not: ingest was a
+// delegated agent run and the service had no way to launch one, so the modal
+// handed the user an `okf_ingest(...)` call to copy and give their assistant.
+// The service can launch runs now (POST /jobs → core.triggerIngest →
+// delegate-bridge), so the button does what the button says, and the run
+// appears in the Jobs tab seconds later. Nothing is relayed through the user.
 
 import React from "react";
 import { Icon } from "../lib/icons";
-import { getBundleRoot, importBundle, prepareIngest } from "../lib/serviceClient";
+import { getBundleRoot, importBundle, triggerIngest } from "../lib/serviceClient";
 import type { BundleHealth } from "../lib/types";
 
 function Modal({ children, onClose, testid }: { children: React.ReactNode; onClose: () => void; testid: string }) {
@@ -137,20 +134,19 @@ export function ImportModal({ onClose, onImported }: { onClose: () => void; onIm
   );
 }
 
-export function IngestModal({ bundle, onClose }: { bundle: string; onClose: () => void }) {
+export function IngestModal({ bundle, onClose, onStarted }: { bundle: string; onClose: () => void; onStarted?: () => void }) {
   const [source, setSource] = React.useState("");
-  const [queued, setQueued] = React.useState<Awaited<ReturnType<typeof prepareIngest>> | null>(null);
+  const [started, setStarted] = React.useState<Awaited<ReturnType<typeof triggerIngest>> | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const [copied, setCopied] = React.useState(false);
 
-  const call = `okf_ingest({ bundle: "${bundle}", source: "${source || "https://…/article"}" })`;
-
-  const queue = async () => {
+  const start = async () => {
     setError(null);
     setBusy(true);
     try {
-      setQueued(await prepareIngest(bundle, source));
+      const res = await triggerIngest(bundle, source);
+      setStarted(res);
+      onStarted?.();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -163,8 +159,8 @@ export function IngestModal({ bundle, onClose }: { bundle: string; onClose: () =
       <h3>Ingest document</h3>
       <div className="desc">
         Ingest decomposes the source into chapters (each with concept terms and a one-line summary), writes the document
-        TOC, and updates the concept index. The decomposition runs in the bundled least-privilege <code>okf-ingest</code>{" "}
-        agent — so queueing the run here records it in the <b>Jobs</b> tab, and the assistant performs the delegation.
+        TOC, and updates the concept index. The work runs in the bundled least-privilege <code>okf-ingest</code> agent —
+        starting it here starts it for real, and the run appears in the <b>Jobs</b> tab.
       </div>
       <label>Source (URL, VFS path, or raw/ path)</label>
       <input
@@ -175,50 +171,38 @@ export function IngestModal({ bundle, onClose }: { bundle: string; onClose: () =
         autoFocus
       />
 
-      {queued ? (
-        <div className="note" style={{ marginTop: 14 }} data-testid="ingest-queued">
+      {started ? (
+        <div className="note" style={{ marginTop: 14 }} data-testid="ingest-started">
           <Icon name="info" size={14} />
           <span>
-            {queued.status === "already_ingested" ? (
+            {started.status === "already_ingested" ? (
               <>
-                <b>Already ingested.</b> This source is in the bundle's provenance as{" "}
-                <code>{queued.docId}</code> — it was not queued again.
+                <b>Already ingested.</b> This source is in the bundle&apos;s provenance as <code>{started.docId}</code> —
+                no run was started, and no duplicate document was created.
               </>
             ) : (
               <>
-                <b>Run {queued.jobId} queued.</b> {queued.instructions.split(".")[0]}. Ask the assistant to run the call
-                below, then watch it in the <b>Jobs</b> tab.
+                <b>Run {started.jobId} started.</b> It is running now. Watch it in the <b>Jobs</b> tab: it ends{" "}
+                <i>completed</i> with a summary, or <i>failed</i> with a reason.
               </>
             )}
           </span>
         </div>
-      ) : null}
+      ) : (
+        <div className="desc" style={{ marginTop: 10 }}>
+          A source already in this bundle&apos;s provenance ledger is not ingested twice — you will be told which
+          document it already is.
+        </div>
+      )}
 
-      <label>Ask the assistant to run</label>
-      <input
-        readOnly
-        value={call}
-        data-testid="ingest-call"
-        style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12 }}
-      />
       {error ? <div className="app-error" style={{ margin: "12px 0 0" }}>{error}</div> : null}
 
       <div className="row">
         <button className="btn" onClick={onClose}>
           Close
         </button>
-        <button
-          className="btn"
-          data-testid="copy-ingest-call"
-          onClick={() => {
-            void navigator.clipboard?.writeText(call);
-            setCopied(true);
-          }}
-        >
-          <Icon name="check" size={14} /> {copied ? "Copied" : "Copy call"}
-        </button>
-        <button className="btn primary" disabled={!source || busy} onClick={queue} data-testid="queue-ingest">
-          <Icon name="import" size={14} /> {busy ? "Queueing…" : "Queue run"}
+        <button className="btn primary" disabled={!source || busy} onClick={() => void start()} data-testid="start-ingest">
+          <Icon name="import" size={14} /> {busy ? "Starting…" : "Start ingest"}
         </button>
       </div>
     </Modal>

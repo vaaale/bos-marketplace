@@ -238,25 +238,31 @@ export function importBundle(
 }
 
 /**
- * Queue an ingest run. This calls the service's dispatcher — the SAME one the
- * `okf_ingest` tool calls — which records the run as a queued job and returns
- * the delegation (or acquisition steps) to hand the assistant. The service
- * has no agent loop, so it plans and queues; the assistant performs the
- * delegation. The app never pretends to have started an agent.
+ * Start an ingest run — the app-side AUTO-TRIGGER.
+ *
+ * POST /jobs runs the same `core.triggerIngest()` the `okf_ingest` tool runs:
+ * the service dedups against the bundle's provenance, creates the job, and
+ * launches the bundled okf-ingest agent itself. It returns as soon as the job
+ * exists, so this resolves in milliseconds while the run proceeds in the
+ * background and the Jobs tab picks it up on its next poll.
+ *
+ * This replaces the old `prepareIngest`, which POSTed to a dispatcher route
+ * and got back an `agent_delegate` call for the user to relay to their
+ * assistant by hand. The modal no longer tells anyone to go do something.
  */
-export function prepareIngest(
+export function triggerIngest(
   bundle: string,
   source: string,
   maxDepth?: number,
 ): Promise<{
-  status: "acquisition_required" | "delegation_required" | "already_ingested";
-  instructions: string;
-  jobId?: string;
+  status: "queued" | "already_ingested";
+  jobId: string | null;
+  bundle: string;
+  source: string;
   docId?: string;
-  steps?: { tool: string; args: Record<string, unknown> }[];
-  delegate?: { agent: string; task: string };
+  note: string;
 }> {
-  return send(`bundles/${encodeURIComponent(bundle)}/ingest`, "POST", { source, maxDepth });
+  return send("jobs", "POST", { bundle, source, maxDepth });
 }
 
 export function fetchJobs(): Promise<{ jobs: Job[]; total: number; active: number }> {

@@ -2,5 +2,6 @@
   "bundleRoot": "/KnowledgeBase",
   "port": 0,
   "maxDepth": 1,
-  "maxWorkers": 3
+  "maxWorkers": 3,
+  "staleJobMs": 1800000
 }

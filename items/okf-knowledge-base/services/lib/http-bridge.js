@@ -5,13 +5,13 @@
 // ── Why this exists at all (ADR-003) ─────────────────────────────────────
 //
 // The app is a sandboxed browser iframe. It is NOT an agent and cannot call
-// the 18 okf_* tools: those are an agent surface, IPC-dispatched and
+// the 19 okf_* tools: those are an agent surface, IPC-dispatched and
 // JSON-schema-gated. So the app gets its own HTTP data layer here, reusing
 // the SAME okf-core functions the tools call. One capability, two surfaces —
 // `okf_search` and `GET/POST /bundles/<b>/search` run the identical
 // `core.search()`, so the UI can never drift from what the agent sees.
 //
-// Critically: adding app views adds NOTHING to the 18-tool agent surface
+// Critically: adding app views adds NOTHING to the 19-tool agent surface
 // (FR-036/SC-007). These routes are internal plumbing, not tool_declare'd.
 //
 // ── Routes (design.md §8.3) ──────────────────────────────────────────────
@@ -31,17 +31,31 @@
 //   GET    /bundles/<b>/stale                   -> stale report
 //   POST   /bundles/<b>/merge   {from, to}      -> consolidate two concept terms
 //   POST   /bundles/<b>/import                  -> { files } | { sourcePath }
-//   POST   /bundles/<b>/ingest  {source}        -> queues a run (the SAME
-//                                                  dispatcher okf_ingest runs)
 //   GET    /bundles/<b>/export                  -> { name, files, assets }
+//   POST   /jobs  {bundle, source, maxDepth?, maxWorkers?}
+//                                               -> core.triggerIngest: starts
+//                                                  the run, returns {jobId}
 //   GET    /jobs[?bundleId=&status=&limit=]     -> [ job, ... ]
 //   GET    /jobs/<id>                           -> one job record
-//   POST   /jobs/<id>/start                     -> sub-agent: mark running
-//   POST   /jobs/<id>/progress  {progress}      -> sub-agent: live progress
-//   POST   /jobs/<id>/complete  {summary}       -> sub-agent: mark completed
-//   POST   /jobs/<id>/fail      {error}         -> sub-agent OR the calling
-//                                                  assistant's safety net
-//   POST   /jobs/<id>  {status, ...}            -> the generic transition form
+//   POST   /jobs/<id>  {progress}               -> OPTIONAL progress
+//                                                  enrichment only
+//
+// ── What happened to POST /bundles/<b>/ingest ────────────────────────────
+//
+// It was the old dispatcher route: the Ingest modal POSTed a source, got back
+// an `agent_delegate` instruction block, and showed the user a call to hand
+// their assistant. `POST /jobs` supersedes it. The service can start the run
+// itself now (lib/delegate-bridge.js), so the modal queues a real run and the
+// Jobs tab shows it — no relay through the user.
+//
+// ── What happened to the /jobs/<id>/{start,complete,fail} callbacks ──────
+//
+// They were ADR-006's mechanism for the sub-agent to report its own lifecycle
+// across the worker boundary, and they are gone. The LAUNCHER owns terminal
+// state now: it consumed the run's NDJSON stream and writes `completed` or
+// `failed` from `result.endedReason`. A job can no longer be finalized by
+// anything other than the thing that actually watched the run — which is why
+// `POST /jobs/<id>` below accepts progress and NOTHING else.
 //
 // Everything the APP calls is read-only except bundle create/import/export/
 // delete, which the mockup gates behind explicit confirmation dialogs. All
@@ -122,7 +136,7 @@ function isTrustedPeer(req) {
   return isLoopbackAddress(req.socket.remoteAddress);
 }
 
-/** ctx: { core, bundleRoot, serviceId, getRuntime, declarations, vfs, getIngestDefaults, planIngest } */
+/** ctx: { core, bundleRoot, serviceId, getRuntime, declarations, vfs, getIngestDefaults } */
 function createRequestHandler(ctx) {
   return async function requestHandler(req, res) {
     if (!isTrustedPeer(req)) {
@@ -146,7 +160,7 @@ function createRequestHandler(ctx) {
 
       // GET /tools — the declared okf_* surface, so the app's titlebar badge
       // states the REAL count rather than a hardcoded string, and so the e2e
-      // suite can assert the 18-tool contract (SC-007) against what the
+      // suite can assert the 19-tool contract (SC-007) against what the
       // service actually declares. Read-only; this is not itself a tool.
       if (req.method === "GET" && parts.length === 1 && parts[0] === "tools") {
         const tools = ctx.declarations || [];
@@ -163,6 +177,25 @@ function createRequestHandler(ctx) {
 
       // ── /jobs ──────────────────────────────────────────────────────────
       if (parts[0] === "jobs") {
+        // POST /jobs — THE app-side auto-trigger. Runs the same
+        // core.triggerIngest() the okf_ingest tool runs, so a run the user
+        // starts from the Ingest modal and a run an agent starts are the
+        // same record, produced by the same code. Returns {jobId} at once;
+        // the run proceeds in the background and the Jobs tab picks it up on
+        // its next poll.
+        if (req.method === "POST" && parts.length === 1) {
+          const body = await readJsonBody(req);
+          if (!body.bundle) return sendJson(res, 400, { error: "bundle is required" });
+          if (!body.source) return sendJson(res, 400, { error: "source is required" });
+          const result = await core.triggerIngest(bundleRoot, {
+            bundle: body.bundle,
+            source: body.source,
+            maxDepth: body.maxDepth,
+            maxWorkers: body.maxWorkers,
+            defaults: ctx.getIngestDefaults ? ctx.getIngestDefaults() : undefined,
+          });
+          return sendJson(res, result.status === "already_ingested" ? 200 : 202, result);
+        }
         if (req.method === "GET" && parts.length === 1) {
           const limitParam = url.searchParams.get("limit");
           const jobs = await core.listJobs(bundleRoot, {
@@ -179,21 +212,24 @@ function createRequestHandler(ctx) {
           if (!job) return sendJson(res, 404, { error: `job not found: ${jobId}` });
           return sendJson(res, 200, job);
         }
-        // The sub-agent's lifecycle callbacks (ADR-006). These are plain HTTP
-        // on the service's own loopback port — NOT tools — which is precisely
-        // how run observability is added without a 19th tool.
-        if (jobId && req.method === "POST" && parts.length === 3) {
-          const body = await readJsonBody(req);
-          const action = parts[2];
-          if (action === "start") return sendJson(res, 200, await core.updateJob(bundleRoot, jobId, { status: "running", progress: body.progress }));
-          if (action === "progress") return sendJson(res, 200, await core.updateJob(bundleRoot, jobId, { progress: body.progress ?? null }));
-          if (action === "complete") return sendJson(res, 200, await core.updateJob(bundleRoot, jobId, { status: "completed", summary: body.summary || null }));
-          if (action === "fail") return sendJson(res, 200, await core.updateJob(bundleRoot, jobId, { status: "failed", error: body.error || "ingest failed with no reported reason" }));
-          return sendJson(res, 404, { error: `no such job action: ${action}` });
-        }
+        // POST /jobs/<id> — OPTIONAL progress enrichment, and nothing else.
+        // A sub-agent may narrate what it is doing ("writing 3 of 6
+        // chapters") to make the progress bar meaningful. It may NOT declare
+        // the run finished: terminal state belongs to the launcher, which
+        // watched the actual run. Accepting `status` here would reintroduce
+        // exactly the failure mode the rework removed — a run that reports
+        // success and then dies, or never reports at all.
         if (jobId && req.method === "POST" && parts.length === 2) {
           const body = await readJsonBody(req);
-          return sendJson(res, 200, await core.updateJob(bundleRoot, jobId, body));
+          if (body.status !== undefined) {
+            return sendJson(res, 400, {
+              error:
+                "a job's status is owned by the service that launched the run, not by this route — POST only {progress}. " +
+                "The run's terminal state is written from its own completion signal.",
+            });
+          }
+          if (body.progress === undefined) return sendJson(res, 400, { error: "progress is required" });
+          return sendJson(res, 200, await core.updateJob(bundleRoot, jobId, { progress: body.progress }));
         }
       }
 
@@ -264,25 +300,6 @@ function createRequestHandler(ctx) {
           return sendJson(res, 200, await core.mergeConcepts(bundleRoot, bundle, body.from, body.to));
         }
 
-        // POST /bundles/<b>/ingest — the app's Ingest modal. It runs the
-        // SAME planIngest() the okf_ingest tool runs: the run is recorded as
-        // a queued job with its callback URLs, and the delegation block comes
-        // back for the user to hand the assistant. The service deliberately
-        // cannot perform the delegation itself (it has no agent loop), so
-        // this queues and plans — it does not pretend to start an agent.
-        if (bundle && req.method === "POST" && section === "ingest" && parts.length === 3) {
-          const body = await readJsonBody(req);
-          if (!body.source) return sendJson(res, 400, { error: "source is required" });
-          if (!ctx.planIngest) return sendJson(res, 501, { error: "ingest planning is not wired into this bridge" });
-          return sendJson(
-            res,
-            200,
-            await ctx.planIngest(
-              { bundle, source: body.source, maxDepth: body.maxDepth, maxWorkers: body.maxWorkers },
-              { core, bundleRoot, vfs: ctx.vfs, ingestDefaults: ctx.getIngestDefaults(), getRuntime: ctx.getRuntime },
-            ),
-          );
-        }
         if (bundle && req.method === "POST" && section === "import" && parts.length === 3) {
           const body = await readJsonBody(req);
           return sendJson(res, 200, await core.importBundle(bundleRoot, bundle, { files: body.files, sourcePath: body.sourcePath }));
