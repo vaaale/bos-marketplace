@@ -174,7 +174,7 @@ flowchart TD
         W["services/index.js — worker entry"]
         CORE["lib/okf-core.js — OKF storage engine + derived index/TOC/graph/search + job store"]
         VFSB["lib/vfs-bridge.js — loopback /api/fs (+ /api/fs/raw for binary assets)"]
-        DBR["lib/delegate-bridge.js — fires POST /api/subagents/delegate, holds the\nNDJSON stream, captures runId from run_started, finalizes the job from the\nterminal endedReason, stale reaper; cancel = POST /api/subagents/[runId]/abort"]
+        DBR["lib/delegate-bridge.js — fires POST /api/subagents/delegate, holds the NDJSON stream, captures runId from run_started, finalizes the job from the terminal endedReason, stale reaper; cancel = POST /api/subagents/[runId]/abort"]
         HTTPB["lib/http-bridge.js — app-facing REST (bundles, index, toc, search, graph, jobs, + cancel/delete)"]
         TOOLS["lib/tools.js — 21 okf_* declarations + handlers"]
         AGENTB["agents/okf-ingest/AGENT.md  ·  skills/okf-bundle-schema/SKILL.md"]
@@ -630,8 +630,8 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
   The worker cannot reach the run's `AbortController` directly — it must ask the process
   that owns the run, over HTTP, to abort it.
 - **What already exists (verified in source, not assumed):**
-  - `abortHeadlessRun(runId)` (`src/lib/agent/subagents/run-registry.ts:152`) — the in
-    -process abort handle. It looks up the run in a registry on `globalThis` (so an
+  - `abortHeadlessRun(runId)` (`src/lib/agent/subagents/run-registry.ts:152`) — the
+    in-process abort handle. It looks up the run in a registry on `globalThis` (so an
     in-process route can reach a run started elsewhere), aborts the run's `AbortController`,
     and **cascades to the whole run family** (the run + any nested runs it spawned). Returns
     `boolean` — `false` means "no such live run" (already finished, or never started in
@@ -1246,19 +1246,22 @@ level:
 - `okf_lint` `{bundle}` → detects **broken inline-asset links, orphan chapters (no `parent` doc), concept-index / document-TOC drift from the underlying content, and links.json/markdown drift** (FR-033, US-health, SC-010). Because artifacts are derived, drift is *rebuilt*, not patched. *readOnly.*
 - `okf_stale_report` `{bundle}` → concepts past `stale_after` (FR-034). *readOnly.*
 
-**Net surface arithmetic (31 → 21).** Compared to the prior installed 31-tool surface:
-**added 7** — `okf_search`, `okf_read_toc`, `okf_merge_concepts` (the retrieval/
-organization redesign) **plus** `okf_list_jobs`, `okf_cancel_job`, `okf_delete_job`
-(job control; this scope-add adds the last two). **Kept 14.** **Removed 10** —
-`okf_bundle_status` (→ folded into `okf_list_bundles` health), `okf_find_concepts` (→
-`okf_search`), `okf_read_index`, `okf_read_bundle_schema` (→ skill, ADR-007),
-`okf_append_log` (log is internal), `okf_get_as_of`, and the field-setter/provenance
-family `okf_set_status`/`okf_set_trust`/`okf_add_source`/`okf_attest`/`okf_provenance`
-(→ `okf_upsert_concept` frontmatter + `sources`) and the graph power-tools
-`okf_remove_link`/`okf_list_links`/`okf_neighbors`/`okf_shortest_path`/`okf_export_graph`
-(→ derived graph, ADR-004) collapse or drop. (The exact per-name keep/remove set is
-FR-037's table; the point here is the **count is now exactly 21** and the Jobs group is
-the scope-add's contribution to the surface.)
+**Surface count: exactly 21 (FR-037, SC-007)**, down from the prior installed 31.
+**This scope-add's only new surface is the two job-control tools** —
+`okf_cancel_job` and `okf_delete_job` — added to the Jobs group alongside
+`okf_list_jobs` (which the auto-ingest baseline introduced). The rest of the delta from
+31→21 is the retrieval/organization redesign carried forward: `okf_search`,
+`okf_read_toc`, `okf_merge_concepts` added; and folded/dropped — `okf_bundle_status` (→
+`okf_list_bundles` health), `okf_find_concepts` (→ `okf_search`), `okf_read_index`,
+`okf_read_bundle_schema` (→ skill, ADR-007), `okf_append_log` (log is internal),
+`okf_get_as_of`, the field-setter/provenance family `okf_set_status`/`okf_set_trust`/
+`okf_add_source`/`okf_attest`/`okf_provenance` (→ `okf_upsert_concept` frontmatter +
+`sources`), and the graph power-tools `okf_remove_link`/`okf_list_links`/
+`okf_neighbors`/`okf_shortest_path`/`okf_export_graph` (→ derived graph, ADR-004).
+(The authoritative per-name add/keep/remove set is **FR-037's table**; note the spec's
+own Overview "added/removed" tallies differ from FR-037's list by the field-setter
+folding — the same off-by-a-few the prior design flagged for 31→18 — the invariant that
+matters is the **21 declared tools**, SC-007.)
 
 ### 8.3 App-facing REST routes (ADR-003) — what the app actually calls
 
