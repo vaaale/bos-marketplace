@@ -68,9 +68,9 @@ install.
 | **IV. Minimize Blast Radius** — feature branch; self-modification isolated. | ✅ Lands on the active `bos/okf-kb-redesign` branch; item work is branch-coupled in `data/user-apps` and promotes/discards with the branch. |
 | **V. The VFS Is Not the Source** — user data under `data/`; versioned apps in their own GitFS repo. | ✅ Bundles live under the VFS at `/KnowledgeBase/` (user data, owned by the service). The item's code lives in the `user-apps` GitFS repo, reached through the item symlink — never in BOS source. |
 | **VI. Specs & Docs Stay in Sync** | ✅ The item ships its own `docs/usage/OKF Knowledge Base/` and `docs/dev/OKF Knowledge Base/` facets, updated in the same change. This `design.md` is the architecture artifact the later `plan`/`tasks` reference. |
-| **VII. Respect Boundaries** — confirm destructive ops; no new deps unasked. | ✅ `okf_delete_bundle`/`okf_delete_concept` are the only destructive ops and stay explicit-intent (the app gates them behind confirmation dialogs per the mockup; the agent doesn't get them — see §8). No new runtime dependency is introduced: the app reuses BOS's existing in-app SVG force simulation (no `d3`/`vis.js` added — ADR-009). |
+| **VII. Respect Boundaries** — confirm destructive ops; no new deps unasked. | ✅ `okf_delete_bundle`/`okf_delete_concept` are the only destructive ops and stay explicit-intent — the **app** gates them behind confirmation dialogs; the ingest agent is granted them only because end-to-end re-ingest reconciliation needs them (§8.4), and it never deletes a *bundle* the caller didn't ask it to. No new runtime dependency is introduced: the app reuses BOS's existing in-app SVG force simulation (no `d3`/`vis.js` added — ADR-009). |
 | **OKF invariants (NFR-001/005)** — schema-less, human-readable, unknown keys preserved, raw immutable. | ✅ Retained from the installed `okf-core.js` (frontmatter shallow-merge already preserves unknown keys; `raw/` is append-only and never overwritten). The derived index/TOC add *new* frontmatter keys (`type`, `parent`, `concepts`, `summary`, `status`, `stale_after`, `sources`) — all preserved verbatim on write. |
-| **Least privilege (NFR-009)** — the ingest sub-agent's allowlist stays narrow. | ✅ §8 lists the exact allowlist; it excludes destructive tools, unrestricted `run_command`, and the full assistant surface. |
+| **Least privilege (NFR-009)** — the ingest sub-agent's allowlist is scoped to the KB domain. | ✅ §8.4 lists the exact allowlist: the full `okf_*` surface + the named acquisition tools + VFS reads; it excludes non-`okf_*` tools, unrestricted `run_command`, `agent_delegate`, and the top-level assistant's full surface. |
 
 No conflicts flagged. One note for the reviewer: NFR-002 ("no vector/SQL/embeddings in
 v1") is satisfied structurally — retrieval is a deterministic pass over a derived
@@ -159,15 +159,19 @@ flowchart TD
   `/api/fs` — the only sanctioned way an unbundled worker reaches the VFS).
 - **039 tool exposure** (`deploymentMode: "tools"`, `tool_declare`, `toolGroups`
   "Knowledge Base").
-- **Dispatcher-shaped `okf_ingest`** that returns the exact next calls (acquisition
-  steps pinning `output_path`, then a delegation block) rather than fetching itself —
-  the worker runs outside Next.js with no `web_fetch`/`file_to_markdown`.
+- **Worker runs outside Next.js** with no `web_fetch`/`file_to_markdown`/agent loop —
+  `okf_ingest` therefore does not fetch or run the LLM itself; it **auto-triggers a
+  headless `okf-ingest` run** over the worker's loopback channel (ADR-005), which performs
+  the acquisition (pinning `output_path`) and decomposition.
 
-**New in this redesign**: the derived **concept index + document TOC** in `okf-core.js`
-(§5), **`okf_search`** (the deterministic core primitive, §6), **run observability**
-(AbR-006, §7.3), the **inline-asset pipeline** (FR-015/FR-020–023, §7.5), the **graph
-derivation** (ADR-004, §6.3), the **app-facing REST surface** (ADR-003, §8), and the
-**standalone master-detail app** (replaces the config-app).
+**New in this scope-add**: `okf_ingest` **auto-triggers a headless `okf-ingest` run**
+(ADR-005) — caller freed at return — with the **worker owning finalization** from the run's
+own terminal signal plus a stale reaper (ADR-006/FR-049), a new **`okf_list_jobs`** agent
+tool (FR-048, surface now 19), and the **self-sufficient ingest-agent allowlist** (FR-039,
+§8.4). **New earlier in the redesign**: the derived concept index + document TOC (§5),
+`okf_search` (§6), run observability (§7.3), the inline-asset pipeline (FR-015/FR-020–023,
+§7.5), graph derivation (ADR-004, §6.3), the app-facing REST surface (ADR-003, §8), and the
+standalone master-detail app (replaces the config-app).
 
 ### 3.3 Component — deliverable file plan
 
@@ -343,7 +347,7 @@ hand-written into `data/user-apps` — the Developer stages the facets and
   the 039 tools are an *agent* surface (IPC-dispatched, JSON-schema-gated) and shouldn't be
   the app's transport; and the app needs shapes (graph, jobs, the concept index as a
   browseable tree) that are *views* over the same core, not new agent capabilities.
-- **Consequences.** **Adding app views does NOT add to the 18-tool agent surface** (FR-036)
+- **Consequences.** **Adding app views does NOT add to the 19-tool agent surface** (FR-036)
   — the HTTP routes are internal plumbing, not `tool_declare`d tools. One capability, two
   surfaces: `okf_search` and the `GET /search` route run the **identical** `core.search()`
   (FR-001/FR-002, FR-043). The app's reachability is the standard `httpPath`-else-port
@@ -355,7 +359,7 @@ hand-written into `data/user-apps` — the Developer stages the facets and
 - **Context.** FR-042/FR-045 require a force-directed knowledge graph (documents, chapters,
   concept terms; typed directed edges) for the Query tab. The old design had graph
   "power tools" (`okf_neighbors`, `okf_shortest_path`, `okf_export_graph`) — dropped from
-  the 18-tool surface.
+  the 19-tool surface.
 - **Options.** (a) A stored graph (a second artifact or a graph DB) kept in sync by the
   write path. (b) **Derive nodes+edges on read** from what is already stored: containment
   from each chapter's `parent` frontmatter, coverage from the concept index, explicit
@@ -460,7 +464,7 @@ hand-written into `data/user-apps` — the Developer stages the facets and
 ### ADR-007 — Bundle conventions live in the `okf-bundle-schema` skill, not a per-bundle `schema.md`
 
 - **Context.** The old design read conventions from a per-bundle `schema.md` via the
-  `okf_read_bundle_schema` tool (now **removed** from the 18-tool surface).
+  `okf_read_bundle_schema` tool (now **removed** from the 19-tool surface).
 - **Decision.** The authoritative conventions are the item's bundled **skill**
   (`skills/okf-bundle-schema/SKILL.md`), attached to `okf-ingest` (FR-040) — reusing BOS's
   skill infrastructure rather than a parallel convention-file mechanism. A bundle *may*
