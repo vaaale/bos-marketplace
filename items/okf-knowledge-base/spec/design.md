@@ -64,7 +64,7 @@ install.
 |---|---|
 | **I. Spec-Driven** — feature defined by a spec before build; pipeline. | ✅ Spec is `item-okf-knowledge-base/spec.md` (this is the `design` step). No code is a source of truth. |
 | **II. Server Authority & SSR Boundary** — filesystem/Node live in server code; clients fetch. | ✅ All OKF storage and the derived index live in the worker (server-side, behind the loopback bridge). The app iframe and the assistant both reach it over HTTP; no OKF logic in the app bundle. |
-| **III. Always Delegate; Claude Codes** — development on a sub-agent. | ✅ This design is authored by the Architect; implementation is delegated to the Developer. The feature's *runtime* delegation (`okf-ingest`) reuses the existing `agent_delegate`/`runInnerLoop` mechanism, not new infra (ADR-005). |
+| **III. Always Delegate; Claude Codes** — development on a sub-agent. | ✅ This design is authored by the Architect; implementation is delegated to the Developer. The feature's *runtime* trigger (`okf-ingest`) reuses the existing headless `runSubAgent` surface (`POST /api/subagents/delegate`) over the worker's existing loopback channel — no new infra (ADR-005). |
 | **IV. Minimize Blast Radius** — feature branch; self-modification isolated. | ✅ Lands on the active `bos/okf-kb-redesign` branch; item work is branch-coupled in `data/user-apps` and promotes/discards with the branch. |
 | **V. The VFS Is Not the Source** — user data under `data/`; versioned apps in their own GitFS repo. | ✅ Bundles live under the VFS at `/KnowledgeBase/` (user data, owned by the service). The item's code lives in the `user-apps` GitFS repo, reached through the item symlink — never in BOS source. |
 | **VI. Specs & Docs Stay in Sync** | ✅ The item ships its own `docs/usage/OKF Knowledge Base/` and `docs/dev/OKF Knowledge Base/` facets, updated in the same change. This `design.md` is the architecture artifact the later `plan`/`tasks` reference. |
@@ -86,9 +86,10 @@ pre-filter is documented in ADR-001, not built.
 The user installs the OKF Knowledge Base item. It becomes a **service** owning
 `/KnowledgeBase/<bundle>/`. Three entry points exist:
 
-- **The assistant** uses the 18 `okf_*` tools to ingest (via the dispatcher → bundled
-  `okf-ingest` sub-agent), to retrieve (`okf_search` → `okf_read_toc`/`okf_read_concept`),
-  to curate concepts and bundles, and to check health.
+- **The assistant** uses the 19 `okf_*` tools to ingest (`okf_ingest` auto-starts a headless
+  `okf-ingest` run and returns a `jobId` at once), to retrieve (`okf_search` →
+  `okf_read_toc`/`okf_read_concept`), to curate concepts and bundles, to observe runs
+  (`okf_list_jobs`), and to check health.
 - **The user** opens the standalone **app** (a dock window) and uses its three tabs:
   **Overview** (list/manage bundles, browse the concept index and document TOCs, lint,
   import/export), **Jobs** (watch ingest runs through their real lifecycle), and **Query**
@@ -109,11 +110,10 @@ flowchart TD
     subgraph NEXT["Next.js app process (BOS core)"]
         AGENT["Top-level assistant"]
         TREG["AssistantTool registry (039-registered okf_* tools)"]
-        DELEG["agent_delegate / runInnerLoop (in-process)"]
+        DELEG["runSubAgent headless runner (POST /api/subagents/delegate)"]
         SM["ServiceManager (worker lifecycle, tool_declare bridge)"]
         IF["App iframe: OKF Knowledge Base (Overview/Jobs/Query)"]
         AGENT -->|"okf_* tool_call (IPC)"| SM
-        AGENT -->|"agent_delegate(okf-ingest, task+jobId)"| DELEG
         TREG -.registers.-> SM
         IF -->|"same-origin fetch, else __bos broker services.call"| HTTPBASE["service base URL (httpPath or runtime.port)"]
     end
@@ -137,12 +137,14 @@ flowchart TD
         TOOLS --> CORE
     end
 
-    SUB["okf-ingest sub-agent (in-process, narrow allowlist)"]
+    SUB["okf-ingest sub-agent (headless run, self-sufficient allowlist)"]
 
     SM -->|spawn + tool_call/tool_result| W
-    DELEG --> SUB
+    TOOLS -->|"okf_ingest: POST /api/subagents/delegate {agent,task} (loopback, async)"| DELEG
+    DELEG -->|runSubAgent(okf-ingest)| SUB
+    DELEG -.->|"NDJSON progress + terminal {done|error} → W finalizes job (ADR-006)"| W
     SUB -->|"okf_* tool_call (IPC)"| SM
-    SUB -->|"job lifecycle callback (loopback HTTP: running/completed/failed)"| HTTPB
+    SUB -->|"optional progress (loopback POST /jobs/<id>)"| HTTPB
     CORE -->|loopback| APIFS["/api/fs, /api/fs/raw  (BOS VFS API)"]
     APIFS --> VFSROOT["/KnowledgeBase/<bundle>/  (VFS)"]
     HTTPBASE -->|proxied| PROXY --> W
