@@ -19,7 +19,7 @@ the four old `bos-core` prerequisites are treated as **dependencies, not re-scop
 `data/user-apps/items/okf-knowledge-base/` with **three facets of one item**:
 
 1. **Service facet** — the worker-thread daemon that owns OKF storage, maintains the
-   derived index, declares the 18 `okf_*` tools via the 039 Service Tool Exposure
+   derived index, declares the 19 `okf_*` tools via the 039 Service Tool Exposure
    contract, and runs a loopback REST bridge the app talks to.
 2. **App facet** — a **standalone master-detail app** (Overview / Jobs / Query),
    dock-openable, replacing the old settings-embedded `config-app/index.html`.
@@ -127,7 +127,7 @@ flowchart TD
         CORE["lib/okf-core.js — OKF storage engine + derived index/TOC/graph/search"]
         VFSB["lib/vfs-bridge.js — loopback /api/fs (+ /api/fs/raw for binary assets)"]
         HTTPB["lib/http-bridge.js — app-facing REST (bundles, index, toc, search, graph, jobs)"]
-        TOOLS["lib/tools.js — 18 okf_* declarations + handlers"]
+        TOOLS["lib/tools.js — 19 okf_* declarations + handlers"]
         AGENTB["agents/okf-ingest/AGENT.md  ·  skills/okf-bundle-schema/SKILL.md"]
         W --> CORE
         W --> VFSB
@@ -179,7 +179,7 @@ idealized `services/tools/*.js` split):
 data/user-apps/items/okf-knowledge-base/
 ├── services/
 │   ├── service.json           # RETAINED shape; port default 0 (unchanged). Config schema
-│   │                          #   already carries bundleRoot/maxDepth/maxWorkers.
+│   │                          #   already carries bundleRoot/maxDepth/maxWorkers; adds staleJobMs.
 │   ├── index.js               # RETAINED worker entry. Changes: (a) keep the
 │   │                          #   bind-then-handshake-first ordering; (b) extend the VFS
 │   │                          #   bridge to binary (see vfs-bridge); (c) the okf_ingest
@@ -203,17 +203,20 @@ data/user-apps/items/okf-knowledge-base/
 │       │                      #   REPLACES the old config-app routes with the app-facing
 │       │                      #   surface in §8 (bundles, bundle-detail, toc, chapter,
 │       │                      #   search, graph, jobs, asset proxy).
-│       └── tools.js           # REWORKED. DECLARATIONS = exactly the 18 tools in §9
+│       └── tools.js           # REWORKED. DECLARATIONS = exactly the 19 tools in §8.2
 │                              #   (was 31). Handlers reuse okf-core; read-only tools stay
-│                              #   parallelSafe (readOnly()). okf_ingest keeps its
-│                              #   dispatcher shape and gains jobId minting (ADR-006).
+│                              #   parallelSafe (readOnly()). okf_ingest auto-triggers a
+│                              #   headless okf-ingest run, returns jobId (ADR-005);
+│                              #   okf_list_jobs is readOnly (FR-048).
 ├── agents/
 │   └── okf-ingest/
-│       └── AGENT.md           # REWORKED. New least-privilege allowlist (§8) scoped to the
-│                              #   18-tool surface + acquisition + the job callback.
-│                              #   Instructions: chapter decomposition, concept assignment,
+│       └── AGENT.md           # REWORKED. Self-sufficient allowlist (§8.4): the full
+│                              #   okf_* surface + acquisition + VFS reads. Instructions:
+│                              #   acquisition (web_fetch/file_to_markdown, output_path
+│                              #   pinned), chapter decomposition, concept assignment,
 │                              #   one-line summaries, doc-TOC + concept-index maintenance,
-│                              #   inline-asset interpret-and-preserve, job lifecycle calls.
+│                              #   inline-asset interpret-and-preserve, nested reference
+│                              #   ingest (own okf_ingest), final honest summary.
 ├── skills/
 │   └── okf-bundle-schema/
 │       └── SKILL.md           # REWORKED. Authoritative ingest/query/lint conventions:
@@ -223,7 +226,7 @@ data/user-apps/items/okf-knowledge-base/
 │                              #   format, dedup. Replaces the per-bundle schema.md voice
 │                              #   as the source of conventions (ADR-007).
 ├── config/
-│   └── okf-knowledge-base.json  # RETAINED (bundleRoot, port:0, maxDepth, maxWorkers).
+│   └── okf-knowledge-base.json  # RETAINED (bundleRoot, port:0, maxDepth, maxWorkers, staleJobMs).
 ├── app/
 │   └── src/                   # NEW standalone master-detail app (replaces app/config-app/).
 │       ├── main.tsx           # entry — mounts into #root (per the item app-facet anatomy;
@@ -1224,7 +1227,7 @@ artifacts are bundle-scoped, so they're removed with `okf_delete_bundle`.
 
 - **Path:** `item-okf-knowledge-base/mockup.html` (this spec directory) — the **binding
   visual + interaction contract**, already implementing the full app shell:
-  - **App shell** — titlebar (🧠 OKF Knowledge Base, "18 okf_* tools" badge, Populated/Empty
+  - **App shell** — titlebar (🧠 OKF Knowledge Base, "19 okf_* tools" badge, Populated/Empty
     mode toggle) + top tab bar **Overview / Jobs / Query** (with a live Jobs badge). This
     is the FR-035 master-detail app, not a settings page.
   - **Overview** — bundle list (per-bundle Docs/Chapters/Concepts/Stale + status dot) →
