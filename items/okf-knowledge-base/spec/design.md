@@ -1028,6 +1028,7 @@ reusing the *same* `core` functions as the tools.
 | Method + path | Reuses | Returns | Feeds |
 |---|---|---|---|
 | `GET /config` | `getRuntime()` | `{httpPath, port, runtime:{bundleRoot}}` | `bridge.ts` base-URL |
+| `GET /tools` | declared tool list | `{count, tools:[{name, description, inputSchema, parallelSafe}]}` | titlebar **"19 okf_\* tools" badge** — the **real** declared count, not a second hardcoded literal (the mockup's "18" going stale is exactly why); also what the e2e SC-007 assertion reads, so the test checks what the service actually declares, not a literal |
 | `GET /bundles` | `core.listBundles` | `[{name, docs, chapters, conceptTerms, stale, deprecated, status}]` (FR-027) | Overview bundle list + health stat cards |
 | `POST /bundles` | `core.initBundle` | bundle health | "New Knowledge Base" modal |
 | `GET /bundles/<b>` | `core.bundleDetail` | `{health, documents:[{id, title, chapters, conceptRefs, updated, source}], conceptIndex:[{name, count, covers:[...], stale}]}` (FR-027 + US7) | Bundle detail header + Documents + Concept Index tabs |
@@ -1044,6 +1045,7 @@ reusing the *same* `core` functions as the tools.
 | `GET /jobs` | job store | `[{id, status, bundleId, source, startedAt, durationMs?, progress?, summary?, error?}]` (FR-041) | **Jobs tab list** + tab badge count |
 | `GET /jobs/<id>` | job store | full job record incl. summary/error | Job detail (expand) |
 | `POST /jobs` | `okf_ingest` handler (shared) | `{jobId, status:"queued"}` | **Ingest modal** (app-side auto-trigger; FR-046/FR-047) — body `{bundle, source, maxDepth?, maxWorkers?}`, same shape as the tool. The app is an iframe (not an agent) and cannot call the `okf_*` tool directly, so it drives the **same worker-side trigger path** via this route: mint job → fire `POST /api/subagents/delegate` → return `jobId`. The Jobs tab then polls `GET /jobs` for the lifecycle.
+| `POST /jobs` | `okf_ingest` handler (shared) | `{jobId, status:"queued"}` | **Ingest modal** (app-side auto-trigger; FR-046/FR-047) — body `{bundle, source, maxDepth?, maxWorkers?}`, same shape as the tool. The app is an iframe (not an agent) and cannot call the `okf_*` tool directly, so it drives the **same worker-side trigger path** via this route: mint job → fire `POST /api/subagents/delegate` → return `jobId`; the Jobs tab then polls `GET /jobs`. **Supersedes the installed `POST /bundles/<b>/ingest`** (which ran the old dispatcher `planIngest` and returned a `delegation_required`/`acquisition_required` block for the user to hand the assistant) — the app's `serviceClient.prepareIngest()` is reworked to call `POST /jobs` and render the queued→running lifecycle, so the modal no longer shows "hand this to an assistant." |
 | `POST /jobs/<id>` | job store | updated record | **optional sub-agent progress enrichment** (`{progress:"…"}`, ADR-006) — terminal state is owned by the launcher from the run's own signal, not by this route |
 
 The **graph** and **jobs** response shapes are the *new* surfaces (the delegation's
@@ -1172,14 +1174,12 @@ artifacts are bundle-scoped, so they're removed with `okf_delete_bundle`.
 
 ## 10. Risks / open questions
 
-1. **`raw/` binary through `/api/fs` base64.** `vfs-bridge` today only does text
-   (`readText`/`writeText` → `/api/fs?op=read|write`). Non-HTML assets are binary, so we
-   add `writeBinary` (base64 → `op:write`) and `readRaw` (`GET /api/fs/raw?path=`). **Open:
-   confirm the `/api/fs` `write` op accepts a base64-marked payload and that `readRaw`
-   streams without buffering large video** (services.md §VFS bridge notes `raw` streams
-   both directions — verify the *write* side handles binary, or stage via a temp file and
-   use the streaming PUT). A 100MB+ video held in a JSON body would be wrong; use the
-   streaming path for large assets.
+1. **`raw/` binary — resolved.** `vfs-bridge` today only does text (`readText`/`writeText`
+   → `/api/fs?op=read|write`). For binary, use the **streaming** `PUT /api/fs/raw?path=`
+   (write-temp-then-rename, no whole-file buffering — `src/app/api/fs/raw/route.ts`) and
+   `GET /api/fs/raw?path=` for reads. So `vfs-bridge.writeBinary` streams the request body
+   straight into the target file and `readRaw` streams back — a 100MB+ video is never held
+   in a JSON body. (Supersedes the earlier base64-via-`op:write` idea.)
 2. **Job record durability vs. OKF purity.** Jobs live under the bundle root
    (`.jobs/`) to survive restart, but they're *operational* state, not OKF *content*.
    **Open: should export include `.jobs/`?** Default: exclude it from `okf_export_bundle`
