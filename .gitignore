@@ -1,0 +1,5 @@
+# Playwright output from an item e2e run. Never content: it lands in whichever
+# checkout the tests ran from, and an untracked file a merge would overwrite
+# stops that merge outright.
+.test-results/
+test-results/
