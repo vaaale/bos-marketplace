@@ -70,8 +70,9 @@ Three different places, depending on what you mean:
 | What the agent is *told* about this specific run | `buildIngestTask()` in `okf-core.js` — the task text, including the acquisition first steps |
 | How a run is *launched and watched* | `triggerIngest` / `driveRun` in `okf-core.js`, and `lib/delegate-bridge.js` |
 
-Two invariants when touching the last row:
+Three invariants when touching the last two rows:
 
+- **A document's id comes from `docIdForSource()`, never from the staged path.** That one function is used twice: `acquisitionFirstSteps()` pins its result as `filename` on the `okf_add_raw_source` call, and `buildIngestTask()` writes the same value into the task text. `addRawSource` derives the docId from that filename's base, so the id the task names before the run and the id the tool assigns during it are the same string. Let `filename` default instead and the `/workspace/okf-staged-….md` scratch name becomes the permanent, user-visible document id.
 - **Every acquisition step pins `output_path`.** It is what keeps the source off the token bill. A step without it silently reintroduces the cost this whole pipeline exists to remove.
 - **The launcher owns terminal state.** `driveRun` derives `completed` / `failed` from the run's own `endedReason`, and `POST /jobs/<id>` rejects a `status` field. Do not add a path by which a run declares itself finished — that is the failure mode the rework removed.
 

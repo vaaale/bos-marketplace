@@ -46,9 +46,15 @@ Your task's **Step 0** spells out the exact calls for this source. Run them verb
 
 `okf_add_raw_source` returns the `rawFile` path inside the bundle. That file — immutable, append-only — is what you decompose. Put the **original URL** in `originUrl` when there is one: it becomes the document's "Open source" target in the app.
 
+**The docId is given to you — never invent one.** Your task states this run's `docId` under **The document id for this run**, and it is the same id `okf_add_raw_source` returns in its `docId` field. Use that id verbatim everywhere: the document stub `<docId>`, every chapter `<docId>/<chId>`, every asset path `raw/assets/<docId>/`.
+
+**Never derive an id from the staged `/workspace/okf-staged-….md` path.** That name is scratch — a truncated copy of the source parked on disk so the bytes stay out of your context. An id taken from it (`okf-staged-…`) is wrong, permanent, and visible to the user. If the task and the tool result ever disagree, use what the tool returned.
+
 ### 2. Learn what the bundle already covers
 
-`okf_list_concepts` for the vocabulary; `okf_read_toc` for a document you may be extending. Do this **before** you write anything. Extending an existing concept term is almost always better than coining a near-duplicate, and a near-duplicate is the single most damaging thing you can do to a bundle's routing.
+`okf_list_concepts` for the vocabulary; `okf_read_toc({bundle, docId})` for the document you may be extending. Do this **before** you write anything. Extending an existing concept term is almost always better than coining a near-duplicate, and a near-duplicate is the single most damaging thing you can do to a bundle's routing.
+
+**`document not found` from `okf_read_toc` is the expected answer for a new document.** You are asking whether the bundle already has it; "no" means create it fresh and carry straight on to step 3. It is a successful dedup check, not a failure — do not retry it, do not try a different id to make it succeed, do not report it as an error, and never let it stop the run. A TOC coming back is the interesting case: extend those chapters rather than writing duplicates alongside them.
 
 ### 3. Decompose at the source's own heading structure
 
@@ -56,7 +62,7 @@ One chapter per section the author actually wrote. **A source with no headings i
 
 ### 4. Write the document stub, then the chapters
 
-- Stub: `okf_upsert_concept({bundle, id: "<docId>", frontmatter: {type: "document", title, summary, sources: [{id, uri}]}})`.
+- Stub: `okf_upsert_concept({bundle, id: "<docId>", frontmatter: {type: "document", title, summary, sources: [{id, uri}]}})` — `<docId>` is the id from your task, not one you choose.
 - Each chapter: `okf_upsert_concept({bundle, id: "<docId>/<chId>", title, body, frontmatter: {type: "section", parent: "<docId>", concepts: [...], summary: "one line", status, sources: [...]}})`.
 
 **`parent`, `concepts` and `summary` are what make a chapter findable.** The concept index and the document TOC are derived from exactly those three fields; a chapter missing them is stored and invisible to `okf_search`. Write a summary someone searching would actually phrase — it is the text the deterministic match runs against.

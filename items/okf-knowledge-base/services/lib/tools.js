@@ -78,7 +78,8 @@ const DECLARATIONS = [
   readOnly({
     name: "okf_read_toc",
     description:
-      "Read a document's stored table of contents: its chapters, each with a one-line description and the concept terms it covers. This is the level-2 drill-down — use it to decide WHICH chapters to read in full, then call okf_read_concept for those.",
+      "Read a document's stored table of contents: its chapters, each with a one-line description and the concept terms it covers. This is the level-2 drill-down — use it to decide WHICH chapters to read in full, then call okf_read_concept for those.\n\n" +
+      "A docId the bundle does not have yet comes back as a `document not found` error. During an ingest that is the NORMAL answer to \"does this already exist?\" and means write it fresh — it is not a failure to retry or work around.",
     inputSchema: required({ bundle: STRING, docId: STRING }, ["bundle", "docId"]),
   }),
   readOnly({

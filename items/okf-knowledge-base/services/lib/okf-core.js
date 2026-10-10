@@ -949,7 +949,15 @@ async function readToc(bundleRoot, bundleName, docId) {
   validateConceptId(docId);
   const model = await getModel(bundleRoot, bundleName);
   const toc = model.tocByDoc.get(docId);
-  if (!toc) throw new Error(`document not found: ${bundleName}/${docId}`);
+  // Non-fatal by design: an ingest run calls this to check whether the
+  // document already exists, and "it doesn't" is a normal answer. The message
+  // says so, so a run doesn't treat its own dedup check as a hard failure.
+  if (!toc)
+    throw new Error(
+      `document not found: ${bundleName}/${docId} — this bundle has no document with that id yet. ` +
+        `If you are ingesting it, that is the expected answer: create it fresh. ` +
+        `okf_list_concepts({bundle: "${bundleName}"}) lists the documents that do exist.`,
+    );
   return { ...toc, indexGeneratedAt: model.indexGeneratedAt, artifact: `toc/${docId}.md` };
 }
 
@@ -1983,8 +1991,23 @@ async function updateJob(bundleRoot, id, patch = {}) {
 
 const CONVERTIBLE = /\.(pdf|docx|pptx|xlsx|doc|ppt|xls)$/i;
 
-/** Filesystem-safe slug for the staged copy's filename. */
-function stagedName(source) {
+/**
+ * The id a source is known by INSIDE the bundle: its last meaningful path
+ * segment, lowercased, with the document extension, an append-only `.vN`
+ * version suffix and a publisher's opaque trailing hash (Medium's
+ * `-e267537e5b2f`) stripped.
+ *
+ * This is the ONE place a source's identity is derived, and it derives from
+ * the SOURCE — never from the scratch file the acquisition step happens to
+ * stage it through. `acquisitionFirstSteps` pins the result as `filename` on
+ * the `okf_add_raw_source` call and `addRawSource` takes the docId from that
+ * filename's base, so the id `buildIngestTask` writes into the task text
+ * BEFORE the run starts is exactly the id the tool assigns DURING it. Letting
+ * the staged name fall through instead is what produced document ids like
+ * `okf-staged-your-12gb-gpu-…-e`: an acquisition detail, truncated mid-word,
+ * promoted to a permanent id nobody could predict or re-derive.
+ */
+function docIdForSource(source) {
   const base =
     String(source)
       .replace(/[?#].*$/, "")
@@ -1992,8 +2015,22 @@ function stagedName(source) {
       .split("/")
       .filter(Boolean)
       .pop() || "source";
-  const slug = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "source";
-  return slug.replace(CONVERTIBLE, "") + ".md";
+  let slug = base
+    .replace(CONVERTIBLE, "")
+    .replace(/\.(md|markdown|txt|html?)$/i, "")
+    .replace(/\.v\d+$/i, "") // raw/ is versioned; the document it holds is not
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-(?=[0-9a-f]*[a-f])[0-9a-f]{8,}$/, "") // …-e267537e5b2f
+    .replace(/^[-._]+|[-._]+$/g, "");
+  // Trim long slugs at a word boundary rather than mid-token.
+  if (slug.length > 72) slug = slug.slice(0, 72).replace(/-[^-]*$/, "");
+  return slug.replace(/^[-._]+|[-._]+$/g, "") || "source";
+}
+
+/** Filesystem-safe name for the scratch copy the acquisition step stages. */
+function stagedName(source) {
+  return `okf-staged-${docIdForSource(source)}.md`;
 }
 
 /**
@@ -2010,7 +2047,7 @@ function acquisitionFirstSteps(bundle, source) {
   const isAbsPath = source.startsWith("/");
   if (!isUrl && !isAbsPath) return []; // a raw/ path — already in the bundle
 
-  const staged = `/workspace/okf-staged-${stagedName(source)}`;
+  const staged = `/workspace/${stagedName(source)}`;
   const steps = [];
   if (isUrl) {
     steps.push({ tool: "web_fetch", args: { url: source, output_path: staged } });
@@ -2018,9 +2055,13 @@ function acquisitionFirstSteps(bundle, source) {
     steps.push({ tool: "file_to_markdown", args: { path: source, output_path: staged } });
   }
   const sourcePath = steps.length ? staged : source;
+  // `filename` is PINNED, not left to default from sourcePath's basename.
+  // Without it the staged scratch name (`okf-staged-…`) becomes both the raw
+  // file name and the docId — see docIdForSource.
+  const filename = `${docIdForSource(source)}${steps.length ? ".md" : path.extname(sourcePath) || ".md"}`;
   steps.push({
     tool: "okf_add_raw_source",
-    args: { bundle, sourcePath, ...(isUrl ? { originUrl: source } : {}) },
+    args: { bundle, sourcePath, filename, ...(isUrl ? { originUrl: source } : {}) },
   });
   return steps;
 }
@@ -2032,6 +2073,10 @@ function renderSteps(steps) {
 /** The sub-agent task for one ingest run. Embeds jobId / bundle / source. */
 function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
   const steps = acquisitionFirstSteps(bundle, source);
+  // The SAME derivation acquisitionFirstSteps pins as `filename` and
+  // addRawSource turns into the docId. Naming it here is the whole fix: the
+  // agent is told the id instead of inferring one from the staged path.
+  const docId = docIdForSource(source);
   const acquisition = steps.length
     ? `## Step 0 — acquire the source (do this FIRST, exactly as written)\n\n${renderSteps(steps)}\n\n` +
       `Run those calls verbatim. \`output_path\` is pinned on purpose: with it the source streams to disk and the tool ` +
@@ -2041,18 +2086,34 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
     : `## Step 0 — the source is already in the bundle\n\nIt is at \`${source}\`. Read it from there with \`file_read\`; ` +
       `do not expect it inline and do not re-fetch it.\n\n`;
 
+  // The id, stated once, up front. Everything below uses it literally.
+  const identity =
+    `## The document id for this run\n\n` +
+    `This document's id is **\`${docId}\`**. Use it verbatim wherever an id is called for below — it is already ` +
+    `written into the paths and calls, so you never have to pick one.\n\n` +
+    `It is the same id \`okf_add_raw_source\` hands back in its \`docId\` field: the call above pins \`filename\`, and ` +
+    `the service derives both from the source itself. Do NOT coin your own, and do NOT take an id from the staged ` +
+    `\`/workspace/okf-staged-…\` scratch path — that filename is an acquisition detail, not an identity. In the ` +
+    `unlikely event the tool's returned \`docId\` differs from the one above, the value the tool returned wins.\n\n`;
+
   return (
     `Ingest \`${source}\` into the OKF bundle "${bundle}" as organized chapters.\n\n` +
     `jobId: ${jobId}\nbundle: ${bundle}\nsource: ${source}\nmaxDepth: ${maxDepth}\nmaxWorkers: ${maxWorkers}\n\n` +
     acquisition +
+    identity +
     `## Then do the whole job\n\n` +
-    `Decompose the source at its natural heading structure into chapters (\`concepts/<docId>/<chId>.md\`, ` +
-    `\`type: section\`), each carrying \`parent\`, the \`concepts\` terms it covers and a one-line \`summary\` — those ` +
-    `three fields are what the concept index and the document TOC are derived from. Upsert the document stub ` +
-    `(\`concepts/<docId>.md\`, \`type: document\`) with the original URL in \`sources[].uri\` so the app's "Open source" ` +
-    `link has a target. Check \`okf_list_concepts\` before coining a term: extend before you create.\n\n` +
+    `Start with \`okf_read_toc({bundle: "${bundle}", docId: "${docId}"})\` to see whether the bundle already covers ` +
+    `this document. **\`document not found\` is the expected answer for a new one** — it means nothing is there yet, ` +
+    `so write it fresh. That is a successful dedup check, not a failure, and there is nothing to retry, rename or ` +
+    `work around. If a TOC does come back, extend those chapters instead of duplicating them.\n\n` +
+    `Decompose the source at its natural heading structure into chapters (\`concepts/${docId}/<chId>.md\`, ` +
+    `\`type: section\`), each carrying \`parent: ${docId}\`, the \`concepts\` terms it covers and a one-line ` +
+    `\`summary\` — those three fields are what the concept index and the document TOC are derived from. Upsert the ` +
+    `document stub (\`concepts/${docId}.md\`, \`type: document\`) with the original URL in \`sources[].uri\` so the ` +
+    `app's "Open source" link has a target. Check \`okf_list_concepts\` before coining a term: extend before you ` +
+    `create.\n\n` +
     `For every NON-HTML asset in a chapter's scope: \`web_fetch\` it with \`output_path\` into ` +
-    `\`raw/assets/<docId>/\`, register it with \`okf_add_raw_source({asset:true, docId, sourcePath})\`, interpret it ` +
+    `\`raw/assets/${docId}/\`, register it with \`okf_add_raw_source({asset: true, docId: "${docId}", sourcePath})\`, interpret it ` +
     `with \`view_image\` or \`video_keyframes\`, and write the stored link plus a ` +
     `\`> **Interpretation (LLM, at ingest):** …\` blockquote directly beneath it in the chapter body. Ordinary HTML ` +
     `hyperlinks stay remote references — do not download them. A failed asset is marked unavailable and does not fail ` +
@@ -2303,6 +2364,7 @@ module.exports = {
   triggerIngest,
   acquisitionFirstSteps,
   buildIngestTask,
+  docIdForSource,
   // internals exposed for the bridge, the tools layer and tests
   appendLog,
   extractLinks,
