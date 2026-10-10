@@ -942,7 +942,7 @@ BOS assistant tools the sub-agent's allowlist names; see §8).
   peer is loopback (`isTrustedPeer`) — a forwarded `X-Forwarded-For` header can't launder a
   non-loopback peer. Single-user (NFR-008); no per-user ACL in v1.
 
-### 8.2 The 18 tools (FR-037) — the agent surface, exactly 18
+### 8.2 The 19 tools (FR-037) — the agent surface, exactly 19
 
 Declared under the **Knowledge Base** tool group (`service.json` `toolGroups` — retained).
 Read-only tools are `parallelSafe` (retained `readOnly()`). Validation against each
@@ -969,8 +969,11 @@ level:
 - `okf_delete_bundle` `{bundle}` → removes only that bundle's directory (FR-030, US5).
 
 **Ingest**
-- `okf_ingest` `{bundle, source, maxDepth?, maxWorkers?}` → dispatcher (FR-016, §7.1); returns acquisition/delegation + `jobId`.
+- `okf_ingest` `{bundle, source, maxDepth?, maxWorkers?}` → **auto-trigger** (FR-016/FR-046, §7.1): mints the job, starts the headless `okf-ingest` run (ADR-005), and returns `{jobId, status:"queued"}` immediately. Returns the existing `docId` on a dedup hit (FR-018). No `acquisition_required`/`delegation_required` instruction block is returned to the caller.
 - `okf_add_raw_source` `{bundle, filename?, content?, sourcePath?, conceptId?, title?}` → mechanical raw registration (FR-017, §7.2).
+
+**Jobs**
+- `okf_list_jobs` `{limit?}` → `[{id, status, bundleId, source, startedAt, durationMs?, progress?, summary?, error?}]` — the current ingest runs and their lifecycle status, the **same records the app's Jobs tab shows** (FR-041/FR-048). *readOnly / parallelSafe.*
 
 **Organization**
 - `okf_add_link` `{bundle, id, target, label?}` → adds an explicit "related" edge (markdown link + `links.json`) (FR-031).
@@ -987,13 +990,13 @@ level:
 frontmatter, FR-024), `okf_attest`/`okf_provenance` (→ `sources` frontmatter),
 `okf_remove_link`/`okf_list_links`/`okf_neighbors`/`okf_shortest_path`/`okf_export_graph`
 (graph power-tools dropped — retrieval is index-based; the app renders the graph, ADR-004).
-Net arithmetic: 31 declared → 18 declared = **13 fewer**. Per FR-037 that's **3 added**
-(`okf_search`, `okf_read_toc`, `okf_merge_concepts`) and **15 kept**. The **removed** list
-names 15–16 tools (the spec's "16 removed" vs. the 31→18 net of 13 differ by exactly the
-folding: the field-setter family `okf_set_status`/`okf_set_trust`/`okf_add_source` — and
-the `okf_attest`/`okf_provenance` pair — keep their *capability* inside `okf_upsert_concept`
-frontmatter and `sources` rather than vanishing, so they're "removed" tools, not removed
-features).
+Net arithmetic: 31 declared → 19 declared = **12 fewer**. Per FR-037 that's **4 added**
+(`okf_search`, `okf_read_toc`, `okf_merge_concepts`, `okf_list_jobs`) and **15 kept**. The
+**removed** list names 15–16 tools (the spec's "16 removed" vs. the 31→19 net of 12 differ
+by exactly the folding: the field-setter family `okf_set_status`/`okf_set_trust`/
+`okf_add_source` — and the `okf_attest`/`okf_provenance` pair — keep their *capability*
+inside `okf_upsert_concept` frontmatter and `sources` rather than vanishing, so they're
+"removed" tools, not removed features).
 
 ### 8.3 App-facing REST routes (ADR-003) — what the app actually calls
 
@@ -1019,7 +1022,7 @@ reusing the *same* `core` functions as the tools.
 | `DELETE /bundles/<b>` | `core.deleteBundle` | `{deleted:true}` | Delete modal (confirmed) |
 | `GET /jobs` | job store | `[{id, status, bundleId, source, startedAt, durationMs?, progress?, summary?, error?}]` (FR-041) | **Jobs tab list** + tab badge count |
 | `GET /jobs/<id>` | job store | full job record incl. summary/error | Job detail (expand) |
-| `POST /jobs/<id>` | job store | updated record | **sub-agent lifecycle callbacks** (`running`/`completed`/`failed`/`progress`, ADR-006) — *and* the calling-assistant safety net |
+| `POST /jobs/<id>` | job store | updated record | **optional sub-agent progress enrichment** (`{progress:"…"}`, ADR-006) — terminal state is owned by the launcher from the run's own signal, not by this route |
 
 The **graph** and **jobs** response shapes are the *new* surfaces (the delegation's
 requirement); their exact JSON is the `nodes/edges` above and the job record below. The
@@ -1045,8 +1048,9 @@ itself.
 ```
 The Jobs tab **polls** `GET /jobs` (and, for the expanded row, `GET /jobs/<id>`) on a short
 interval (the mockup's live "elapsed" + progress bar), reflecting status as it changes
-(FR-041, SC-011). (Polling, not SSE, is simplest and matches the loopback bridge; an
-NDJSON tail could replace it later without changing the record shape.)
+(FR-041, SC-011); `okf_list_jobs` reads the same `core.listJobs()` for the agent surface
+(FR-048). (Polling, not SSE, is simplest and matches the loopback bridge; an NDJSON tail
+could replace it later without changing the record shape.)
 
 ### 8.4 The bundled `okf-ingest` agent — least-privilege allowlist (FR-039, NFR-009)
 
