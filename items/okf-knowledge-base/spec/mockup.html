@@ -367,7 +367,7 @@
       </div>
     </div>
     <div class="tb-right">
-      <span class="badge">standalone app · 18 okf_* tools</span>
+      <span class="badge">standalone app · 19 okf_* tools</span>
       <div class="seg" id="modeSeg">
         <button data-mode="populated" class="on">Populated</button>
         <button data-mode="empty">Empty</button>
@@ -478,7 +478,7 @@
 </div></div>
 
 <div id="modal-ingest" class="modal hidden"><div class="card">
-  <h3>Ingest document</h3><div class="desc">Decomposes the source into chapters (each with concept terms + a one-line summary), writes the document TOC, and updates the concept index. Runs via the bundled least-privilege <code style="font-family:monospace;font-size:11px">okf-ingest</code> agent — the run is tracked in the Jobs tab.</div>
+  <h3>Ingest document</h3><div class="desc">Starts ingestion <b>immediately</b> (fire-and-forget): a headless <code style="font-family:monospace;font-size:11px">okf-ingest</code> run fetches the source, decomposes it into chapters (concept terms + one-line summaries), interprets inline assets, and writes the TOC + concept index. The run is tracked in the <b>Jobs</b> tab and observable via <code style="font-family:monospace;font-size:11px">okf_list_jobs</code> — no assistant hand-off needed.</div>
   <label>Source (URL, VFS path, or raw/ path)</label><input placeholder="https://…/article  or  /workspace/doc.pdf  or  raw/…">
   <label>Crawl depth (optional)</label><input placeholder="default" value="">
   <div class="row"><button class="btn" onclick="closeModal('ingest')">Cancel</button><button class="btn primary" onclick="closeModal('ingest')">Ingest</button></div>
@@ -1028,7 +1028,7 @@ function renderJobs(){
   }
   const active=JOBS.filter(j=>j.status==='running'||j.status==='queued').length;
   let h='<div class="toolbar"><button class="btn primary" onclick="openModal(\'ingest\')">'+I('import',15)+' Ingest document</button><div class="spacer"></div><span class="count">'+JOBS.length+' runs · '+active+' active</span></div>';
-  h+='<div class="note">'+I('info',14)+'<span><b>Ingest runs (jobs)</b> — each is one delegated invocation of the <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf-ingest</code> agent against a bundle. Statuses: <span class="dot queued" style="margin:0 4px"></span>queued <span class="dot running" style="margin:0 4px"></span>running <span class="dot green" style="margin:0 4px"></span>completed <span class="dot red"></span>failed. The list reflects a run\'s status as it changes. Click a run to expand its detail.</span></div>';
+  h+='<div class="note">'+I('info',14)+'<span><b>Ingest runs (jobs)</b> — each is one headless <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf-ingest</code> run, triggered automatically by <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_ingest</code> or the Ingest modal (the caller gets a job id, not a set of steps to run). Statuses: <span class="dot queued" style="margin:0 4px"></span>queued <span class="dot running" style="margin:0 4px"></span>running <span class="dot green" style="margin:0 4px"></span>completed <span class="dot red"></span>failed. The list reflects a run\'s status as it changes. Click a run to expand its detail.</span></div>';
   h+='<div class="jobs-list">'+JOBS.map(jobRow).join('')+'</div>';
   host.innerHTML=h;
 }
