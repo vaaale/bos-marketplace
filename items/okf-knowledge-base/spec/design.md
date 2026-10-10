@@ -1054,34 +1054,46 @@ interval (the mockup's live "elapsed" + progress bar), reflecting status as it c
 (FR-048). (Polling, not SSE, is simplest and matches the loopback bridge; an NDJSON tail
 could replace it later without changing the record shape.)
 
-### 8.4 The bundled `okf-ingest` agent — least-privilege allowlist (FR-039, NFR-009)
+### 8.4 The bundled `okf-ingest` agent — self-sufficient allowlist (FR-039, NFR-009)
 
-`agents/okf-ingest/AGENT.md` `tools:` — **rewritten** for the new surface (was 22; the
-removed graph/lifecycle tools are dropped):
+`agents/okf-ingest/AGENT.md` `tools:` — **rewritten** so the headless run (ADR-005) is
+**end-to-end self-sufficient** (FR-047). Because the run performs acquisition *and*
+decomposition *and* reconciliation itself — no caller holds tools for it — it carries the
+**full `okf_*` surface plus the named acquisition tools plus VFS reads**:
 
 ```
 okf_ingest, okf_add_raw_source,
-okf_list_concepts, okf_read_concept, okf_read_toc, okf_search,
-okf_upsert_concept, okf_add_link,
+okf_search, okf_read_toc, okf_read_concept, okf_list_concepts,
+okf_upsert_concept, okf_delete_concept, okf_merge_concepts,
+okf_add_link, okf_backlinks, okf_lint, okf_stale_report,
+okf_list_bundles, okf_init_bundle, okf_import_bundle, okf_export_bundle, okf_delete_bundle,
+okf_list_jobs,
 web_search, web_fetch, file_to_markdown, view_image, video_keyframes,
 file_read, file_list
 ```
 
-- **Read/organize:** `okf_list_concepts` (extend-before-create, dedup), `okf_read_concept`
-  (context), `okf_read_toc` (what a doc already covers), `okf_search` (is this term already
-  routed?), `okf_add_link` (connect new chapters to existing ones), `okf_upsert_concept`
-  (write chapters + document stub + frontmatter; the write path rebuilds the index/TOC).
+(That is the complete 19-tool `okf_*` surface — retrieval, concepts, bundles, ingest,
+jobs, organization, health — plus 5 acquisition tools + 2 VFS reads.)
+
+- **Why the full `okf_*` surface (the point of FR-047).** The run is headless and must
+  not assume an orchestrating assistant. Re-ingesting a changed source reconciles the
+  existing document — that legitimately uses `okf_delete_concept`/`okf_upsert_concept`.
+  Following a reference spawns **its own** `okf_ingest` (which mints a nested job, §7.1),
+  so the run recurses through the tool, not through `agent_delegate`. `okf_list_jobs`
+  lets it observe its own siblings; `okf_lint`/`okf_stale_report` let it verify what it
+  wrote before finishing.
 - **Acquisition (for references it follows + inline assets):** `web_search`, `web_fetch`,
   `file_to_markdown`, `view_image`, `video_keyframes` — the last two **specifically for
-  inline-asset interpretation** (FR-039 names them). `file_read`/`file_list` to read the
-  raw source from the bundle.
-- **`okf_ingest`** is granted so the sub-agent can recurse on a reference it decides to
-  follow (it gets the dispatcher steps + a nested `jobId`; nested runs are separate job
-  records — ADR-006).
-- **Explicitly NOT granted:** `okf_delete_concept`/`okf_delete_bundle` (destructive stays
-  a top-level-assistant / app-explicit action), `okf_merge_concepts` (curation, not
-  ingest), unrestricted `run_command`, and every non-OKF, non-acquisition tool. No full
-  assistant surface (NFR-009).
+  inline-asset interpretation** (FR-039). `file_read`/`file_list` to read the raw source
+  from the bundle.
+- **Explicitly NOT granted (least-privilege in scope, NFR-009):** any non-`okf_*` tool,
+  unrestricted `run_command`, and `agent_delegate` (nested runs go through `okf_ingest`,
+  never through delegating to arbitrary agents). It never gains the top-level assistant's
+  full surface.
+- **It does NOT finalize the job.** The launcher (the worker, ADR-006) writes the
+  terminal state from the run's own signal. The agent's only job-facing duty is to end
+  with a **compact, honest summary** (chapters/concepts/assets/refsSkipped/refsFailed) —
+  the "report honestly" rule, carried from the prior AGENT.md into this rewrite.
 - It has the `okf-bundle-schema` **skill** attached (FR-040) — the conventions (§7.4, §5.2,
   §7.5 block format) live there, not in a per-bundle file.
 
