@@ -161,9 +161,9 @@ The KB is a standalone master-detail app (not buried in settings). In its **Over
 
 ---
 
-### User Story 8 - I can watch ingest runs (jobs) and see if they finished or failed (Priority: P2)
+### User Story 8 - I can watch and control my ingest runs (jobs): see status, cancel a running one, delete a finished one (Priority: P2)
 
-An agent triggers ingestion of a document into a bundle. The user opens the app's **Jobs** tab to see the run and its live status — still running, completed (with a summary of what was written), or failed (with the error).
+An agent triggers ingestion of a document into a bundle. The user opens the app's **Jobs** tab to see the run and its live status — still running, completed (with a summary of what was written), cancelled (when they stopped it), or failed (with the error). The user can **cancel a running run** (stop it, distinct from a failure) and **delete a finished run** (clear the list), from the Jobs tab or via agent tools.
 
 **Why this priority**: Ingest is the way knowledge gets in; without a way to see whether a triggered ingest actually completed, the user can't trust the pipeline or debug it.
 
@@ -174,6 +174,9 @@ An agent triggers ingestion of a document into a bundle. The user opens the app'
 1. **Given** an in-flight ingest, **When** the user opens the Jobs tab, **Then** the run is listed with status running, its bundle, and its source.
 2. **Given** a completed ingest, **When** the user opens its run detail, **Then** it shows a summary (chapters written, concepts assigned, assets interpreted, references skipped/failed).
 3. **Given** a failed ingest, **When** the user opens its run detail, **Then** it shows the failure and the error.
+4. **Given** a running ingest, **When** the user clicks **Cancel** on it (or an agent calls `okf_cancel_job`), **Then** the underlying headless run is aborted and the job transitions to the distinct **cancelled** state (not failed); the job record and any bundle content already written are preserved; cancelling a job that is already terminal is a no-op.
+5. **Given** a finished (completed / cancelled / failed) ingest, **When** the user clicks **Delete** on it (or an agent calls `okf_delete_job`), **Then** the job record is removed and the bundle's content is left untouched.
+6. **Given** a running ingest, **When** a delete is attempted on it, **Then** the delete is rejected (cancel it first).
 
 ---
 
