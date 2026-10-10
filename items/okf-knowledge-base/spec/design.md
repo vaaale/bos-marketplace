@@ -180,10 +180,12 @@ data/user-apps/items/okf-knowledge-base/
 ├── services/
 │   ├── service.json           # RETAINED shape; port default 0 (unchanged). Config schema
 │   │                          #   already carries bundleRoot/maxDepth/maxWorkers.
-│   ├── index.js               # RETAINED worker entry. Two changes: (a) keep the
-│   │                          #   bind-then-handshake-first ordering; (b) extend the
-│   │                          #   VFS bridge to binary (see vfs-bridge). No other
-│   │                          #   structural change — tool_declare loop reads tools.js.
+│   ├── index.js               # RETAINED worker entry. Changes: (a) keep the
+│   │                          #   bind-then-handshake-first ordering; (b) extend the VFS
+│   │                          #   bridge to binary (see vfs-bridge); (c) the okf_ingest
+│   │                          #   handler fires the headless delegate request and consumes
+│   │                          #   its NDJSON stream to own the job's terminal state
+│   │                          #   (ADR-005/006). Tool_declare loop reads tools.js.
 │   └── lib/
 │       ├── okf-core.js        # REWORKED. Retains: frontmatter YAML-lite, path safety
 │       │                      #   (safeJoin/validate*), raw/ append-only, shallow-merge
