@@ -925,7 +925,7 @@ BOS assistant tools the sub-agent's allowlist names; see §8).
   (retained). On `dispose`/`restart`, close the server.
 - **Config** `config/okf-knowledge-base.json`: `bundleRoot` (default `/KnowledgeBase`),
   `port` (**default `0`** — OS-assigned, the only safe default, `services.md` §3),
-  `maxDepth` (default 1), `maxWorkers` (default 3). Runtime port is written to
+  `maxDepth` (default 1), `maxWorkers` (default 3), `staleJobMs` (default 1800000 — the job-reaper bound, ADR-006). Runtime port is written to
   `runtime.json` by `ServiceManager` after the `bound` message.
 - **App reachability** (`services.md` §11 — the mandatory reading for any service port):
   the app resolves its base URL as **`httpPath` if present else direct `runtime.port`**:
@@ -1118,31 +1118,33 @@ Retrieval (app, Query tab):
   GET /bundles/<b>/search?query=  → same [TOC rows] → click → GET /concept/<id> → FULL chapter
   GET /bundles/<b>/graph          → {nodes, edges}  → force-render → click node → same /concept
 
-Ingest:
-  okf_ingest → (acquisition steps pinning output_path) → okf_add_raw_source → raw/
-            → okf_ingest → delegation_required{jobId} → agent_delegate(okf-ingest)
-            → sub-agent: chapters (upsert) + concepts/summaries + assets (download+interpret)
-                          + toc + concept-index (derived rebuild) + job callbacks
-            → summary returned to the assistant; job → completed|failed
+Ingest (auto-trigger, ADR-005):
+  okf_ingest(bundle, source) → mint job(queued) → POST /api/subagents/delegate {okf-ingest}
+            → return {jobId, status:queued} to caller   ← caller is free now
+            → headless okf-ingest run (self-sufficient, §8.4): acquire (output_path) →
+              okf_add_raw_source → raw/ → chapters (upsert) + concepts/summaries +
+              assets (download+interpret) + toc + concept-index (derived rebuild)
+            → nested reference = its own okf_ingest → its own job
+            → run ends with a compact, honest summary
 
 Inline asset:
   sub-agent → download non-HTML asset → vfs-bridge.writeBinary → raw/assets/<docId>/<name>
             → view_image / video_keyframes → interpretation text
             → okf_upsert_concept writes the link + interpretation block into the chapter
 
-Job lifecycle:
-  okf_ingest mints job(queued) → sub-agent POST /jobs/<id>(running) →
-  sub-agent POST /jobs/<id>(completed, summary) | (failed, error)
-  [safety net: assistant GET /jobs/<id>; if agent_delegate errored and job non-terminal →
-   POST /jobs/<id>(failed)]
-  App Jobs tab polls GET /jobs → renders lifecycle (SC-011)
+Job lifecycle (launcher owns finalization, ADR-006):
+  worker: okf_ingest → mint job(queued) → fire delegate request (async) → return {jobId}
+  worker consumes NDJSON: {tool} lines → progress; terminal {done} → completed(summary)
+            | {error} → failed(error)
+  [stale reaper: job queued/running > staleJobMs → failed(stale), incl. after restart]
+  App Jobs tab polls GET /jobs; okf_list_jobs reads core.listJobs() → lifecycle (SC-011)
 ```
 
 **Error handling:** every `okf_*` and HTTP route returns in-band errors (404/409/400 via
 the retained `statusForError`); a failed chapter/asset never fails the whole document
 (spec *Edge Cases*); a failed ingest leaves `raw/` and the index consistent because the
 derived artifacts rebuild from content (NFR-004). **Lifecycle:** service stop/uninstall
-removes all 18 tools immediately (SC-009, retained). The `.jobs/` dir and derived
+removes all 19 tools immediately (SC-009, retained). The `.jobs/` dir and derived
 artifacts are bundle-scoped, so they're removed with `okf_delete_bundle`.
 
 ---
@@ -1162,13 +1164,14 @@ artifacts are bundle-scoped, so they're removed with `okf_delete_bundle`.
    **Open: should export include `.jobs/`?** Default: exclude it from `okf_export_bundle`
    (it's not part of the distributable contract, NFR-001) but keep it on disk; confirm the
    reviewer wants export to skip `.jobs/` and `links.json`-drift, or include them.
-3. **Sub-agent job-callback fidelity (ADR-006).** The mechanism depends on the sub-agent
-   actually making the `POST /jobs/<id>` calls. **Mitigation already in the design:** the
-   skill/agent prompt makes it a first-class instruction, and the calling-assistant safety
-   net closes the gap if the sub-agent lapses or dies. **Residual:** a sub-agent that
-   "completes" with a partial run (e.g. hit `maxDepth`) should report `completed` with an
-   honest `refsSkipped`/`refsFailed` summary, not `failed` — the skill must say this
-   (the old AGENT.md already had this "report honestly" rule; carried into the rewrite).
+3. **Headless-run fidelity (ADR-005/ADR-006).** The launcher owns the job's terminal state
+   from the run's own `{done}`/`{error}` signal, so the mechanism no longer depends on the
+   sub-agent making lifecycle calls — the worker-side stale reaper is the last line of
+   defense for a worker killed mid-run. **Residual:** a run that "completes" with a
+   partial outcome (e.g. hit `maxDepth`) should record `completed` with an honest
+   `refsSkipped`/`refsFailed` summary, not `failed` — the skill/agent prompt carries that
+   "report honestly" rule, and the worker derives the summary from the writes it observed
+   for the job.
 4. **Concept-term normalization & merge quality (FR-026, US6).** Organic vocabulary
    accumulates near-duplicates; `okf_merge_concepts` is the guard. **Open:** the *detection*
    of near-duplicates (to suggest a merge) is a candidate for a lightweight pass in
