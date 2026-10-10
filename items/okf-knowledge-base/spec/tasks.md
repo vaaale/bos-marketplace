@@ -1,6 +1,6 @@
 # Tasks: OKF Knowledge Base — general-purpose agent KB (redesign + automatic ingestion)
 
-**Input**: `item-okf-knowledge-base/spec.md` (source of truth — 44 FR / 11 NFR / 13 SC / 9 user stories), `item-okf-knowledge-base/design.md` (architecture + ADRs), `item-okf-knowledge-base/tool-surface.md` (the 19 tools + auto-trigger mechanism), `item-okf-knowledge-base/plan.md` (structure + constitution check), `item-okf-knowledge-base/mockup.html` (binding UI contract).
+**Input**: `item-okf-knowledge-base/spec.md` (source of truth — 49 FR / 11 NFR / 13 SC / 9 user stories), `item-okf-knowledge-base/design.md` (architecture + ADRs), `item-okf-knowledge-base/tool-surface.md` (the 19 tools + auto-trigger mechanism), `item-okf-knowledge-base/plan.md` (structure + constitution check), `item-okf-knowledge-base/mockup.html` (binding UI contract).
 
 **Supersedes**: the prior 2026-10-09 tasks (branch `bos/okf-kb-redesign`), which were written against an earlier story decomposition and the pre-auto-ingest design. This rewrite is organized by the **spec's nine user-value stories** and includes the **automatic-ingestion scope-add** (worker-side auto-trigger, `okf_list_jobs`, the self-sufficient agent, the app's `POST /jobs`).
 
