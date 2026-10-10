@@ -403,53 +403,52 @@ hand-written into `data/user-apps` — the Developer stages the facets and
   `agent_delegate`-via-assistant path; that step sequence is retained only as what the
   headless run now performs *itself*.
 
-### ADR-006 — Run observability: a service-owned job record + sub-agent HTTP lifecycle callbacks
+### ADR-006 — Run observability: the worker (launcher) owns finalization from the run's own terminal signal, plus a stale reaper
 
 - **Context.** FR-041/FR-044/SC-011 require ingest runs to be observable through a real
   lifecycle (queued → running → completed | failed) with a summary (chapters written,
-  concepts assigned, assets interpreted, references skipped/failed) or an error, **without**
-  adding to the 18-tool surface and **without** the agent emitting the full source.
-- **The boundary problem.** The service (worker thread) creates the job when `okf_ingest`
-  is called, but the *sub-agent* runs **in the main Next.js process** — the service cannot
-  observe the agent loop directly. The only channels across that boundary are (i) the
-  agent's tool calls (039 IPC → worker) and (ii) the service's own loopback HTTP bridge.
-  `agent_delegate` returns to the *calling* assistant when the sub-agent finishes; that
-  return is visible to the assistant, not to the service.
-- **Options.**
-  - **(a) Polling** — the service guesses completion by watching chapter-file mtimes.
-    Fragile (a stalled sub-agent looks "running" forever; a partial write looks "done").
-  - **(b) The calling assistant marks the job** — it would need a tool for that, adding a
-    19th tool, and the assistant is often the user's top-level agent (heavy to burden).
-  - **(c) Sub-agent → service loopback HTTP lifecycle callbacks** — the sub-agent is told
-    the `jobId` (embedded by `okf_ingest` in the `agent_delegate` task text, which the
-    sub-agent already carries in context) and is instructed by its skill/agent prompt to
-    `POST /jobs/<id>` transitions: `running` on first write, `completed` with the summary,
-    `failed` with the error. These `POST /jobs/…` routes are **app/service-facing HTTP, not
-    039 tools** — so the 18-tool surface is untouched.
-- **Decision.** **(c)** — the **simplest mechanism that works across the worker-thread
-  boundary**. The service owns the job record (in-memory hot map + a persisted
-  `/KnowledgeBase/.jobs/<id>.md` so Jobs survives a service restart). Transitions:
-  - `okf_ingest` called → service mints `{id: "run-<n>", status: "queued", bundle, source}`
-    and returns it in the `delegate` block (`jobId`).
-  - Sub-agent, on its first `okf_upsert_concept`/TOC/index write for the job → `POST
-    /jobs/<id> {status:"running"}` (the skill says to do this once, up front).
-  - Sub-agent success → `POST /jobs/<id> {status:"completed", summary:{chapters,
-    concepts, assets, refsSkipped, refsFailed, written:[titles]}}`.
-  - Sub-agent failure → `POST /jobs/<id> {status:"failed", error:"…"}`.
-  - **Safety net (covers a sub-agent that dies without calling back):** the calling
-    assistant, on `agent_delegate`'s return, checks the job's terminal state via `GET
-    /jobs/<id>` (one cheap loopback call the app's Jobs tab already does); if the
-    `agent_delegate` result is an error string and the job is still `queued`/`running`, the
-    assistant issues `POST /jobs/<id> {status:"failed", error}`. Because `okf_ingest`'s
-    `delegate.task` tells the sub-agent to make the lifecycle calls *and* the assistant
-    owns the return, completion/failure is detected even if one path lapses.
-- **Consequences.** No new tool, no new IPC channel. The `running` progress string
-  (mockup: "Interpreting inline asset … writing 3 of 6 chapters") is optional and
-  best-effort — the sub-agent *may* `POST /jobs/<id> {progress:"…"}` between chapters; the
-  UI shows a live bar when present and a static "running" state when not. Jobs are
-  single-user (NFR-008); the `.jobs/` dir is under the bundle root so it rides export if
-  wanted but is not part of the OKF *content* contract (it's operational state, like
-  `log.md`).
+  concepts assigned, assets interpreted, references skipped/failed) or an error, exposed to
+  both the app's Jobs tab **and the `okf_list_jobs` tool** (FR-048), **without** the caller
+  emitting the full source and **without** the run-observation plumbing adding tools beyond
+  `okf_list_jobs` (FR-044).
+- **Why the old boundary problem is gone.** In ADR-005 (c) the **worker** is the one that
+  called `POST /api/subagents/delegate` and reads its NDJSON response — so it observes the
+  run's real terminal outcome directly, on the same request. It no longer "can't see the
+  agent loop"; it *is* the client of the run. Finalization is therefore authoritative in
+  the worker, not dependent on the sub-agent remembering to call back.
+- **Options.** (a) Sub-agent → service `POST /jobs/<id>` callbacks with the *calling
+  assistant* as the safety net (the installed model) — fragile here: the caller is no
+  longer in the loop at all, and trusting the sub-agent to emit a correct terminal call
+  leaves a crashed/abandoned run stuck "running". (b) **The worker consumes the delegate
+  stream and owns terminal state** — the `{type:"done", result}` / `{type:"error"}` line is
+  the ground truth, and the worker calls `core.updateJob(jobId, terminal, …)` from it.
+  (c) A **worker-side stale reaper** as the last line of defense for a worker that is
+  itself killed mid-run (the run keeps going in BOS's process, but the worker lost the
+  handle).
+- **Decision.** **(b) + (c)**. Job transitions, all owned by the worker:
+  - `okf_ingest` called → `core.createJob({id:"run-<n>", status:"queued", bundle, source})`,
+    persisted under `bundleRoot/.jobs/`; the worker then fires the delegate request and
+    returns `{jobId, status:"queued"}` to the caller (FR-046).
+  - The worker marks `running` when the delegate request is accepted. It advances
+    `progress` **from the NDJSON `{type:"tool"}` lines it is already reading** (each
+    `okf_upsert_concept` = one chapter written) — free, no sub-agent cooperation needed.
+    The sub-agent *may additionally* `POST /jobs/<id> {progress:"…"}` for finer text, but
+    that is now **optional enrichment**, not the terminal-state path.
+  - Stream terminal `{type:"done"}` → the worker records `completed` with the summary. The
+    summary is taken from the run's `result` (the sub-agent's final text, which its skill
+    instructs to be a compact honest count: chapters/concepts/assets/refsSkipped/refsFailed
+    — the existing "report honestly" rule) and/or derived by the worker from the writes it
+    handled for the job. Stream terminal `{type:"error"}` → `failed` with the error.
+  - **Stale reaper (FR-049):** a worker timer, plus a sweep on (re)start, marks any job
+    still `queued`/`running` older than a configured `staleJobMs` (default e.g. 30 min) as
+    `failed (stale)`, so a killed worker or an abandoned run never leaves the Jobs tab /
+    `okf_list_jobs` showing a run that will never finish.
+- **Consequences.** The app's Jobs tab and `okf_list_jobs` read the same
+  `core.listJobs()` — one store, two surfaces (the ADR-003 "one capability, two surfaces"
+  pattern again). No new IPC channel; `POST /jobs/<id>` remains for optional progress. Jobs
+  are single-user (NFR-008); `.jobs/` is operational state under the bundle root (excluded
+  from `okf_export_bundle`, per §10 risk 2). The caller is entirely out of the loop — there
+  is no assistant safety net to maintain, because the launcher *is* the observer.
 
 ### ADR-007 — Bundle conventions live in the `okf-bundle-schema` skill, not a per-bundle `schema.md`
 
