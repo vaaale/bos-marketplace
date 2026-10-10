@@ -8,8 +8,8 @@ Replaces the pre-redesign `design.md`. That document's center of gravity was *in
 the index retrieval depends on. Decisions the new spec locks in are treated as fixed;
 the four old `bos-core` prerequisites are treated as **dependencies, not re-scoped here**
 (spec App Target). Where this design carries something forward from the old document
-(service-facet shape, VFS loopback bridge, 039 tool exposure, dispatcher-shaped
-`okf_ingest`), it is labeled **retained** — not re-litigated.
+(service-facet shape, VFS loopback bridge, 039 tool exposure), it is labeled **retained**
+— not re-litigated.
 
 ---
 
@@ -65,7 +65,7 @@ install.
 | **I. Spec-Driven** — feature defined by a spec before build; pipeline. | ✅ Spec is `item-okf-knowledge-base/spec.md` (this is the `design` step). No code is a source of truth. |
 | **II. Server Authority & SSR Boundary** — filesystem/Node live in server code; clients fetch. | ✅ All OKF storage and the derived index live in the worker (server-side, behind the loopback bridge). The app iframe and the assistant both reach it over HTTP; no OKF logic in the app bundle. |
 | **III. Always Delegate; Claude Codes** — development on a sub-agent. | ✅ This design is authored by the Architect; implementation is delegated to the Developer. The feature's *runtime* trigger (`okf-ingest`) reuses the existing headless `runSubAgent` surface (`POST /api/subagents/delegate`) over the worker's existing loopback channel — no new infra (ADR-005). |
-| **IV. Minimize Blast Radius** — feature branch; self-modification isolated. | ✅ Lands on the active `bos/okf-kb-redesign` branch; item work is branch-coupled in `data/user-apps` and promotes/discards with the branch. |
+| **IV. Minimize Blast Radius** — feature branch; self-modification isolated. | ✅ Lands on the active `bos/okf-auto-ingest` branch (this scope-add); item work is branch-coupled in `data/user-apps` and promotes/discards with the branch. |
 | **V. The VFS Is Not the Source** — user data under `data/`; versioned apps in their own GitFS repo. | ✅ Bundles live under the VFS at `/KnowledgeBase/` (user data, owned by the service). The item's code lives in the `user-apps` GitFS repo, reached through the item symlink — never in BOS source. |
 | **VI. Specs & Docs Stay in Sync** | ✅ The item ships its own `docs/usage/OKF Knowledge Base/` and `docs/dev/OKF Knowledge Base/` facets, updated in the same change. This `design.md` is the architecture artifact the later `plan`/`tasks` reference. |
 | **VII. Respect Boundaries** — confirm destructive ops; no new deps unasked. | ✅ `okf_delete_bundle`/`okf_delete_concept` are the only destructive ops and stay explicit-intent — the **app** gates them behind confirmation dialogs; the ingest agent is granted them only because end-to-end re-ingest reconciliation needs them (§8.4), and it never deletes a *bundle* the caller didn't ask it to. No new runtime dependency is introduced: the app reuses BOS's existing in-app SVG force simulation (no `d3`/`vis.js` added — ADR-009). |
@@ -256,13 +256,15 @@ data/user-apps/items/okf-knowledge-base/
 └── docs/                       # REQUIRED item facet (target-marketplace-item.md).
     ├── usage/OKF Knowledge Base/
     │   ├── index.md           # what it does, the three tabs, retrieval model in plain terms.
-    │   ├── ingest.md          # how to trigger ingest, what a run does, watching Jobs.
+    │   ├── ingest.md          # how to trigger ingest (tool or app modal → auto run),
+    │                          #   what a run does, watching Jobs / okf_list_jobs.
     │   └── troubleshooting.md # search misses (concept-anchored, not full-text), stale items,
-    │                          #   import/export, service not started (Settings → Plugins).
+                               #   stuck jobs (reaper), import/export, service not started.
+
     └── dev/OKF Knowledge Base/
         ├── architecture.md    # this design, condensed: containers, derived index, jobs.
         ├── data-model.md      # bundle layout, frontmatter schema, index/TOC format.
-        ├── tool-surface.md    # the 18 tools (mirror of §9).
+        ├── tool-surface.md    # the 19 tools (mirror of §8.2).
         └── extension.md       # adding a bundle convention, the okf-ingest skill as the seam.
 ```
 
@@ -694,7 +696,7 @@ chapters:
 ```
 
 `core.rebuildToc(bDir, docId)` derives it from that document's chapter frontmatter.
-`okf_read_toc` (§9) returns it (FR-004). It is exported/imported with the bundle (FR-010).
+`okf_read_toc` (§8.2) returns it (FR-004). It is exported/imported with the bundle (FR-010).
 
 ### 5.5 `links.json` — explicit edges
 
@@ -702,7 +704,7 @@ chapters:
 chapter's body (`- [Label](<target>.md)` under a `## Links` section — retained from the
 installed `addLink`, human-readable, OKF-portable) **and** as an entry in `links.json`
 (`{from, to, label?}`) for cheap graph derivation (ADR-004). The two are reconciled by
-`okf_lint` (drift between the markdown links and `links.json` is reported, §9 `okf_lint`).
+`okf_lint` (drift between the markdown links and `links.json` is reported, §8.2 `okf_lint`).
 `okf_backlinks` (FR-032) is answered from the link graph (`okf-core`'s existing
 `ensureGraph` backlink index, built from `extractLinks`) — unchanged in mechanism.
 
@@ -803,7 +805,7 @@ force-directed renderer (FR-042/FR-045):
 
 ## 7. Ingest pipeline (re-scoped, not re-derived — spec retains the prior architecture)
 
-### 7.1 `okf_ingest` — auto-trigger (supersedes the dispatcher shape)
+### 7.1 `okf_ingest` — auto-trigger (supersedes the old dispatcher shape)
 
 `okf_ingest({bundle, source, maxDepth?, maxWorkers?})` runs in the worker. It **acts, not
 plans**: it mints the job and immediately starts the headless run (ADR-005), then returns
@@ -1033,6 +1035,7 @@ reusing the *same* `core` functions as the tools.
 | `DELETE /bundles/<b>` | `core.deleteBundle` | `{deleted:true}` | Delete modal (confirmed) |
 | `GET /jobs` | job store | `[{id, status, bundleId, source, startedAt, durationMs?, progress?, summary?, error?}]` (FR-041) | **Jobs tab list** + tab badge count |
 | `GET /jobs/<id>` | job store | full job record incl. summary/error | Job detail (expand) |
+| `POST /jobs` | `okf_ingest` handler (shared) | `{jobId, status:"queued"}` | **Ingest modal** (app-side auto-trigger; FR-046/FR-047) — body `{bundle, source, maxDepth?, maxWorkers?}`, same shape as the tool. The app is an iframe (not an agent) and cannot call the `okf_*` tool directly, so it drives the **same worker-side trigger path** via this route: mint job → fire `POST /api/subagents/delegate` → return `jobId`. The Jobs tab then polls `GET /jobs` for the lifecycle.
 | `POST /jobs/<id>` | job store | updated record | **optional sub-agent progress enrichment** (`{progress:"…"}`, ADR-006) — terminal state is owned by the launcher from the run's own signal, not by this route |
 
 The **graph** and **jobs** response shapes are the *new* surfaces (the delegation's
@@ -1214,7 +1217,7 @@ artifacts are bundle-scoped, so they're removed with `okf_delete_bundle`.
    design doesn't depend on a specific provider.
 9. **Pre-existing installed item upgrading into this redesign.** The installed item has 31
    tools, a flat `okf_ingest`, `schema.md`-based conventions, and a config-app. Upgrading
-   means: the 31→18 tool change (tools removed on the next start — SC-009), the
+   means: the 31→19 tool change (tools removed on the next start — SC-009), the
    derived-index introduction (bundles created pre-redesign have no `concept-index.md` /
    `toc/`; the read-through rebuild generates them on first read — **self-healing, no
    migration required**, but confirm a pre-redesign bundle's chapters carry enough
