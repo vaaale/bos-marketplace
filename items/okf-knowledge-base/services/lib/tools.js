@@ -153,6 +153,7 @@ const DECLARATIONS = [
         bundle: STRING,
         files: { type: "array", items: required({ path: STRING, content: STRING }, ["path", "content"]) },
         sourcePath: { type: "string", description: "A VFS directory holding the bundle to import (alternative to `files`)." },
+        rebuild: { type: "boolean", description: "Set false to skip the post-import index rebuild" },
       },
       ["bundle"],
     ),
@@ -296,7 +297,7 @@ function makeHandlers(core) {
     // ── Bundles ──────────────────────────────────────────────────────────
     okf_list_bundles: (args, ctx) => core.listBundles(ctx.bundleRoot),
     okf_init_bundle: (args, ctx) => core.initBundle(ctx.bundleRoot, args.name, { title: args.title, description: args.description }),
-    okf_import_bundle: (args, ctx) => core.importBundle(ctx.bundleRoot, args.bundle, { files: args.files, sourcePath: args.sourcePath }),
+    okf_import_bundle: (args, ctx) => core.importBundle(ctx.bundleRoot, args.bundle, { files: args.files, sourcePath: args.sourcePath, rebuild: args.rebuild !== false }),
     okf_export_bundle: (args, ctx) => core.exportBundle(ctx.bundleRoot, args.bundle),
     okf_delete_bundle: (args, ctx) => core.deleteBundle(ctx.bundleRoot, args.bundle),
 

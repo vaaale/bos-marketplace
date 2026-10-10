@@ -1040,6 +1040,14 @@ async function writeLinksSidecar(bDir, edges) {
  * (document -> chapter, from `parent`), coverage (chapter -> concept term,
  * from the concept index) and explicit links (okf_add_link).
  *
+ * IDENTITY IS TYPE-SCOPED. A node's semantic `id` is NOT unique across the
+ * graph: a document `api-design` and the concept term `api-design` are two
+ * different nodes that share one id. Every node therefore also carries a
+ * `key` of `<type>:<id>` (`doc:api-design`, `concept:api-design`,
+ * `chap:api-design/endpoint-naming`), and edges reference endpoints BY KEY.
+ * Keying a renderer by `id` collapsed the pair into one node and silently
+ * dropped the other's edges.
+ *
  * Nothing here is stored. Deriving on read is what keeps the graph from
  * becoming the second thing you have to keep in sync (the problem NFR-004
  * exists to kill) — it walks the same frontmatter the index already read.
@@ -1050,25 +1058,37 @@ async function graph(bundleRoot, bundleName) {
   const nodes = [];
   const edges = [];
   const present = new Set();
+  // links.json names concept FILES (a document or a chapter), never a concept
+  // TERM, so a sidecar endpoint resolves against the file-backed nodes only.
+  const fileKey = new Map();
+
+  /** Register a node under its type-scoped `key` and return that key. */
+  const add = (node) => {
+    const key = `${node.type}:${node.id}`;
+    nodes.push({ key, ...node });
+    present.add(key);
+    return key;
+  };
 
   for (const doc of model.classified.documents.values()) {
-    nodes.push({ id: doc.id, type: "doc", label: doc.title, description: doc.summary || "" });
-    present.add(doc.id);
+    fileKey.set(doc.id, add({ id: doc.id, type: "doc", label: doc.title, description: doc.summary || "" }));
   }
   for (const ch of model.classified.chapters) {
-    nodes.push({ id: ch.id, type: "chap", label: ch.title, description: ch.summary || "", docId: ch.docId, chId: ch.chId, status: ch.status });
-    present.add(ch.id);
-    edges.push({ from: ch.docId, to: ch.id, kind: "containment", label: "contains" });
+    const key = add({ id: ch.id, type: "chap", label: ch.title, description: ch.summary || "", docId: ch.docId, chId: ch.chId, status: ch.status });
+    if (!fileKey.has(ch.id)) fileKey.set(ch.id, key);
+    edges.push({ from: `doc:${ch.docId}`, to: key, kind: "containment", label: "contains" });
   }
   for (const term of model.terms) {
-    nodes.push({ id: term.name, type: "concept", label: term.name, count: term.count, description: `covers ${term.count} chapter${term.count === 1 ? "" : "s"}` });
-    present.add(term.name);
+    const key = add({ id: term.name, type: "concept", label: term.name, count: term.count, description: `covers ${term.count} chapter${term.count === 1 ? "" : "s"}` });
     for (const cov of term.covers) {
-      edges.push({ from: `${cov.docId}/${cov.chId}`, to: term.name, kind: "coverage", label: "covers" });
+      edges.push({ from: `chap:${cov.docId}/${cov.chId}`, to: key, kind: "coverage", label: "covers" });
     }
   }
   for (const e of await readLinksSidecar(bDir)) {
-    edges.push({ from: e.from, to: e.to, kind: "link", label: e.label || "related" });
+    const from = fileKey.get(e.from);
+    const to = fileKey.get(e.to);
+    if (!from || !to) continue; // the sidecar outlived one of its endpoints
+    edges.push({ from, to, kind: "link", label: e.label || "related" });
   }
 
   return {
@@ -1110,8 +1130,8 @@ async function initBundle(bundleRoot, name, opts = {}) {
 }
 
 /** Per-bundle health (FR-027): the Overview stat cards + the list row. */
-async function bundleHealth(bundleRoot, name) {
-  const model = await getModel(bundleRoot, name);
+async function bundleHealth(bundleRoot, name, { allowRebuild = true } = {}) {
+  const model = await getModel(bundleRoot, name, { allowRebuild });
   const chapters = model.classified.chapters;
   const stale = chapters.filter((c) => c.stale).length;
   const deprecated = chapters.filter((c) => c.status === "deprecated").length;
@@ -1216,7 +1236,7 @@ async function exportBundle(bundleRoot, name) {
  * bundle). Non-destructive and reported — never a silent overwrite, never a
  * silent partial index.
  */
-async function importBundle(bundleRoot, name, { files, sourcePath } = {}) {
+async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = true } = {}) {
   const bDir = bundleDir(bundleRoot, name);
   await vfs.mkdir(bDir);
   let imported = 0;
@@ -1254,9 +1274,9 @@ async function importBundle(bundleRoot, name, { files, sourcePath } = {}) {
   await vfs.mkdir(path.join(bDir, "raw"));
   await vfs.mkdir(path.join(bDir, "concepts"));
   markGraphDirty(bDir);
-  const model = await rebuildDerived(bundleRoot, name);
+  const model = rebuild ? await rebuildDerived(bundleRoot, name) : { terms: [], needsRegeneration: true, builtAt: null };
   await appendLog(bundleRoot, name, { event: "bundle_import", message: `imported ${imported} file(s)` });
-  const health = await bundleHealth(bundleRoot, name);
+  const health = await bundleHealth(bundleRoot, name, { allowRebuild: rebuild });
   return {
     ...health,
     imported,

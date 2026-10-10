@@ -14,8 +14,10 @@ import type { GraphNode } from "../lib/types";
 
 interface Props {
   nodes: GraphNode[];
+  /** Node `key`s, not semantic ids. */
   matches: Set<string> | null;
   query: string;
+  /** The selected node's `key`. */
   selectedId: string | null;
   onSelect: (node: GraphNode) => void;
 }
@@ -24,7 +26,7 @@ const TYPE_LABEL: Record<string, string> = { doc: "Document", chap: "Chapter", c
 const TYPE_DOT: Record<string, string> = { doc: "dot-doc", chap: "dot-chap", concept: "dot-concept" };
 
 export default function TableView({ nodes, matches, query, selectedId, onSelect }: Props) {
-  const rows = matches ? nodes.filter((n) => matches.has(n.id)) : nodes;
+  const rows = matches ? nodes.filter((n) => matches.has(n.key)) : nodes;
 
   return (
     <div data-testid="table-view">
@@ -54,11 +56,11 @@ export default function TableView({ nodes, matches, query, selectedId, onSelect 
           <tbody>
             {rows.map((n) => (
               <tr
-                key={n.id}
+                key={n.key}
                 className="clickable"
                 onClick={() => onSelect(n)}
-                data-testid={`table-row-${n.id}`}
-                style={selectedId === n.id ? { outline: "1px solid var(--accent)" } : undefined}
+                data-testid={`table-row-${n.key}`}
+                style={selectedId === n.key ? { outline: "1px solid var(--accent)" } : undefined}
               >
                 <td>
                   <span className={`dot ${TYPE_DOT[n.type]}`} />

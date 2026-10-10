@@ -215,7 +215,14 @@ async function seedRules(): Promise<void> {
 
 async function openApp(page: Page): Promise<FrameLocator> {
   await page.goto(BASE);
-  await page.getByText("OKF Knowledge Base", { exact: true }).first().click();
+  // Launch from the DOCK, by testid — not by the app's NAME. The name appears
+  // twice on the shell: once as the desktop icon's label and once as the dock
+  // button's tooltip. `.first()` therefore hit the desktop icon, which needs a
+  // double-click to launch, so a single click was a no-op and every assertion
+  // below it timed out waiting for a window that was never opened. The dock
+  // button launches on one click AND re-focuses an already-open window, which
+  // is what a serial suite re-entering the app actually needs.
+  await page.getByTestId(`dock-${SERVICE_ID}`).click();
   const frame = page.frameLocator(`iframe[src*="${SERVICE_ID}"]`);
   await expect(frame.getByTestId("okf-app")).toBeVisible({ timeout: 30000 });
   return frame;
@@ -316,7 +323,7 @@ test("FR-009/NFR-004/SC-010: a corrupted index is detected as drift and REBUILT 
     path: "concept-index.md",
     content: "---\ntype: concept-index\nbundle: e2e\nterms: []\nindex_generated_at: 2000-01-01T00:00:00.000Z\n---\n\n# corrupted\n",
   };
-  expect((await api.post(`bundles/${B.main}/import`, { data: { files: [corrupt] } })).ok()).toBeTruthy();
+  expect((await api.post(`bundles/${B.main}/import`, { data: { files: [corrupt], rebuild: false } })).ok()).toBeTruthy();
 
   const lint = await (await api.get(`bundles/${B.main}/lint`)).json();
   expect(lint.checks.conceptIndexDrift).toBeGreaterThan(0);
@@ -632,25 +639,39 @@ test("FR-045: the knowledge graph is derived on read — 3 node types, 3 typed d
   expect(kinds.has("containment")).toBe(true);
   expect(kinds.has("coverage")).toBe(true);
 
-  // containment runs document -> chapter, from `parent`
-  const contains = g.edges.find((e: { kind: string; to: string }) => e.kind === "containment" && e.to === "deployment/canary");
-  expect(contains.from).toBe("deployment");
+  // Identity is TYPE-SCOPED: `api-design` is BOTH a document and a concept
+  // term in this fixture, and the two are distinct nodes with distinct keys.
+  const doc = g.nodes.find((n: { id: string; type: string }) => n.id === "api-design" && n.type === "doc");
+  const term = g.nodes.find((n: { id: string; type: string }) => n.id === "api-design" && n.type === "concept");
+  expect(doc.key).toBe("doc:api-design");
+  expect(term.key).toBe("concept:api-design");
+  // concept-term nodes carry their coverage count (it drives the node radius)
+  expect(term.count).toBe(2);
+  // every key is unique even though the ids are not
+  const keys = g.nodes.map((n: { key: string }) => n.key);
+  expect(new Set(keys).size).toBe(keys.length);
+
+  // containment runs document -> chapter, from `parent`, BY KEY
+  const contains = g.edges.find((e: { kind: string; to: string }) => e.kind === "containment" && e.to === "chap:deployment/canary");
+  expect(contains.from).toBe("doc:deployment");
   expect(contains.label).toBe("contains");
 
+  // the document `api-design` contains its chapters — and the concept term
+  // that shares its id contains nothing
+  const docContains = g.edges.filter((e: { kind: string; from: string }) => e.kind === "containment" && e.from === "doc:api-design");
+  expect(docContains.length).toBeGreaterThan(0);
+  expect(g.edges.some((e: { from: string }) => e.from === "concept:api-design")).toBe(false);
+
   // coverage runs chapter -> concept term, from the index
-  const covers = g.edges.find((e: { kind: string; from: string; to: string }) => e.kind === "coverage" && e.from === "deployment/canary" && e.to === "rollback");
+  const covers = g.edges.find((e: { kind: string; from: string; to: string }) => e.kind === "coverage" && e.from === "chap:deployment/canary" && e.to === "concept:rollback");
   expect(covers.label).toBe("covers");
 
   // every edge is directed and labelled, and never dangles
-  const ids = new Set(g.nodes.map((n: { id: string }) => n.id));
+  const nodeKeys = new Set(keys);
   for (const e of g.edges) {
     expect(e.from && e.to && e.label).toBeTruthy();
-    expect(ids.has(e.from) && ids.has(e.to)).toBe(true);
+    expect(nodeKeys.has(e.from) && nodeKeys.has(e.to)).toBe(true);
   }
-
-  // concept-term nodes carry their coverage count (it drives the node radius)
-  const term = g.nodes.find((n: { id: string }) => n.id === "api-design");
-  expect(term.count).toBe(2);
 });
 
 // ════════════════════════════════════════════════════════════════════════
@@ -708,6 +729,10 @@ test("the trigger returns before the run does — the caller's turn is not held 
 });
 
 test("FR-044/SC-011: the LAUNCHER writes the terminal state — completed with a summary, or failed with an error", async () => {
+  // A real headless ingest run is fetch + decompose + inline assets + index.
+  // Five minutes is the budget; the test's own clock has to outlast the poll,
+  // or the suite timeout fires first and reports nothing useful about WHY.
+  test.setTimeout(360_000);
   // NOTE: this performs a REAL headless agent run against whatever provider
   // the preview is configured with. The source is deliberately tiny. The
   // assertion is about the CONTRACT, not about the agent's judgement: either
@@ -733,7 +758,7 @@ test("FR-044/SC-011: the LAUNCHER writes the terminal state — completed with a
       },
       {
         message: `run ${id} never reached a terminal state — the launcher is not writing one`,
-        timeout: 240_000,
+        timeout: 300_000,
         intervals: [2000],
       },
     )
@@ -1090,9 +1115,11 @@ test("FR-043/US9 AS2: the shared search reflects in BOTH views — Table filters
   await app.getByTestId("view-table").click();
   await expect(app.getByTestId("table-view")).toBeVisible();
   await expect(app.getByTestId("table-count")).toContainText("rollback");
+  // A row's testid is the node KEY (`<type>:<id>`): `api-design` is both a
+  // document and a concept term here, so an id alone names two rows.
   const tableRows = await app.locator('[data-testid^="table-row-"]').count();
   expect(tableRows).toBe(matched);
-  await expect(app.getByTestId("table-row-deployment/canary")).toBeVisible();
+  await expect(app.getByTestId("table-row-chap:deployment/canary")).toBeVisible();
 
   // clearing restores both views
   await app.getByTestId("query-clear").click();
@@ -1107,7 +1134,7 @@ test("US9 AS3/SC-012: selecting a node opens the full chapter in the resizable p
 
   // from the Table (a stable click target), open a chapter
   await app.getByTestId("view-table").click();
-  await app.getByTestId("table-row-deployment/canary").click();
+  await app.getByTestId("table-row-chap:deployment/canary").click();
 
   // the FULL chapter renders in the pane, inline asset and all
   await expect(app.getByTestId("pane-chapter")).toBeVisible();
@@ -1122,7 +1149,7 @@ test("US9 AS3/SC-012: selecting a node opens the full chapter in the resizable p
   await expect(link).toHaveAttribute("href", /^raw\/deployment\.md$|^https?:\/\//);
 
   // a document ingested from a URL shows that URL
-  await app.getByTestId("table-row-api-design").click();
+  await app.getByTestId("table-row-doc:api-design").click();
   await expect(app.getByTestId("pane-doc")).toBeVisible();
   await expect(app.getByTestId("open-source-link")).toHaveAttribute(
     "href",
@@ -1162,13 +1189,13 @@ test("US9 AS1: selecting a concept-term node opens its covering chapters in the 
   await expect(app.getByTestId("graph-svg")).toBeVisible({ timeout: 15000 });
 
   await app.getByTestId("view-table").click();
-  await app.getByTestId("table-row-api-design").click(); // the DOCUMENT row opens its TOC
+  await app.getByTestId("table-row-doc:api-design").click(); // the DOCUMENT row opens its TOC
   await expect(app.getByTestId("pane-doc")).toBeVisible();
 
   // the concept-term node routes to the chapters it covers
   await app.getByTestId("query-search").fill("naming");
   await expect(app.getByTestId("matched-concepts")).toBeVisible({ timeout: 10000 });
-  await app.getByTestId("table-row-naming").click();
+  await app.getByTestId("table-row-concept:naming").click();
   await expect(app.getByTestId("pane-concept")).toBeVisible();
   await expect(app.getByTestId("pane-term")).toHaveText("naming");
   await expect(app.getByTestId("pane-cover-api-design-endpoint-naming")).toBeVisible();
