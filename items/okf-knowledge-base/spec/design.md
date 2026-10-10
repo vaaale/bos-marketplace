@@ -365,26 +365,43 @@ hand-written into `data/user-apps` — the Developer stages the facets and
   `neighbors` tool surface is needed — the app's hover-to-trace-neighbors is computed
   client-side from the returned edge list.
 
-### ADR-005 — `okf_ingest` stays a dispatcher; the sub-agent does the semantic work (retained, re-anchored)
+### ADR-005 — `okf_ingest` auto-triggers a headless `okf-ingest` run (supersedes the dispatcher-returns-instructions model)
 
-- **Context.** Semantic decomposition (split into chapters, assign concepts, write
-  summaries, interpret assets) is a multi-step *reasoning* task. The service is a worker
-  thread outside Next.js — it cannot run an LLM turn or call `agent_delegate` itself.
-- **Options.** (a) The worker performs the decomposition (impossible — no agent loop). (b)
-  A new async `runId` + status-poll tool pair. (c) **`okf_ingest` validates + returns the
-  exact next calls** (acquisition steps pinning `output_path`, then a `delegate` block); the
-  *in-process* calling assistant issues `agent_delegate` against the bundled `okf-ingest`
-  agent.
-- **Decision.** **(c)** — **retained from the installed item** (`tools.js`' `okf_ingest`,
-  `plannedAcquisition`), re-anchored to the new decomposition semantics (chapters + index,
-  not loose "concepts") and extended to mint a **job record** for observability (ADR-006).
-  `agent_delegate` → `runInnerLoop` (`src/lib/assistant/tools/server/delegate-local.ts`)
-  is the existing mechanism; no new run-tracking infra is invented.
-- **Consequences.** The document never re-enters the orchestrating agent as output tokens
-  (every acquisition step pins `output_path` — the whole point). The calling assistant's
-  own turn is occupied for the duration of the delegated ingest (synchronous from its
-  perspective) — acceptable for v1. Reference crawl is bounded by `maxDepth`/`maxWorkers`
-  (FR-019, already in the config schema); fan-out uses the parallel-safe `agent_delegate`.
+- **Context.** Calling `okf_ingest` should start ingestion *automatically* and free the
+  caller immediately (spec FR-046). The service is a worker thread outside Next.js — it
+  cannot run an LLM turn or call `agent_delegate` *directly*, but it **can reach BOS's HTTP
+  surface over loopback** (it already does for the VFS, via `vfs-bridge` → `/api/fs`). The
+  question is which existing mechanism starts a **named** agent headlessly, with no live
+  conversation occupying the caller's turn.
+- **Options.** (a) The worker performs the decomposition — impossible (no agent loop).
+  (b) `okf_ingest` returns instructions (`acquisition_required`/`delegation_required` + a
+  `delegate` block) and the *calling assistant* runs the acquisition steps and issues
+  `agent_delegate` — the installed behavior; it burdens the caller, holds its turn for the
+  whole run, and is exactly the "you're told to call the ingestion agent" friction being
+  removed. (c) **The worker itself starts the run**: it mints the job, fires
+  `POST /api/subagents/delegate` (loopback) with `{task, agent:"okf-ingest"}`, and returns
+  `{jobId, status:"queued"}` at once. That route runs the same `runSubAgent`
+  (`src/lib/agent/subagents/runner.ts`) the scheduler, workflows, Telegram, and self-heal
+  use to start named agents with no conversation; it **streams NDJSON** and ends with a
+  terminal `{type:"done", result}` / `{type:"error"}` line. The worker consumes that stream
+  asynchronously and owns the job's terminal state (ADR-006).
+- **Decision.** **(c)**. No new infra: the worker uses the same loopback channel it already
+  uses for the VFS, and `POST /api/subagents/delegate` is the platform's existing
+  headless-named-agent entry point (its route comment explicitly anticipates "a consuming
+  service"). `okf-ingest` is a `local` agent, so the delegate route's feature-branch gate
+  (which applies only to `claude` agents) does not apply. The run performs the **whole job
+  end-to-end** (FR-047): acquisition (`web_fetch`/`file_to_markdown`, each pinning
+  `output_path` so the source streams to disk, never re-emitted as the caller's tokens),
+  `okf_add_raw_source`, chapter decomposition, concept/summary assignment, inline-asset
+  interpretation, TOC + concept-index maintenance, and the bounded reference crawl
+  (nested references each as their own `okf_ingest` → their own jobs).
+- **Consequences.** The caller is freed at `okf_ingest`'s return — no follow-up steps, no
+  held turn, and no assistant-side "safety net" to maintain (the worker is the launcher and
+  owns the outcome). The document never re-enters the caller as output tokens. Reference
+  crawl stays bounded by `maxDepth`/`maxWorkers` (FR-019). **Supersedes** the installed
+  `tools.js` dispatcher (`plannedAcquisition` / `delegation_required`) and the old
+  `agent_delegate`-via-assistant path; that step sequence is retained only as what the
+  headless run now performs *itself*.
 
 ### ADR-006 — Run observability: a service-owned job record + sub-agent HTTP lifecycle callbacks
 
