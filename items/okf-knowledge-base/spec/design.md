@@ -792,26 +792,31 @@ force-directed renderer (FR-042/FR-045):
 
 ## 7. Ingest pipeline (re-scoped, not re-derived — spec retains the prior architecture)
 
-### 7.1 `okf_ingest` — the dispatcher (retained shape, re-anchored)
+### 7.1 `okf_ingest` — auto-trigger (supersedes the dispatcher shape)
 
-`okf_ingest({bundle, source, maxDepth?, maxWorkers?})` runs in the worker (no
-`web_fetch`/`file_to_markdown` here). It **plans, not acts**, and returns one of two
-shapes (retained from `tools.js`), **plus a minted `jobId`** (ADR-006):
+`okf_ingest({bundle, source, maxDepth?, maxWorkers?})` runs in the worker. It **acts, not
+plans**: it mints the job and immediately starts the headless run (ADR-005), then returns
+**`{jobId, status:"queued"}`** to the caller — the same shape for every `source` type
+(FR-046). The caller does not run acquisition steps and does not delegate anything; it is
+free to proceed. Dedup first: if `source`'s normalized key is already in
+`raw/sources.json`, the tool returns the existing `docId` (FR-018) rather than starting a
+duplicate run.
 
-| `source` | Returns | Meaning |
-|---|---|---|
-| `https://…/x` (URL) | `acquisition_required` + `steps` + `jobId` | `web_fetch(url, output_path)` → `okf_add_raw_source(sourcePath)` → `okf_ingest(raw/…)` |
-| `/path/to/x.pdf` (convertible) | `acquisition_required` + `steps` + `jobId` | `file_to_markdown(path, output_path)` → same tail |
-| `/path/to/x.md` (plain text) | `acquisition_required` + `steps` + `jobId` | `okf_add_raw_source(sourcePath)` → same tail (no conversion) |
-| `raw/x.md` (already in bundle) | `delegation_required` + `delegate{agent,task}` + `jobId` | straight to `agent_delegate({agent:"okf-ingest", task})` |
+What the headless run does with each `source` type is fixed (this is what the *run*
+performs, not what the caller performs):
 
-The `steps` pin `output_path` (the whole mechanism — the document streams to disk and the
-tool returns a receipt, never output tokens). The `delegation.task` embeds the **`jobId`**
-and instructs the sub-agent to read the raw source itself, decompose into chapters, assign
-concepts + summaries, interpret inline assets, write the TOC + index, and make the job
-lifecycle calls (ADR-006). Dedup check: if `source`'s normalized key is already in
-`raw/sources.json`, the dispatcher reports the existing `docId` (FR-018) rather than
-creating a duplicate.
+| `source` | The run's first steps |
+|---|---|
+| `https://…/x` (URL) | `web_fetch(url, output_path)` → `okf_add_raw_source(sourcePath)` → decompose |
+| `/path/to/x.pdf` (convertible) | `file_to_markdown(path, output_path)` → `okf_add_raw_source(sourcePath)` → decompose |
+| `/path/to/x.md` (plain text) | `okf_add_raw_source(sourcePath)` → decompose (no conversion) |
+| `raw/x.md` (already in bundle) | decompose directly (source already registered) |
+
+Every acquisition step pins `output_path` — the source streams to disk and the run reads a
+receipt, so the document never re-enters the caller (or the run) as output tokens (FR-047).
+After acquisition, the run does the FR-012–FR-015 decomposition, FR-020–FR-023
+inline-asset interpretation, and the FR-019 bounded reference crawl (nested references
+each as their own `okf_ingest` → their own jobs).
 
 ### 7.2 `okf_add_raw_source` — mechanical registration (retained)
 
@@ -820,41 +825,43 @@ creating a duplicate.
 staged by `web_fetch`/`file_to_markdown` — so large content never passes inline, FR-017),
 records the provenance ledger entry, optionally stubs a concept. No LLM, no delegation.
 
-### 7.3 Run observability flow (ADR-006, concrete)
+### 7.3 Run observability flow (ADR-005/ADR-006, concrete)
 
 ```
-Assistant ─okf_ingest({bundle, source})─▶ Worker:
-            • (if not raw/) returns acquisition steps + mints job {id, queued, bundle, source}
-            • (if raw/)     returns delegate{agent:"okf-ingest", task:<embeds jobId>} + job {queued}
-            • job persisted to /KnowledgeBase/.jobs/<id>.md; in-memory map updated
+Caller (agent or app Ingest modal) ─okf_ingest({bundle, source})─▶ Worker:
+            • dedup vs raw/sources.json (if duplicate → return existing docId, no run)
+            • core.createJob({id:"run-<n>", status:"queued", bundle, source}); persist
+            • fire POST /api/subagents/delegate {agent:"okf-ingest", task}  (loopback, async)
+            • return {jobId, status:"queued"} to the caller   ← caller is free now
 
-Assistant ─agent_delegate("okf-ingest", task)─▶ runInnerLoop (main process):
-            Sub-agent (narrow allowlist, §8):
-              • POST /jobs/<id> {status:"running"}                      (once, up front)
+Worker ─(same HTTP request, NDJSON stream)─▶ runSubAgent("okf-ingest", task) [main process]:
+            Sub-agent (self-sufficient allowlist, §8.4); task embeds jobId/bundle/source:
+              • (run's first steps per §7.1) acquire → okf_add_raw_source
               • reads raw/<file> directly (file_read) — never re-supplied
               • decomposes into chapters; per chapter:
                    okf_upsert_concept(parent, concepts, summary, status, sources)
               • inline non-HTML assets (§7.5): download → view_image/video_keyframes →
                    write link + interpretation block
-              • writes toc/<docId>.md + rebuilds concept-index.md (okf_upsert_concept
-                   triggers the derived rebuild; the sub-agent also calls a final
-                   index/toc maintenance step per the skill)
-              • bounded reference crawl (maxDepth/maxWorkers), dedup vs raw/sources.json
-              • POST /jobs/<id> {status:"completed",
-                   summary:{chapters, concepts, assets, refsSkipped, refsFailed, written:[titles]}}
-                  — OR {status:"failed", error} on a fatal problem
+              • writes toc/<docId>.md + concept-index.md (write path rebuilds; the sub-agent
+                   also runs the skill's final index/toc maintenance step)
+              • bounded reference crawl (maxDepth/maxWorkers), dedup vs raw/sources.json;
+                   each nested reference = its own okf_ingest → its own job
+              • ends with a compact, honest summary (report-honestly rule)
 
-Assistant ◀── agent_delegate returns the sub-agent's compact summary ──▶
-            • safety net: GET /jobs/<id>; if agent_delegate returned an error string and
-              the job is not terminal, POST /jobs/<id> {status:"failed", error}
+Worker ◀── NDJSON {type:"tool"} lines → advance progress (chapters written so far) ──▶
+Worker ◀── terminal {type:"done", result} → core.updateJob(completed, summary)
+            OR {type:"error"} → core.updateJob(failed, error)
+[stale reaper: any job queued/running > staleJobMs → failed(stale), incl. after restart]
 
-App Jobs tab ◀── GET /jobs  /  GET /jobs/<id>  (polling; ADR-003) ──▶
-            • renders queued → running (live progress if present) → completed/failed
+App Jobs tab  ──▶ GET /jobs / GET /jobs/<id>   (poll; ADR-003)
+okf_list_jobs   ──▶ core.listJobs()            (same store; FR-048)
+            • both render queued → running (live progress) → completed/failed
 ```
 
-The service **cannot** see the agent loop (worker boundary) — it gets told, over its own
-loopback HTTP, by the sub-agent it delegated to. This is the simplest mechanism that works
-across that boundary and adds no tool (ADR-006).
+The **launcher owns finalization**: because the worker issued the delegate request, it reads
+the run's own terminal signal and writes the job's final state — no assistant safety net,
+no dependence on the sub-agent remembering to call back (ADR-006). The stale reaper covers
+a worker killed mid-run.
 
 ### 7.4 Chapter decomposition & index maintenance (sub-agent + skill)
 
