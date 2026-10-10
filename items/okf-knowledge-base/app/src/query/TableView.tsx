@@ -14,10 +14,8 @@ import type { GraphNode } from "../lib/types";
 
 interface Props {
   nodes: GraphNode[];
-  /** Node `key`s, not semantic ids. */
   matches: Set<string> | null;
   query: string;
-  /** The selected node's `key`. */
   selectedId: string | null;
   onSelect: (node: GraphNode) => void;
 }
@@ -26,7 +24,7 @@ const TYPE_LABEL: Record<string, string> = { doc: "Document", chap: "Chapter", c
 const TYPE_DOT: Record<string, string> = { doc: "dot-doc", chap: "dot-chap", concept: "dot-concept" };
 
 export default function TableView({ nodes, matches, query, selectedId, onSelect }: Props) {
-  const rows = matches ? nodes.filter((n) => matches.has(n.key)) : nodes;
+  const rows = matches ? nodes.filter((n) => matches.has(n.id)) : nodes;
 
   return (
     <div data-testid="table-view">
@@ -56,11 +54,17 @@ export default function TableView({ nodes, matches, query, selectedId, onSelect 
           <tbody>
             {rows.map((n) => (
               <tr
-                key={n.key}
+                // A graph node id is unique only WITHIN its type: the service
+                // emits a doc node and a concept node that both have id
+                // "api-design" when a document's id is also a concept term.
+                // Keyed on `n.id` alone that was a duplicate React key AND two
+                // rows sharing one data-testid (a Playwright strict-mode
+                // violation). Type-qualify both.
+                key={`${n.type}-${n.id}`}
                 className="clickable"
                 onClick={() => onSelect(n)}
-                data-testid={`table-row-${n.key}`}
-                style={selectedId === n.key ? { outline: "1px solid var(--accent)" } : undefined}
+                data-testid={`table-row-${n.type}-${n.id}`}
+                style={selectedId === n.id ? { outline: "1px solid var(--accent)" } : undefined}
               >
                 <td>
                   <span className={`dot ${TYPE_DOT[n.type]}`} />

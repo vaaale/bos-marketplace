@@ -107,10 +107,6 @@ export type GraphNodeType = "doc" | "chap" | "concept";
 export type GraphEdgeKind = "containment" | "coverage" | "link";
 
 export interface GraphNode {
-  /** Unique across the graph: `<type>:<id>`. The semantic `id` below is NOT
-   *  unique — a document and a concept term can share one (FR-045). Key every
-   *  lookup, DOM id and React key off `key`, never off `id`. */
-  key: string;
   id: string;
   type: GraphNodeType;
   label: string;
@@ -122,7 +118,6 @@ export interface GraphNode {
 }
 
 export interface GraphEdge {
-  /** Endpoint node `key`s, not semantic ids. */
   from: string;
   to: string;
   kind: GraphEdgeKind;

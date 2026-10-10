@@ -26,5 +26,23 @@ export default defineConfig({
   },
   // No `webServer`: BOS and the item's service are already running — this suite
   // tests an INSTALLED item on a live deployment, it does not stand one up.
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"], channel: "chrome" } }],
+  projects: [
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        channel: "chrome",
+        // NOT Desktop Chrome's default 1280x720. BOS's dock floats above every
+        // window (z-[100000], src/components/desktop/Dock.tsx), and at 720p a
+        // launched app window runs to y=731 while the dock occupies y=642..708
+        // — an 89px strip of the app that is covered by the dock. Playwright
+        // hit-tests occlusion WITHIN the frame's own document, so a click on an
+        // app element in that strip passes its actionability check and is then
+        // delivered to the dock button on top: the app never sees it and the
+        // test fails on a silent no-op. 900px of height lifts the app's content
+        // clear of the dock.
+        viewport: { width: 1440, height: 900 },
+      },
+    },
+  ],
 });

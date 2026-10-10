@@ -74,8 +74,7 @@ No LLM is in the match. The model does *routing* (which query to issue) and *syn
 `core.graph()` computes `{nodes, edges}` **on read** — there is no stored graph.
 
 - Nodes: `doc` (one per document stub), `chap` (one per chapter), `concept` (one per index term, with a `count` that drives node radius).
-- **Identity is type-scoped.** A node's semantic `id` is not unique — a document `api-design` and the concept term `api-design` are different nodes sharing one id. Every node therefore also carries `key = "<type>:<id>"` (`doc:api-design`, `concept:api-design`, `chap:api-design/endpoint-naming`), and that is what the renderer keys its node map, DOM `data-id`/`data-testid`, React keys, match set and selection off. Keying off `id` collapsed such a pair into one node and dropped the other's edges.
-- Edges, typed and directed: `containment` (doc→chap, from each chapter's `parent`), `coverage` (chap→concept, from the concept index), `link` (from `links.json`, written by `okf_add_link` alongside the markdown link in the body). `from`/`to` are node **keys**. A `links.json` entry names a concept FILE, so it resolves against the `doc`/`chap` nodes only, never a concept term.
+- Edges, typed and directed: `containment` (doc→chap, from each chapter's `parent`), `coverage` (chap→concept, from the concept index), `link` (from `links.json`, written by `okf_add_link` alongside the markdown link in the body).
 
 Storing the graph would reintroduce the second-thing-to-sync problem the derived layer exists to kill. Derivation walks the same frontmatter search already reads, so it is cheap and always consistent. The app's hover-to-trace-neighbours is computed client-side from the returned edge list; there are no `neighbors` / `shortest_path` tools.
 

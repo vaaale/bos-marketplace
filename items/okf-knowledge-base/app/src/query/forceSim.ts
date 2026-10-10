@@ -42,8 +42,6 @@ export interface SimEdge extends GraphEdge {
 
 export interface Sim {
   nodes: SimNode[];
-  /** Keyed by the node's type-scoped `key`, never by its semantic `id` —
-   *  a document and a concept term can share an id. */
   byId: Record<string, SimNode>;
   edges: SimEdge[];
   nbr: Map<string, Set<string>>;
@@ -95,12 +93,12 @@ export function buildSim(nodes: GraphNode[], edges: GraphEdge[], width: number, 
   });
 
   const byId: Record<string, SimNode> = {};
-  for (const n of simNodes) byId[n.key] = n;
+  for (const n of simNodes) byId[n.id] = n;
 
   const simEdges: SimEdge[] = edges.filter((e) => byId[e.from] && byId[e.to]).map((e) => ({ ...e }));
 
   const nbr = new Map<string, Set<string>>();
-  for (const n of simNodes) nbr.set(n.key, new Set([n.key]));
+  for (const n of simNodes) nbr.set(n.id, new Set([n.id]));
   for (const e of simEdges) {
     nbr.get(e.from)!.add(e.to);
     nbr.get(e.to)!.add(e.from);
@@ -198,9 +196,9 @@ export function capGraph(
   const docs = nodes.filter((n) => n.type === "doc");
   const rest = nodes
     .filter((n) => n.type !== "doc")
-    .sort((a, b) => (degree.get(b.key) || 0) - (degree.get(a.key) || 0) || a.key.localeCompare(b.key));
+    .sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0) || a.id.localeCompare(b.id));
   const kept = [...docs, ...rest.slice(0, Math.max(0, cap - docs.length))];
-  const keptIds = new Set(kept.map((n) => n.key));
+  const keptIds = new Set(kept.map((n) => n.id));
   return {
     nodes: kept,
     edges: edges.filter((e) => keptIds.has(e.from) && keptIds.has(e.to)),

@@ -31,9 +31,8 @@ export interface GraphSelection {
 
 interface Props {
   graph: BundleGraph;
-  /** Node `key`s the shared search matched. null = no active query. */
+  /** Node ids the shared search matched. null = no active query. */
   matches: Set<string> | null;
-  /** The selected node's `key` (`<type>:<id>`), not its semantic id. */
   selectedId: string | null;
   onSelect: (node: GraphNode) => void;
   /** Bumped by the parent when the reader-pane divider is dragged. */
@@ -101,7 +100,7 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
     if (!sim) return;
     for (const n of sim.nodes) {
       if (!n.el) continue;
-      const hit = !matches || matches.has(n.key);
+      const hit = !matches || matches.has(n.id);
       n.el.classList.toggle("match", !!matches && hit);
       n.el.classList.toggle("dimmed", !!matches && !hit); // .dimmed = opacity .3
     }
@@ -117,14 +116,14 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
   React.useEffect(() => {
     const sim = simRef.current;
     if (!sim) return;
-    for (const n of sim.nodes) n.el?.classList.toggle("sel", n.key === selectedId);
+    for (const n of sim.nodes) n.el?.classList.toggle("sel", n.id === selectedId);
   }, [selectedId, capped]);
 
   // ── pointer interactions: drag a node, pan, zoom, hover-to-trace ───────
   React.useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
-    let drag: { key: string; ox: number; oy: number } | null = null;
+    let drag: { id: string; ox: number; oy: number } | null = null;
     let pan: { sx: number; sy: number; vx: number; vy: number } | null = null;
     let downAt: { x: number; y: number } | null = null;
     let moved = false;
@@ -151,8 +150,8 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
       }
       const near = sim.nbr.get(id) || new Set<string>();
       for (const n of sim.nodes) {
-        n.el?.classList.toggle("hot", n.key === id);
-        n.el?.classList.toggle("dim", !near.has(n.key));
+        n.el?.classList.toggle("hot", n.id === id);
+        n.el?.classList.toggle("dim", !near.has(n.id));
       }
       for (const e of sim.edges) {
         const inc = e.from === id || e.to === id;
@@ -169,9 +168,8 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
       const gEl = (ev.target as Element).closest(".g-node");
       if (gEl) {
         const n = sim.byId[gEl.getAttribute("data-id")!];
-        if (!n) return;
         const p = toWorld(ev.clientX, ev.clientY);
-        drag = { key: n.key, ox: p.x - n.x, oy: p.y - n.y };
+        drag = { id: n.id, ox: p.x - n.x, oy: p.y - n.y };
         n.fixed = true;
         n.fx = n.x;
         n.fy = n.y;
@@ -189,7 +187,7 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
       if (drag) {
         if (!moved) return;
         const p = toWorld(ev.clientX, ev.clientY);
-        const n = sim.byId[drag.key];
+        const n = sim.byId[drag.id];
         n.fx = p.x - drag.ox;
         n.fy = p.y - drag.oy;
         n.x = n.fx;
@@ -209,7 +207,7 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
     const onUp = () => {
       const sim = simRef.current;
       if (sim && drag) {
-        const n = sim.byId[drag.key];
+        const n = sim.byId[drag.id];
         if (n) {
           n.fixed = false;
           n.fx = null;
@@ -394,8 +392,8 @@ function paintStructure(svg: SVGSVGElement, sim: Sim): void {
   for (const n of sim.nodes) {
     const g = document.createElementNS(NS, "g");
     g.setAttribute("class", `g-node ${n.type}`);
-    g.setAttribute("data-id", n.key);
-    g.setAttribute("data-testid", `graph-node-${n.key}`);
+    g.setAttribute("data-id", n.id);
+    g.setAttribute("data-testid", `graph-node-${n.id}`);
 
     const title = document.createElementNS(NS, "title");
     title.textContent = n.label;

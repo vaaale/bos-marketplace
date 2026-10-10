@@ -110,7 +110,12 @@
 
   /* search (overview concept index) */
   .search { position:relative; margin-bottom:14px; }
-  .search svg { position:absolute; left:11px; top:50%; transform:translateY(-50%); color: var(--muted); }
+  /* `>`, not a descendant match: this positions the LEADING magnifier icon.
+     As `.search svg` it also caught the x icon nested inside `.clear`,
+     taking it out of flow — so the clear button had no in-flow content and
+     collapsed to a 0x0 box (unclickable for a user, "not visible" to
+     Playwright), while its icon was drawn on top of the magnifier. */
+  .search > svg { position:absolute; left:11px; top:50%; transform:translateY(-50%); color: var(--muted); }
   .search input { padding-left:34px; }
   .search .clear { position:absolute; right:8px; top:50%; transform:translateY(-50%); color:var(--muted); cursor:pointer; }
   .search .clear:hover { color: var(--text); }

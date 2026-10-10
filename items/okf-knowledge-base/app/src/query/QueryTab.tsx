@@ -93,19 +93,16 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
     };
   }, [bundle, query]);
 
-  // The match set is over node KEYS (`<type>:<id>`), because a search row's
-  // document id and the concept term it matched can be the same string and
-  // must still highlight two different nodes (FR-045).
   const matches = React.useMemo<Set<string> | null>(() => {
     const q = query.trim().toLowerCase();
     if (!q || !graph) return null;
     const set = new Set<string>();
     for (const r of rows || []) {
-      set.add(`chap:${r.docId}/${r.chId}`);
-      set.add(`doc:${r.docId}`);
-      set.add(`concept:${r.matchedConcept}`);
+      set.add(`${r.docId}/${r.chId}`);
+      set.add(r.docId);
+      set.add(r.matchedConcept);
     }
-    for (const n of graph.nodes) if (n.label.toLowerCase().includes(q)) set.add(n.key);
+    for (const n of graph.nodes) if (n.label.toLowerCase().includes(q)) set.add(n.id);
     return set;
   }, [rows, graph, query]);
 
@@ -163,17 +160,8 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
     );
   }, []);
 
-  // The selection is expressed as a node KEY so it can never ring the wrong
-  // one of an id-sharing pair. It stays derived from the reader target, so the
-  // "matched concept" chips highlight their node too, not just a node click.
   const selectedId =
-    target?.kind === "doc"
-      ? `doc:${target.docId}`
-      : target?.kind === "chap"
-        ? `chap:${target.docId}/${target.chId}`
-        : target?.term
-          ? `concept:${target.term}`
-          : null;
+    target?.kind === "doc" ? target.docId : target?.kind === "chap" ? `${target.docId}/${target.chId}` : target?.term ?? null;
 
   if (!bundles.length) {
     return (
