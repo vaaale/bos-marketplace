@@ -62,7 +62,7 @@ Constitution: `/Specs/bos-system-specs/.specify/memory/constitution.md`.
 
 ```text
 item-okf-knowledge-base/          # reached via app_spec_* (physically data/user-apps/items/okf-knowledge-base/spec/)
-├── spec.md                        # source of truth (44 FR, 11 NFR, 13 SC, 9 user stories)
+├── spec.md                        # source of truth (49 FR, 11 NFR, 13 SC, 9 user stories)
 ├── design.md                      # architecture + ADRs (authoritative; reviewed — one revision round applied)
 ├── tool-surface.md                # the 19 okf_* tools + the auto-trigger mechanism (mirrors design §8.2/005/006)
 ├── mockup.html                    # binding UI contract (Overview / Jobs / Query)
