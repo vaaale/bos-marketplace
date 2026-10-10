@@ -1,7 +1,6 @@
 {
   "id": "okf-knowledge-base",
   "name": "OKF Knowledge Base",
-  "icon": "Library",
-  "createdAt": 1791654329617,
+  "createdAt": 1791658815016,
   "entry": "src/main.tsx"
 }

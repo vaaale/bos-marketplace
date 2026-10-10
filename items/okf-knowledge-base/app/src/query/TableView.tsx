@@ -54,10 +54,16 @@ export default function TableView({ nodes, matches, query, selectedId, onSelect 
           <tbody>
             {rows.map((n) => (
               <tr
-                key={n.id}
+                // A graph node id is unique only WITHIN its type: the service
+                // emits a doc node and a concept node that both have id
+                // "api-design" when a document's id is also a concept term.
+                // Keyed on `n.id` alone that was a duplicate React key AND two
+                // rows sharing one data-testid (a Playwright strict-mode
+                // violation). Type-qualify both.
+                key={`${n.type}-${n.id}`}
                 className="clickable"
                 onClick={() => onSelect(n)}
-                data-testid={`table-row-${n.id}`}
+                data-testid={`table-row-${n.type}-${n.id}`}
                 style={selectedId === n.id ? { outline: "1px solid var(--accent)" } : undefined}
               >
                 <td>
