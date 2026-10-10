@@ -4,7 +4,17 @@
 // running — the established convention for an installed item, mirroring
 // follow-the-money/e2e/follow-the-money.spec.ts:
 //
-//   BOS_PREVIEW_URL=http://localhost:3000 npx playwright test e2e/okf-knowledge-base.spec.ts
+//   BOS_PREVIEW_URL=http://localhost:8090 npx playwright test e2e/okf-knowledge-base.spec.ts
+//
+// THE PORT MATTERS. 8090 is the SUPERVISOR's origin. `httpPath`
+// (/__supervisor/services/<id>/) is routed only there — on a Next.js port
+// (3000 = base, 300x = a branch preview) that path is simply unrouted, so
+// Next's trailing-slash normalisation answers 308 and then 404s with its HTML
+// shell. A previous run read that as "the supervisor proxy is redirect-looping
+// POSTs" and spent twenty messages on a component it had never contacted,
+// before proposing to bypass the proxy entirely. The proxy is fine; the origin
+// was wrong. To exercise a BRANCH build rather than base, keep this origin and
+// pin the branch with the `bos_pin=<urlencoded-branch>` cookie.
 //
 // Two surfaces are exercised, both reached WITHOUT hardcoding a port (the
 // service's `port` config is 0 — OS-assigned, so there is no stable default):
@@ -23,7 +33,8 @@
 
 import { expect, request, test, type APIRequestContext, type FrameLocator, type Page } from "@playwright/test";
 
-const BASE = process.env.BOS_PREVIEW_URL || "http://localhost:3000";
+// Default to the Supervisor, not a Next port — see the note above.
+const BASE = process.env.BOS_PREVIEW_URL || "http://localhost:8090";
 const SERVICE_ID = "okf-knowledge-base";
 
 /** The 18 declared tools (spec FR-037 / SC-007). */
