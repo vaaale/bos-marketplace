@@ -1,10 +1,10 @@
 # Feature Specification: OKF Knowledge Base — General-Purpose Agent Knowledge Base (Redesign)
 
-**Feature Branch**: `bos/okf-kb-redesign`
+**Feature Branch**: `bos/okf-auto-ingest`
 
 **Created**: 2026-10-09
 
-**Status**: Draft
+**Status**: Draft — this session adds a scope-add (automatic ingestion + job listing) on `bos/okf-auto-ingest`; the base redesign was authored on `bos/okf-kb-redesign`.
 
 **App Target**: **`marketplace-item`.** This is a redesign of the already-installed `okf-knowledge-base` item: its **service facet** (OKF storage + the `okf_*` tool surface + a new derived two-level index + re-scoped ingest) and a **standalone companion app facet** — a master-detail app (Overview / Jobs / Query), dock-openable, not a settings config page — plus the item's bundled `okf-ingest` agent and bundle-schema skill. The prior `040` spec split the work as *mixed* (item + four `bos-core` prerequisites). Those prerequisites — the fixed `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`, the `ToolExecuteResult` attachment mechanism, `ffmpeg` in the Docker images, and marketplace-item agent/skill copy-install — remain **dependencies** (see Assumptions) and are *not re-scoped here*: this spec's deliverable is the item. If any prerequisite has not actually shipped, it is a separate BOS-source follow-up.
 
@@ -174,6 +174,7 @@ An agent triggers ingestion of a document into a bundle. The user opens the app'
 1. **Given** an in-flight ingest, **When** the user opens the Jobs tab, **Then** the run is listed with status running, its bundle, and its source.
 2. **Given** a completed ingest, **When** the user opens its run detail, **Then** it shows a summary (chapters written, concepts assigned, assets interpreted, references skipped/failed).
 3. **Given** a failed ingest, **When** the user opens its run detail, **Then** it shows the failure and the error.
+4. **Given** an in-flight or finished ingest, **When** an agent calls `okf_list_jobs`, **Then** it receives the same run records (status, bundle, source, summary/error) the Jobs tab shows — without opening the app (FR-048).
 
 ---
 
@@ -349,7 +350,7 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 - **SC-008**: Merging two concept terms updates the concept index, all affected document TOCs, and all chapter `concepts` frontmatter that referenced either term, leaving a single canonical entry.
 - **SC-009**: Stopping/uninstalling the service removes all 19 `okf_*` tools immediately.
 - **SC-010**: `okf_lint` detects broken inline-asset links and concept-index / document-TOC drift from the underlying content.
-- **SC-011**: In the app's Jobs tab, a triggered ingest run is observable through its real lifecycle: it shows as running, then completed (with its summary) or failed (with its error).
+- **SC-011**: A triggered ingest run is observable through its real lifecycle — it shows as running, then completed (with its summary) or failed (with its error) — in **both** the app's Jobs tab and `okf_list_jobs`. The run is started automatically by `okf_ingest` (the caller receives a `jobId`, not instructions to act).
 - **SC-012**: In the app's Query tab, selecting a Knowledge-Graph node or a search result opens the full chapter in a resizable side pane with a working link to the original source document.
 - **SC-013**: Calling `okf_ingest` returns a `jobId` immediately, **without** the caller running acquisition or agent-delegation steps itself; the run then proceeds headlessly to completed (with its summary) or failed (with its error), observable in **both** the app's Jobs tab and `okf_list_jobs`; a run whose headless process dies is reaper-marked failed, not left running.
 
