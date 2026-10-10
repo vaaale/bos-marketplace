@@ -447,11 +447,17 @@ hand-written into `data/user-apps` — the Developer stages the facets and
     `okf_upsert_concept` = one chapter written) — free, no sub-agent cooperation needed.
     The sub-agent *may additionally* `POST /jobs/<id> {progress:"…"}` for finer text, but
     that is now **optional enrichment**, not the terminal-state path.
-  - Stream terminal `{type:"done"}` → the worker records `completed` with the summary. The
-    summary is taken from the run's `result` (the sub-agent's final text, which its skill
-    instructs to be a compact honest count: chapters/concepts/assets/refsSkipped/refsFailed
-    — the existing "report honestly" rule) and/or derived by the worker from the writes it
-    handled for the job. Stream terminal `{type:"error"}` → `failed` with the error.
+  - Stream terminal `{type:"done"}` → the worker derives state from `result.endedReason`
+    (NOT from the line type — a failed *local* run arrives as `done` with
+    `endedReason:"error"`, because `runSubAgent` catches its own errors and resolves
+    (`runner.ts`); the route's `{type:"error"}` line is only its outer `catch`, essentially
+    unreachable for a self-catching local agent). So: `endedReason:"completed"` → record
+    `completed`, summary from `result.output` (the sub-agent's final text, also the
+    `text` field; the skill instructs it to be a compact honest count:
+    chapters/concepts/assets/refsSkipped/refsFailed — the existing "report honestly" rule),
+    and/or derived by the worker from the writes it handled for the job. `endedReason:
+    "error"` (and `"max_steps"`) → `failed` with `result.error`. A true thrown crash
+    surfaces as the `{type:"error"}` line → also `failed`.
   - **Stale reaper (FR-049):** a worker timer, plus a sweep on (re)start, marks any job
     still `queued`/`running` older than a configured `staleJobMs` (default e.g. 30 min) as
     `failed (stale)`, so a killed worker or an abandoned run never leaves the Jobs tab /
@@ -862,8 +868,10 @@ Worker ─(same HTTP request, NDJSON stream)─▶ runSubAgent("okf-ingest", tas
               • ends with a compact, honest summary (report-honestly rule)
 
 Worker ◀── NDJSON {type:"tool"} lines → advance progress (chapters written so far) ──▶
-Worker ◀── terminal {type:"done", result} → core.updateJob(completed, summary)
-            OR {type:"error"} → core.updateJob(failed, error)
+Worker ◀── terminal {type:"done", result} → read result.endedReason:
+            "completed" → core.updateJob(completed, summary from result.output)
+            "error"|"max_steps" → core.updateJob(failed, result.error)
+            OR {type:"error"} (a thrown crash) → core.updateJob(failed, error)
 [stale reaper: any job queued/running > staleJobMs → failed(stale), incl. after restart]
 
 App Jobs tab  ──▶ GET /jobs / GET /jobs/<id>   (poll; ADR-003)
@@ -1146,8 +1154,9 @@ Inline asset:
 
 Job lifecycle (launcher owns finalization, ADR-006):
   worker: okf_ingest → mint job(queued) → fire delegate request (async) → return {jobId}
-  worker consumes NDJSON: {tool} lines → progress; terminal {done} → completed(summary)
-            | {error} → failed(error)
+  worker consumes NDJSON: {tool} lines → progress; terminal {done} → read
+            result.endedReason: completed→completed(summary) | error/max_steps→failed
+            | a thrown {error} line → failed(error)
   [stale reaper: job queued/running > staleJobMs → failed(stale), incl. after restart]
   App Jobs tab polls GET /jobs; okf_list_jobs reads core.listJobs() → lifecycle (SC-011)
 ```
