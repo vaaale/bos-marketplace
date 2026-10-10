@@ -338,7 +338,7 @@ hand-written into `data/user-apps` — the Developer stages the facets and
 - **Context.** The app is a browser iframe; it is *not* an agent and cannot call
   `okf_*` tools directly. It needs read (and a little write: create/import/export/delete
   bundle, trigger ingest) access to the same data the tools expose.
-- **Options.** (a) The app calls the 18 `okf_*` tools through some new agent-bridge. (b) A
+- **Options.** (a) The app calls the 19 `okf_*` tools through some new agent-bridge. (b) A
   **dedicated app-facing REST surface** on the service's loopback port, reusing the *same*
   `okf-core.js` functions as the tools, exposing the shapes the UI actually needs (bundle
   list, bundle detail incl. stats + concept index + documents, doc TOC, chapter, search,
