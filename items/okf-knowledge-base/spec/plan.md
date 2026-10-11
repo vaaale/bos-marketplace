@@ -1,36 +1,39 @@
-# Implementation Plan: OKF Knowledge Base — General-Purpose Agent KB Redesign
+# Implementation Plan: OKF Knowledge Base — auto-ingest + job cancel/delete
 
-**Branch**: `bos/okf-kb-redesign` | **Date**: 2026-10-09 | **Spec**: `item-okf-knowledge-base/spec.md`
-**Design**: `item-okf-knowledge-base/design.md` (authoritative for architecture/ADRs — this plan folds its structure + ADRs in; it does not re-litigate them)
-**UI contract**: `item-okf-knowledge-base/mockup.html` (binding — the app implements it directly)
+**Branch**: `bos/okf-docid-fix` | **Date**: 2026-10-11 | **Spec**: `item-okf-knowledge-base/spec.md`
+**Design**: `item-okf-knowledge-base/design.md` (authoritative — this plan folds its classification + ADRs in; it does not re-litigate them)
+**UI contract**: `item-okf-knowledge-base/mockup.html` (binding — the app implements it directly, incl. the Jobs cancel/delete surface)
 
-**Input**: Feature specification from `item-okf-knowledge-base/spec.md`. This plan **replaces** the prior 040/041 plan (now removed) and supersedes the design/plan of the installed 31-tool `okf-knowledge-base` item. The prior item is already installed (`data/user-apps/items/okf-knowledge-base/`); this is an **in-place redesign of an existing item** — same `id`, same service facet shape, redesigned storage/index/retrieval/tool-surface/app.
+This plan **replaces** the pre-auto-ingest plan (which described the 18-tool dispatcher model with sub-agent → service HTTP job callbacks + an assistant safety-net, and zero `src/` changes). It is the plan for the **current** item state plus the **job cancel/delete scope-add**: ingest is **auto-triggered and headless** (`okf_ingest` returns a `jobId` immediately; the worker fires the run and owns its finalization), the job surface is **21 tools** (adds `okf_list_jobs`, `okf_cancel_job`, `okf_delete_job`), jobs carry a distinct **`cancelled`** terminal state, and cancelling a running job goes through **one generic `src/` platform route** (`POST /api/subagents/[runId]/abort`) that the worker consumes over loopback.
 
 ## Summary
 
-Redesign the installed `okf-knowledge-base` marketplace item into a **general-purpose, agent-managed knowledge base** whose center of gravity is **organization + efficient retrieval** (not ingestion). Retrieval is **deterministic, concept-anchored, and document/chapter-granular** (full documents or full chapters, never snippet chunks — NFR-005/SC-002) over a **two-level derived index** stored as OKF-native `.md` artifacts (bundle `concept-index.md` + per-doc `toc/<id>.md`), so OKF content stays the sole source of truth and no vector/keyword/embedding store is introduced (NFR-001). The agent surface is cut from 31 to **18 tools** (3 added: `okf_search`, `okf_read_toc`, `okf_merge_concepts`). The app facet becomes a **standalone master-detail app** (Overview / Jobs / Query) — the Query tab is a single unified view: one shared search field + a Graph/Table toggle, the Graph rendered as a force-directed, category-colored, edge-labeled knowledge graph (Neo4J/knowledge-graph style in the BOS dark palette). All of this is a **marketplace item** (service facet + app facet + bundled `okf-ingest` agent) — **zero `src/` (bos-core) changes**; the four prior `bos-core` prerequisites (clean `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`) are **dependencies assumed already shipped**, not re-scoped here.
+The item already implements (and this plan carries forward, not re-derives): the **two-level derived index** (`concept-index.md` + per-doc `toc/<id>.md`, O(V), regenerable), **deterministic concept-anchored `okf_search`** (no LLM in the match; full documents/chapters, never snippets), the **standalone master-detail app** (Overview / Jobs / Query, force-directed graph), the **inline-asset pipeline** (download + interpret at ingest, store link + interpretation), and the **auto-triggered headless ingest** (ADR-005: the worker's `delegate-bridge.js` fires `POST /api/subagents/delegate` and `okf_ingest` returns a `jobId` immediately; ADR-006: the **launcher** owns finalization from the run's terminal `endedReason` + a **stale reaper**; the `okf-ingest` agent carries a self-sufficient allowlist).
 
-**Technical approach** (from research/design): keep the existing worker-thread service facet + `okf-core` storage + VFS bridge + `deploymentMode:"tools"` (039) exactly as installed. Add a **derived-index layer** (build + store as `.md`, regenerate on write). Replace the flat `okf_ingest` with the dispatcher + `okf-ingest` sub-agent pipeline (already present in the installed item) wired to **job observability** (sub-agent → service loopback-HTTP callbacks; assistant safety-net). Add the **inline-asset pipeline** (download → `view_image`/`video_keyframes` → store link + interpretation). Expose a small **app-facing REST API** over the existing `httpPath` bridge (list/detail/toc/chapter/search/graph/jobs). Rebuild the app facet from `mockup.html`.
+**This plan's new scope (the job cancel/delete scope-add, FR-050/051/052, US8 scenarios 4–6, SC-014/015):**
+
+1. **Cancel a running job** — the worker captures the run's `runId` (from the `run_started` line it already receives on the delegate stream) and, on cancel, calls the **one new generic `src/` route** `POST /api/subagents/[runId]/abort` (the HTTP face of the existing in-process `abortHeadlessRun`); the run ends with `endedReason:"cancelled"` and the launcher writes the distinct **`cancelled`** terminal state. Nested reference runs are **independent jobs**, each cancelled by its own `runId` (ADR-010/S1 — not a family cascade).
+2. **Delete a non-running job** — worker job-store only; removes the record, never bundle content; a running job is rejected (409), a missing one is a clean 404 (FR-051).
+3. **Two new agent tools** — `okf_cancel_job {jobId}` and `okf_delete_job {jobId}` (surface **21**); the app's Jobs tab gains a **Cancel** control (running/queued) and a **Delete** control (non-running) driving the same worker operations via `POST /jobs/<id>/cancel` and `DELETE /jobs/<id>` (ADR-003: one capability, two surfaces).
+4. **The `cancelled` lifecycle state** — `queued → running → completed | cancelled | failed`; `cancelled` is terminal and distinct from `failed` (an intentional stop, not an error).
+
+**Mixed target** (spec App Target): **`marketplace-item` (primary) + one small `bos-core` mechanism** — the single additive, **generic** `src/app/api/subagents/[runId]/abort/route.ts`. It carries no OKF knowledge (no job store, no bundle, no agent id) and serves any fire-and-forget headless consumer; the item merely consumes it over loopback, exactly as it already consumes `/api/fs` and `POST /api/subagents/delegate`. No other `src/` file changes.
 
 ## Technical Context
 
-**Language/Version**: Service = plain **Node.js** (worker thread, dependency-free — the installed `okf-core.js` already is; `yaml`/`front-matter` parsed with the existing in-repo lightweight parser or a tiny inline loader, matching `okf-core.js`). App = **TypeScript/TSX** (esbuild-bundled by `app_build`; may import React — provided by the bundler, no `npm install`).
+**Language/Version**: Service = plain **Node.js** (worker thread, dependency-free — the installed `okf-core.js`/`vfs-bridge.js`/`http-bridge.js` already are). **One `src/` file** = **TypeScript** Next.js route handler (`src/app/api/subagents/[runId]/abort/route.ts`). App = **TypeScript/TSX** (esbuild-bundled by `app_build`; React provided by the bundler, no `npm install`).
 
-**Primary Dependencies**: **None new.** The service reuses its existing `okf-core.js` (storage), `vfs-bridge.js` (loopback `/api/fs` + `/api/fs/raw`), `http-bridge.js` (REST over `httpPath`), and the 039 `deploymentMode:"tools"` tool-declaration IPC. The app facet uses React (bundled). No external CDN, no vector/keyword/embedding library, no SQL driver.
+**Primary Dependencies**: **None new.** Service reuses `okf-core.js`, `vfs-bridge.js`, `http-bridge.js`, `delegate-bridge.js`, and the 039 `deploymentMode:"tools"` IPC. The one `src/` route imports the existing `abortHeadlessRun` from `@/lib/agent/subagents/run-registry`. The app uses React (bundled). No vector/keyword/embedding/SQL, no new runtime package.
 
-**Storage**: **Files under the VFS** at `/KnowledgeBase/<bundle>/`, reached by the service through the loopback `/api/fs` + `/api/fs/raw` bridge (the installed `vfs-bridge.js`). OKF chapter/concept `.md` (frontmatter-carrying) is the **source of truth**; the two-level index (`concept-index.md`, `toc/<id>.md`) is **derived** `.md`, regenerated from frontmatter and never the sole source of truth (ADR-002). `raw/` immutable sources + `raw/assets/<docId>/` downloaded inline assets. Job records in a single `jobs.json` under the bundle/service state dir (design.md §7).
+**Storage**: **Files under the VFS** at `/KnowledgeBase/<bundle>/`, reached through the loopback `/api/fs` + `/api/fs/raw` bridge. OKF chapter/concept `.md` is the **source of truth**; `concept-index.md` + `toc/<id>.md` are **derived** `.md` (regenerable, never sole source of truth). `raw/` immutable + `raw/assets/<docId>/` inline assets. **Job records** persist under `<bundleRoot>/.jobs/<id>.md` (restart survival) with an in-memory hot map; operational state, **not** OKF content (excluded from export by default — design.md Risk #2).
 
-**Testing**: **Playwright e2e** — `e2e/okf-knowledge-base.spec.ts` (item-local `e2e/` dir; runs against the branch preview via `BOS_PREVIEW_URL` + `npx playwright test`, the established convention for installed items). Cover: tool surface (18 declared, schema validation, the removed 13), the two-level index build + regenerate + stale-detection, `okf_search` determinism (same query → same TOC rows; app route returns identical rows), inline-asset block shape + no-reinterpret-at-query, job lifecycle (queued→running→completed|failed, via the callback + the assistant safety-net), graph derivation (nodes/edges from frontmatter/index/links, on-read), import/export spec-conformance + best-effort index on pre-existing bundles, the app's three tabs (Overview / Jobs / Query) + shared-search-reflects-in-both-views + resizable reader pane + "Open source" target.
+**The headless run boundary (load-bearing for cancel)**: the run executes in the **main Next.js process** (`runSubAgent`); the job is owned by the **service worker** (a separate process). The worker's `delegate-bridge.js` **fires `POST /api/subagents/delegate`, captures the `runId` from the first `run_started` NDJSON line, and holds the open stream** — so it can (a) finalize the job from the terminal line (ADR-006) and (b) cancel the run by calling the generic abort route with the captured `runId` (ADR-010). The run-registry is process-local (`globalThis`), which is why the abort must go through an **in-process** `src/` route in the same Next.js instance (single-user, true for this item — design.md Risk #4).
 
-**Target Platform**: BOS container (the service is a worker thread; the app is a bundled iframe app; the sandbox already ships `markitdown`, `ffmpeg`, `libreoffice`, `poppler` — dependencies, not new installs).
+**Testing**: **Playwright e2e** — item-local `e2e/okf-knowledge-base.spec.ts` (feature-id = `okf-knowledge-base`), run via `BOS_PREVIEW_URL` + `npx playwright test`. **This scope-add's tests** (beyond the existing auto-ingest suite): the **21-tool surface** (SC-007 — `okf_cancel_job`/`okf_delete_job` present, the 16 removed absent); **`okf_list_jobs`** returns the same records as `GET /jobs` incl. `cancelled` (FR-048); **cancel** — a running job → `okf_cancel_job`/`POST /jobs/<id>/cancel` → `cancelled` terminal (distinct from failed), record + written content preserved, cancel of a terminal job is a no-op (SC-014, US8-4); **delete** — a non-running job is removed and bundle content untouched, a running job is rejected (409), a missing job is a clean 404 (SC-015, US8-5/6); **the `src/` abort route** — `POST /api/subagents/<runId>/abort` on a live run returns `{aborted:true}` and the run ends `cancelled`; on a finished/unknown runId returns `{aborted:false}` (idempotent) (FR-052); **queued-window cancel** — a cancel before `run_started` aborts the moment the `runId` is captured (ADR-010/S4); the **app Jobs tab** — Cancel control on running rows, Delete control on non-running rows, the `cancelled` dot (FR-041, mockup contract). For the run-dependent tests, the established **mock-delegate** seam (`OKF_DELEGATE_URL` env override in `delegate-bridge.js`) makes the headless run deterministic and instant — cancel/delete tests drive a mock run that emits `run_started` then stays open, so cancel can be asserted without a 10-minute real agent.
 
-**Project Type**: **Marketplace item** (service facet + app facet + bundled agent), installed via `app_build` into `data/user-apps/items/okf-knowledge-base/` (id preserved).
+**Target Platform**: BOS container. **Project Type**: **Marketplace item** (service + app + agent + skill facets, `app_build` into `data/user-apps/items/okf-knowledge-base/`, **id preserved**) **+ one additive `src/` route** committed alongside (a separate `bos-core` file, not part of the item).
 
-**Performance Goals**: Retrieval cost **bounded by concept-vocabulary size, not document/chapter count** (NFR-004) — `okf_search` is an O(V) deterministic match over the concept index. The escalation to a real pre-filter/embedding index is gated on the vocabulary being "too big for one routing pass" (NFR-002), **not** on document count. No numeric SLO; the measurable property is that search stays a lookup, not a whole-corpus scan.
-
-**Constraints**: No vector/keyword/embedding/SQL store in v1 (NFR-001). Retrieval returns full documents/chapters (NFR-005). The 18-tool surface is fixed — app views must not add tools (FR-037, NFR-008). All writes atomic, path-guarded, unknown frontmatter keys preserved (NFR-003/006/007, FR-021). `raw/` immutable (NFR-009). The derived index is regenerable and never the sole source of truth (NFR-006). Single-user (NFR-013). Loopback-scoped trust boundary (FR-023, NFR-010).
-
-**Scale/Scope**: N bundles (single-user personal OS); each bundle holds documents → chapters → concept terms. The index is per-bundle. The app has 3 top-level tabs (Overview / Jobs / Query) and the Query tab's 2 views (Graph / Table) + reader pane.
+**Constraints**: No vector/keyword/embedding/SQL (NFR-002). Full documents/chapters, never snippets (NFR-003). 21-tool surface fixed — app views add no tools (FR-036/037). Writes atomic, path-guarded, unknown frontmatter keys preserved (NFR-005/006). `raw/` immutable. Derived index regenerable (NFR-004). Single-user (NFR-008). The `src/` route stays **generic** — no OKF knowledge (FR-052). Cancel is a **stop, not a rollback** — partial content preserved, index regenerable (ADR-010/S4). Delete touches **only** the job record (FR-051).
 
 ## Constitution Check
 
@@ -40,103 +43,101 @@ Constitution: `/Specs/bos-system-specs/.specify/memory/constitution.md`.
 
 | # | Principle | Compliance |
 |---|---|---|
-| I | **BOS source is read-only for marketplace features** — a marketplace item never edits `src/` | ✅ This is a pure **marketplace item**. The plan touches only `data/user-apps/items/okf-knowledge-base/` (app/ + services/ + agents/ + docs/ + config/). The four prior `bos-core` capabilities (clean `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`) are **assumed-shipped dependencies**, not re-implemented — no `src/` file is in this plan's project structure. |
-| II | **Storage in the VFS, owned by the service** | ✅ OKF bundles under `/KnowledgeBase/<bundle>/`, owned and read/written by the `okf-knowledge-base` service facet through its loopback VFS bridge (`/api/fs`, `/api/fs/raw`). Job records under the service's own state. Nothing in `src/` or the app's client storage holds user knowledge. |
-| III | **Data is human-readable, non-lossy** | ✅ Source of truth is OKF `.md` (frontmatter + body). The derived index is also `.md` (frontmatter-carrying, regenerable) — not a binary/DB blob. Unknown frontmatter keys are preserved verbatim on every write (FR-021, NFR-003). `raw/` is immutable. No embeddings/vectors/SQL. |
-| IV | **No hidden state; deterministic** | ✅ `okf_search` is deterministic (same query → same TOC rows, no LLM in the match — design.md §9). The derived index is **regenerable from source** (NFR-006) — never a second source of truth to drift. Job lifecycle is observable (FR-041/044), not fire-and-forget. |
-| V | **Least privilege / scoped tools** | ✅ The 18-tool surface is the whole agent-facing API (FR-037). The `okf-ingest` sub-agent keep/narrow its least-privilege allowlist (FR-017, NFR-012). App views are an HTTP surface, not tools (NFR-008). Writes are path-guarded to the bundle root (FR-021). |
-| VI | **Atomic, guarded writes** | ✅ All concept/index/toc writes go through `okf-core`'s existing atomic write + path-traversal guard (FR-021); the plan reuses, not reinvents, that mechanism. |
-| VII | **Observable lifecycle** | ✅ Ingest runs are observable jobs (queued/running/completed/failed, FR-041/044, NFR-011) with a summary or error, exposed to the Jobs tab. |
-| VIII | **Portable / spec-conformant** | ✅ Export is a spec-conformant OKF bundle (FR-024, SC-003); import accepts a bundle (and re-derives its index best-effort, design.md §7.4 / Risk #9). The item ships a `docs/` facet (required). |
+| I | **BOS source is read-only for marketplace features** — a marketplace item never edits `src/` to serve its needs | ✅ **Mixed, and the `src/` is generic + additive.** The item touches only `data/user-apps/items/okf-knowledge-base/` for its facets. The **one** `src/` file — `POST /api/subagents/[runId]/abort` — does **not** special-case OKF (no job store, no bundle, no agent id); it is the HTTP face of the existing in-process `abortHeadlessRun`, consumable by **any** fire-and-forget headless consumer (self-heal already calls `abortHeadlessRun` in-process). It is a new file, not an edit to an existing route/signature. The item **consumes** it over loopback like `/api/fs` and `POST /api/subagents/delegate`. This is the one deliberate, documented exception (spec App Target; design.md §1 + Constitution I note). |
+| II | **Server Authority & SSR Boundary** — storage in the VFS, owned by the service | ✅ All OKF storage, the derived index, and the job records live under `/KnowledgeBase/`, owned and reached by the service worker through the loopback VFS bridge. The `src/` route is server-side (in-process, calls the run-registry); the app iframe + assistant reach everything over HTTP. No OKF logic in the app bundle. |
+| III | **Data is human-readable, non-lossy** | ✅ Source of truth is OKF `.md`; the derived index is `.md` (regenerable). Job records are `.md` under `.jobs/` (operational, human-readable). Unknown frontmatter keys preserved verbatim (NFR-005). `raw/` immutable. No embeddings/vectors/SQL. |
+| IV | **No hidden state; deterministic** | ✅ `okf_search` is deterministic. The derived index is regenerable. Job lifecycle is observable (queued/running/completed/cancelled/failed) and the **terminal state is derived from the run's own `endedReason`** (ADR-006) — there is no separate cancel write path that could drift from the run (ADR-010). |
+| V | **Least privilege / scoped tools** | ✅ 21-tool surface (FR-037). The `okf-ingest` sub-agent allowlist (design.md §8.4): `okf_ingest` (fire nested reference jobs — its only job-lifecycle tool) + `okf_add_raw_source` + the read/organize tools + 5 acquisition tools + 2 VFS reads; **not** `okf_list_jobs`/`okf_cancel_job`/`okf_delete_job` (top-level/app concerns), **not** `run_command`/`agent_delegate`/the full surface (NFR-009). Job control stays a top-level-assistant + app surface. |
+| VI | **Atomic, guarded writes** | ✅ Concept/index/toc writes reuse `okf-core`'s atomic write + path-guard. Cancel/delete job operations are job-store only and never mutate bundle content (FR-050/051). |
+| VII | **Respect Boundaries** — confirm destructive ops; no new deps unasked | ✅ `okf_delete_job`/`okf_delete_concept`/`okf_delete_bundle` stay explicit-intent (the app gates them behind confirmation per the mockup). No new runtime dependency: the app reuses the in-app force sim (ADR-009); cancel reuses the existing run-registry (no new library). The one `src/` route is additive. |
 
-**Verdict**: PASS — no violations. No Complexity Tracking rows required.
+**Verdict**: PASS — the mixed target is the only deviation from pure-marketplace, and it is the **generic, additive, documented** one the spec's App Target and design.md §1/Constitution-I already commit to. No Complexity Tracking rows required.
 
 ## Project Structure
 
-### Documentation (this feature — the item's spec store)
+### Documentation (this feature — the item's spec store, via `app_spec_*`)
 
 ```text
-item-okf-knowledge-base/          # reached via app_spec_* (physically data/user-apps/items/okf-knowledge-base/spec/)
-├── spec.md                        # source of truth (41 FR, 11 NFR, 10 SC, 9 user stories)
-├── design.md                      # architecture + ADRs (authoritative; reviewed APPROVE-WITH-NITS)
-├── mockup.html                    # binding UI contract (Overview / Jobs / Query)
+item-okf-knowledge-base/
+├── spec.md                        # source of truth (FR-001…FR-052, NFR, SC-001…SC-015, 9 user stories)
+├── design.md                      # architecture + ADRs 001–010 (authoritative; reviewed, one revision round)
+├── mockup.html                    # binding UI contract — now incl. the Jobs cancel/delete surface + cancelled status
 ├── plan.md                        # THIS file
-└── tasks.md                       # next step (Phase 2)
+└── tasks.md                       # next step
 ```
 
-### Source Code (the item — written by the Developer into a fresh staging dir, then installed by `app_build`)
+### Source Code — the item (staged into a fresh dir, then installed by `app_build`) + one `src/` file
 
-The staging directory root **is the item root**. `app_build` carries these facets into `data/user-apps/items/okf-knowledge-base/`:
+`app_build({name, dir, id:"okf-knowledge-base"})` carries the **item facets**; the **`src/` abort route is a separate `bos-core` file** committed on the branch alongside (not part of the item). Only the files this scope-add **changes** are listed — the auto-ingest baseline files (rework of `okf-core.js`, `vfs-bridge.js` binary, `http-bridge.js`, `tools.js` to 19, the app, `AGENT.md`, `SKILL.md`, `config/`) are carried forward unchanged by this plan.
 
 ```text
-okf-knowledge-base/                       # = staging dir root = item root
+data/user-apps/items/okf-knowledge-base/
 ├── services/
-│   ├── service.json                      # UNCHANGED in shape: id "okf-knowledge-base",
-│   │                                     #   deploymentMode "tools", entry "index.js",
-│   │                                     #   configSchema { bundleRoot "/KnowledgeBase", port 0 }
-│   ├── index.js                          # worker entry: starts okf-core + http-bridge + tool IPC
-│   ├── lib/
-│   │   ├── okf-core.js                   # storage layer — EXTEND: derived-index build/regenerate,
-│   │   │                                 #   okf_search (concept-anchored), okf_merge_concepts,
-│   │   │                                 #   graph derivation, job records (jobs.json), inline-asset
-│   │   │                                 #   registration. Reuse existing atomic-write + path-guard.
-│   │   ├── vfs-bridge.js                 # UNCHANGED — loopback /api/fs + /api/fs/raw client
-│   │   ├── http-bridge.js                # REST — ADD app-facing routes (design.md §8.3): bundles,
-│   │   │                                 #   bundle detail, toc, chapter, search, graph, jobs; + job
-│   │   │                                 #   lifecycle callback routes (sub-agent → service)
-│   │   └── tools.js                      # DECLARATIONS — REDUCE 31 → 18 (design.md §8.2):
-│   │                                     #   add okf_search/okf_read_toc/okf_merge_concepts;
-│   │                                     #   rename okf_init_bundle→okf_create_bundle (or keep — decide);
-│   │                                     #   remove the 13 net (16 by name); keep the 18 read/write
-│   │                                     #   parallelSafe markings on the read-only subset
-│   └── (no new external deps)
+│   ├── service.json               # configSchema: ADD jobFinalizeTimeoutMs (stale-reaper bound, ADR-006/FR-049)
+│   └── lib/
+│       ├── okf-core.js            # ADD to the job store: status ∈ {queued,running,completed,cancelled,failed};
+│       │                          #   runId (set on run_started capture); cancelJob(jobId) → mark cancelled +
+│       │                          #   signal delegate-bridge to abort; deleteJob(jobId) → remove record (running→
+│       │                          #   rejected, missing→not-found); cancelled is terminal + distinct.
+│       ├── delegate-bridge.js     # ADD: (a) CAPTURE runId from the first run_started NDJSON line and store it
+│       │                          #   on the job; (b) CANCEL — POST /api/subagents/<runId>/abort over loopback,
+│       │                          #   then confirm cancelled from the terminal line; (c) queued-window: on
+│       │                          #   run_started, if the job is already cancelled, immediately fire the abort
+│       │                          #   (ADR-010/S4). Existing: fire delegate, finalize from endedReason, reaper.
+│       ├── http-bridge.js         # ADD app routes: POST /jobs/<id>/cancel → {cancelled,status} |
+│       │                          #   {cancelled:false,reason}; DELETE /jobs/<id> → {deleted:true} | 409 (running)
+│       │                          #   | 404 (missing). Existing: GET /jobs, GET /jobs/<id>, POST /jobs, …
+│       └── tools.js               # ADD declarations + handlers: okf_cancel_job {jobId}, okf_delete_job {jobId}
+│                                  #   (surface 19→21). okf_list_jobs already present. Read/write markings.
 ├── app/
-│   └── (app facet — REPLACED by the standalone master-detail app from mockup.html:
-│         Overview / Jobs / Query tabs, force-directed graph, shared search,
-│         resizable reader pane; talks to the service over httpPath)
+│   └── src/
+│       ├── jobs/JobsTab (or equivalent)   # ADD: Cancel control on running/queued rows (→ POST /jobs/<id>/cancel),
+│       │                                  #   Delete control on non-running rows (→ DELETE /jobs/<id>); render the
+│       │                                  #   cancelled status dot + a cancelled sample run. Per mockup.html.
+│       └── lib/api.ts                     # ADD: cancelJob(id) + deleteJob(id) clients for the two new routes.
 ├── agents/
-│   └── okf-ingest/AGENT.md               # bundled sub-agent — KEEP narrow allowlist (design.md §9.1);
-│                                         #   add the job-callback obligation (mark running/completed)
-├── skills/
-│   └── okf-bundle-schema/SKILL.md        # KEEP — ingest/query/lint conventions for the sub-agent
+│   └── okf-ingest/AGENT.md        # allowlist now includes okf_ingest (nested reference jobs — its only
+│                                  #   job-lifecycle tool); it does NOT get okf_list/cancel/delete_job. (design §8.4)
 ├── config/
-│   └── okf-knowledge-base.json           # defaults (bundleRoot, port) — UNCHANGED
-└── docs/                                 # REQUIRED facet — describe the SHIPPED item
-    ├── usage/OKF Knowledge Base/
-    │   ├── overview.md                   # what it does, the three tabs, ingest/query workflows
-    │   └── troubleshooting.md            # service not running, empty index, failed job
+│   └── okf-knowledge-base.json    # ADD jobFinalizeTimeoutMs (default, e.g. 1800000) alongside bundleRoot/port/maxDepth/maxWorkers
+└── docs/
     └── dev/OKF Knowledge Base/
-        ├── architecture.md               # service facet, VFS bridge, two-level index, graph derivation
-        ├── tools.md                      # the 18 okf_* tools + I/O schemas
-        └── data-model.md                 # bundle layout, frontmatter fields, derived-index .md
+        ├── tool-surface.md        # UPDATE to the 21-tool surface (add okf_cancel_job/okf_delete_job) + the
+        │                          #   abort-route dependency (the store-root spec-040 tool-surface.md is superseded)
+        └── architecture.md        # ADD the cancel/delete + abort-route flow (per-run abort, cancelled state)
+
+src/  (the ONE bos-core file — generic, not OKF-specific, FR-052):
+src/app/api/subagents/[runId]/abort/route.ts
+    # POST {runId} → import { abortHeadlessRun } from "@/lib/agent/subagents/run-registry";
+    #   const aborted = abortHeadlessRun(runId);
+    #   200 { aborted, runId }   (aborted:false when no such live run — idempotent)
+    #   404 when runId missing/empty. No OKF knowledge — no job store, no bundle, no agent id.
+    #   Sibling to src/app/api/subagents/[id]/route.ts (agent metadata, single-segment — no collision;
+    #   this is the two-segment /subagents/<runId>/abort).
 ```
 
-**Structure Decision**: **Marketplace item, all facets in one `app_build`.** No `src/` (bos-core) file appears — the four prior `bos-core` capabilities are dependencies assumed shipped (design.md ADR-005). The service facet is the one real backend (plain Node worker thread; its `services/` path is **not** a `src/` fragment, so it does not trip the `contentOnly` harness). The app facet is the standalone master-detail app from `mockup.html`. `docs/` is namespaced by the item's display name in **both** `usage/` and `dev/` (required — the Docs app reads only those two paths). The `id` is preserved (`okf-knowledge-base`) because this is an in-place redesign of an already-installed item.
+**Structure Decision**: **Marketplace item (all facets in one `app_build`, id preserved) + one additive generic `src/` route.** The `src/` route is the mixed target's single platform contribution; it is a new file (no existing signature change), so its blast radius is one route handler (Constitution IV). The `services/` path is a worker-thread service facet, **not** a `src/` fragment, so it does not trip the `contentOnly` harness. `docs/` is namespaced `OKF Knowledge Base` in `usage/` and `dev/`.
 
 ### Optional companion artifacts — evaluated, decided
 
-Per the plan command, `research.md` / `data-model.md` / `contracts/` are added **only when warranted**. Decisions:
+- **`research.md`** — not warranted (all unknowns resolved in `design`; ADRs + §9 carry them).
+- **`data-model.md`** — folded into design.md §5 (bundle layout) + §8.3 (job record incl. `cancelled` + `runId`) + this plan. The item's `docs/dev/.../data-model.md` documents the shipped shape.
+- **`contracts/`** — the authoritative contracts are design.md §8.2 (21-tool I/O) + §8.3 (app REST routes incl. `POST /jobs/<id>/cancel`, `DELETE /jobs/<id>`) + the `src/` route's I/O (above). `tasks.md` pins them; e2e validates.
 
-- **`research.md`** — **not warranted as a separate file.** Every Phase-0 unknown was resolved during `design` (the architect read the installed item + mockup and made the calls: derived-index shape, search algorithm, job mechanism, graph derivation, app-over-HTTP). The resolutions live in `design.md` ADRs + §9. Stranding them in a second file would duplicate; if a later `clarify` re-opens an unknown, add it then.
-- **`data-model.md`** — **folded into this plan + design.md, not a separate file.** The entities (KnowledgeBundle, Concept/chapter, Document, TOC, ConceptIndexEntry, IngestRun/Job, ReferenceCandidate, RawSource/Asset) are already fully specified in `spec.md` §Key Entities and `design.md` §5 (bundle layout) + §6 (concept frontmatter) + §7 (jobs). A third copy is not warranted; the item's `docs/dev/.../data-model.md` (above) is where the *shipped* data model is documented for users, distinct from this planning artifact.
-- **`contracts/`** — **warranted, but the authoritative contract is the 18-tool I/O table in `design.md` §8.2 + the app REST routes in `design.md` §8.3.** Rather than duplicate into a `contracts/` folder, `tasks.md` pins those two tables as the contract and the e2e tests validate against them. (If the Developer wants a machine-checkable schema file, that's an `implement` decision inside `services/lib/` — not a planning artifact.)
+## Design Notes (folded from the current `design.md`)
 
-## Design Notes (folded from `design.md` — so the analysis isn't stranded in chat)
-
-- **ADRs** (design.md §11) are the authoritative decisions and are carried by reference, not restated: ADR-001 (no DB in v1; derived file index; escalation gated on *vocabulary* size), ADR-002 (index = OKF-native `.md`, regenerable, never sole source of truth), ADR-003 (deterministic `okf_search`, no LLM in the match, shared tool + app), ADR-004 (graph derived on-read from frontmatter/index/links, no graph DB), ADR-005 (pure marketplace item; 4 bos-core capabilities are dependencies), ADR-006 (job lifecycle via sub-agent → service loopback-HTTP callbacks + assistant safety-net), ADR-007 (app over HTTP, not the agent tools, because the app is an opaque-origin iframe), ADR-008 (inline assets interpreted at ingest, stored as link + blockquote, no re-vision at query), ADR-009 (31→18 tool surface; field-setters collapsed into `okf_upsert_concept`).
-- **The 18 tools** (design.md §8.2, authoritative): Retrieval — `okf_search`, `okf_read_toc`, `okf_read_concept`, `okf_list_concepts`; Concepts — `okf_upsert_concept`, `okf_delete_concept`, `okf_merge_concepts`; Bundles — `okf_list_bundles`, `okf_init_bundle`, `okf_import_bundle`, `okf_export_bundle`, `okf_delete_bundle`; Ingest — `okf_ingest`, `okf_add_raw_source`; Organization — `okf_add_link`, `okf_backlinks`; Health — `okf_lint`, `okf_stale_report`. (15 kept + 3 added = 18 of the original 31 → 13 fewer net; 16 removed by name, per spec.md FR-037.)
-- **Two-level index** (design.md §6): bundle `concept-index.md` (concept term → description → covering chapters, frontmatter-carrying) + per-doc `toc/<docId>.md` (TOC rows `concept › chapter — description`). Both regenerated from chapter frontmatter on write; staleness via `index_generated_at` vs chapter `updated_at`.
-- **`okf_search`** (design.md §9): tokenize query → match concept terms (exact/substring, weighted) → gather covering chapters from the index → return TOC rows `{docId, docTitle, chId, chTitle, description, matchedConcept}`. **This is the single function both the `okf_search` tool and the app's `POST /search` route call** (FR-036).
-- **Graph derivation** (design.md §8.3 `GET /graph`): nodes = documents + chapters + concept terms; edges = containment (chapter→doc, from `parent`), coverage (chapter→term, from the index), explicit links (from stored edges). Computed on read.
-- **Inline-asset pipeline** (design.md §7.5): at ingest, extract non-HTML asset URLs → download to `raw/assets/<docId>/` via `/api/fs/raw` → `view_image`/`video_keyframes` → write `![…](raw/assets/…)` + `> **Interpretation:** …` into the chapter body. Stored interpretation → no re-vision at query (NFR-005, SC-006).
-- **Job lifecycle** (design.md §8.3 + ADR-006): `okf_ingest` records a job (queued) → `agent_delegate` returns a `jobId` + the two callback URLs → the sub-agent's first tool call marks `running`, its final one marks `completed` (or the calling assistant's safety-net marks `failed` if the run errors before the sub-agent's final callback). Jobs are global, exposed at `GET /jobs` (FR-044, NFR-011).
-- **App data access** (design.md §8.3): the app iframe talks to the service over `httpPath` (from `GET /api/services/okf-knowledge-base/config`) — **not** same-origin BOS routes (ADR-007). Routes: `GET /bundles`, `GET /bundles/:id`, `GET /bundles/:id/toc/:docId`, `GET /bundles/:id/concept/:chId`, `POST /bundles/:id/search`, `GET /bundles/:id/graph`, `GET /jobs`, `GET /jobs/:id`, plus the job-callback POSTs. All read-only for the app (writes stay agent/tool-driven), loopback-authed.
-- **Upgrade path** (design.md §7.4 / Risk #9): pre-existing bundles may lack `parent`/`concepts`/`summary` frontmatter → `okf_import_bundle`/first-open does a **best-effort** index derivation (flat doc→chapter, no `parent`, empty/naive concepts) and the health tab reports "index needs regeneration"; a re-ingest or an `okf_upsert_concept` pass fills it. **Decision pinned here**: best-effort, non-destructive, reported — never silently drop or silently re-derive-overwrite.
-- **App name for `docs/`**: `OKF Knowledge Base` (the display name the user sees) — used verbatim in `docs/usage/OKF Knowledge Base/` and `docs/dev/OKF Knowledge Base/`.
+- **ADR-005 (auto-trigger)** — `okf_ingest` returns `{jobId, job}` immediately; `delegate-bridge.js` fires `POST /api/subagents/delegate` (the `okf-ingest` agent + a task carrying `jobId` + source), captures the `runId` from the first `run_started` line, and holds the stream. The run is **self-sufficient** (FR-047). *(Carried forward — this plan's baseline.)*
+- **ADR-006 (launcher finalization + reaper)** — the worker finalizes the job from the terminal line's `endedReason`: `completed`→completed (+summary from the run's final text), **`cancelled`→cancelled**, `error`/`max_steps`→failed. A **stale reaper** (bound `jobFinalizeTimeoutMs`) marks a non-terminal job `failed` if no terminal line arrives. No sub-agent callbacks, no assistant safety-net. *(Carried forward.)*
+- **ADR-010 (job cancellation — this scope-add's core decision)** — verified-in-source: `abortHeadlessRun(runId)` (`src/lib/agent/subagents/run-registry.ts`) is process-local (`globalThis`), returns a boolean, and is the run-registry's abort handle (self-heal uses it in-process); `run_started` carries the `runId` as the first delegate NDJSON line; aborting yields `endedReason:"cancelled"`. **Decision**: the worker captures the `runId` and, on cancel, calls the **one generic `src/` route** `POST /api/subagents/[runId]/abort` (which calls `abortHeadlessRun`); the held stream then delivers `cancelled` and the launcher (ADR-006) writes it. The job's `cancelled` is **derived from the run's own terminal signal**, so it can never drift. **Rejections**: (a) the worker aborting its own `fetch` — zombies the run (the delegate route never wires `req.signal` into the run); (b) an OKF-specific abort endpoint — hard-codes OKF into the platform. **Per-run abort (S1)**: nested reference runs are independent top-level runs (the delegate route doesn't forward `parentRunId`, so the registry's family cascade can't reach them) — each is its own job, cancelled by its own `runId`. **Queued-window (S4)**: a cancel before `run_started` marks the job `cancelled`; the moment the `runId` is captured, the bridge immediately fires the abort (≡ running cancel; best-effort prompt stop, partial content preserved, index regenerable).
+- **The 21 tools** (design.md §8.2, authoritative): Retrieval — `okf_search`, `okf_read_toc`, `okf_read_concept`, `okf_list_concepts`; Concepts — `okf_upsert_concept`, `okf_delete_concept`, `okf_merge_concepts`; Bundles — `okf_list_bundles`, `okf_init_bundle`, `okf_import_bundle`, `okf_export_bundle`, `okf_delete_bundle`; Ingest — `okf_ingest`, `okf_add_raw_source`; **Jobs — `okf_list_jobs`, `okf_cancel_job`, `okf_delete_job`**; Organization — `okf_add_link`, `okf_backlinks`; Health — `okf_lint`, `okf_stale_report`. Net delta from the prior installed 31: the auto-ingest redesign (retrieval/organization) + this scope-add's two job-control tools. (SC-007 pins 21.)
+- **Job record** (design.md §8.3) — `{id, status ∈ queued|running|completed|cancelled|failed, bundleId, source, runId?, startedAt, endedAt, durationMs?, progress?, summary?, error?}`; `cancelled` has `error: null` (a stop, not an error). Persisted `<bundleRoot>/.jobs/<id>.md` + in-memory hot map.
+- **App Jobs surface** (mockup contract) — `cancelled` status dot (muted warm amber `#d0894e`, "stopped not errored"), a Cancel control on running/queued rows (`POST /jobs/<id>/cancel`), a Delete control on non-running rows (`DELETE /jobs/<id>`), a cancelled sample run (partial summary "work done before stop · not committed"). The tab badge counts all jobs.
+- **Agent allowlist** (design.md §8.4) — `okf_ingest, okf_add_raw_source, okf_list_concepts, okf_read_concept, okf_read_toc, okf_search, okf_upsert_concept, okf_add_link, web_search, web_fetch, file_to_markdown, view_image, video_keyframes, file_read, file_list`. `okf_ingest` is the only job-lifecycle tool (fire independent nested reference jobs, FR-019/FR-047); the three job-control tools stay top-level/app.
 
 ## Open items carried into `tasks.md`
 
-1. **Tool rename**: `okf_init_bundle` (FR-025) vs `okf_create_bundle` (design.md §8.2) — pin one in the first task (recommend keeping the spec's `okf_init_bundle` name; the spec is the contract).
-2. **`jobs.json` location** — bundle-level vs service-level: design.md says service state; confirm in the first service task (single-user, so service-level global is fine and matches FR-044's global Jobs tab).
-3. **e2e path** — pinned: item-local `e2e/okf-knowledge-base.spec.ts` (feature-id = item id), run via `BOS_PREVIEW_URL` + `npx playwright test`.
-4. **App facet entry** — confirm `app/src/main.tsx` (bundled) is the right app shape for the mockup (the mockup is a self-contained HTML; the app facet is a TSX app that reproduces it — `app_build` bundles it).
+1. **The `src/` abort route is the mixed target's deliverable** — one new file, `src/app/api/subagents/[runId]/abort/route.ts`; keep it generic (FR-052). It is committed on the branch **alongside** `app_build` (not part of the item staging dir).
+2. **`runId` capture is in `delegate-bridge.js`** — the worker already receives the `run_started` line on its stream; this scope-add adds the capture + the cancel path, not a new channel.
+3. **`jobFinalizeTimeoutMs` config** — the reaper bound (carried forward from auto-ingest; ADR-006/FR-049); add to `service.json` configSchema + `config/`.
+4. **e2e mock-delegate seam** — `OKF_DELEGATE_URL` env override already exists (the auto-ingest work); the cancel/delete tests reuse it to get a deterministic, controllable in-flight run (emit `run_started`, stay open) so cancel is asserted without a real 10-minute agent.
+5. **`cancelled` is distinct from `failed`** — pinned everywhere (job store, both tools' outputs, both app routes, `GET /jobs`, `okf_list_jobs`, the mockup dot). A cancelled run's partial content is preserved and the index regenerates; `error` is `null`.
