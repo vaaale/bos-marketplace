@@ -7,7 +7,7 @@
 <style>
   :root {
     --bg: #0e1116; --panel: #171b22; --panel2: #1d222b; --border: #2a313c;
-    --text: #e6edf3; --muted: #8b98a5; --accent: #4f8cff; --green: #3fb950;
+    --text: #e6edf3; --muted: #8b98a5; --accent: #4f8cff; --green: #3fb950; --teal: #2dd4bf;
     --amber: #d29922; --red: #f85149; --violet: #8b7cf6; --stopped: #d0894e; --radius: 8px;
     --pane-w: 430px;
   }
@@ -74,7 +74,7 @@
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; vertical-align:middle; }
   .dot.green { background: var(--green); } .dot.amber { background: var(--amber); } .dot.red { background: var(--red); }
   .dot.violet { background: var(--violet); } .dot.queued { background:#5b6675; } .dot.cancelled { background: var(--stopped); }
-  .dot-doc { background:#6b7688; } .dot-chap { background: var(--accent); } .dot-concept { background: var(--violet); }
+  .dot-doc { background:#6b7688; } .dot-chap { background: var(--accent); } .dot-concept { background: var(--violet); } .dot-person { background: var(--teal); }
   .dot.running { background: var(--accent); animation: pulse 1.6s infinite; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(79,140,255,.5)} 70%{box-shadow:0 0 0 7px rgba(79,140,255,0)} 100%{box-shadow:0 0 0 0 rgba(79,140,255,0)} }
 
@@ -118,7 +118,9 @@
   .term .caret { color: var(--muted); transition: transform .12s; flex:0 0 auto; }
   .term.open .caret { transform: rotate(90deg); }
   .term .t-name { font-weight:600; font-size:13.5px; }
+  .term.person { border-left-color: var(--teal); }
   .term .t-key { font-size:10px; letter-spacing:.4px; text-transform:uppercase; color:var(--violet); border:1px solid rgba(139,124,246,.4); background:rgba(139,124,246,.12); border-radius:20px; padding:1px 7px; }
+  .t-key.person { color:var(--teal); border-color:rgba(45,212,191,.4); background:rgba(45,212,191,.12); }
   .term .t-cnt { margin-left:auto; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
   .term .t-body { border-top:1px solid var(--border); background: #141922; }
   .cover { display:grid; grid-template-columns: 1fr auto; gap:2px 10px; padding:9px 14px 9px 30px; border-bottom:1px solid rgba(255,255,255,.04); cursor:pointer; align-items:baseline; }
@@ -290,7 +292,9 @@
   .q-pane-head { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--border); background:var(--panel2); flex-wrap:wrap; }
   .q-pane-kind { font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; }
   .q-pane-kind.concept { color:var(--violet); }
+  .q-pane-kind.person { color:var(--teal); }
   .q-pane-term { font-weight:600; font-family:ui-monospace,Menlo,monospace; font-size:13px; color:var(--violet); }
+  .q-pane-term.person { color:var(--teal); }
   .q-pane-src { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px; flex-wrap:wrap; min-width:0; flex:1 1 auto; }
   .q-pane-src a { color:var(--accent); text-decoration:none; border-bottom:1px solid rgba(79,140,255,.4); word-break:break-all; }
   .q-pane-anch { color:var(--muted); }
@@ -307,6 +311,7 @@
   .lg-sw.doc { border-color:#485466; background:var(--panel2); }
   .lg-sw.chap { border-color:var(--accent); background:rgba(79,140,255,.22); }
   .lg-sw.concept { border-color:var(--violet); background:rgba(139,124,246,.22); }
+  .lg-sw.person { border-color:var(--teal); background:rgba(45,212,191,.22); }
   .lg-line { width:22px; height:0; display:inline-block; vertical-align:3px; position:relative; }
   .lg-line::after { content:""; position:absolute; right:-1px; top:-4px; border-left:6px solid; border-top:4px solid transparent; border-bottom:4px solid transparent; }
   .lg-line.contain { border-top:2px solid rgba(255,255,255,.4); } .lg-line.contain::after { border-left-color:rgba(255,255,255,.4); }
@@ -338,6 +343,7 @@
   .g-node.doc .g-circ { fill:#222a34; stroke:#485466; }
   .g-node.chap .g-circ { fill:rgba(79,140,255,.16); stroke:var(--accent); }
   .g-node.concept .g-circ { fill:rgba(139,124,246,.16); stroke:var(--violet); }
+  .g-node.person .g-circ { fill:rgba(45,212,191,.16); stroke:var(--teal); }
   .g-node:hover .g-circ { filter:drop-shadow(0 0 5px rgba(255,255,255,.25)); }
   .g-node .g-tx { font-size:9.5px; fill:#eef2f8; pointer-events:none; font-weight:500; paint-order:stroke; stroke:rgba(8,10,14,.85); stroke-width:2.4px; stroke-linejoin:round; }
   .g-node.doc .g-tx { font-weight:600; font-size:11px; }
@@ -358,6 +364,7 @@
   .srow-list { margin-top:4px; }
   .srow { position:relative; background:var(--panel); border:1px solid var(--border); border-left:2px solid var(--violet); border-radius:8px; padding:11px 14px; margin-bottom:9px; cursor:pointer; }
   .srow:hover { background:var(--panel2); }
+  .srow.person { border-left-color: var(--teal); }
   .s-loc { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
   .s-loc .doc { color:var(--text); font-weight:500; }
   .s-loc .arrow { opacity:.5; }
@@ -608,7 +615,22 @@ const BUNDLES = {
             {t:'md',v:"Full rollout proceeds only after the canary window passes clean, and is always announced in the release channel."}
           ] }
       ]},
-      { id:"error-handling", title:"Error Handling Standards", updated:"2026-06-30", chapters:[
+    personTerms:[
+      { name:"Diego Córdoba", covers:[
+        {docId:"api-design", chId:"endpoint-naming"},
+        {docId:"api-design", chId:"versioning"},
+        {docId:"api-design", chId:"rate-limiting"}
+      ]},
+      { name:"Sofia Lindqvist", covers:[
+        {docId:"deployment", chId:"pre-deploy"},
+        {docId:"deployment", chId:"canary"}
+      ]}
+    ]
+  ,
+  "internal-policies": {
+    name:"Internal Policies", glyph:"📋",
+    docs:[
+      { id:"remote-work", title:"Remote Work Policy", updated:"2026-05-10", chapters:[
         { id:"taxonomy", title:"Exception Taxonomy", status:"ok",
           concepts:["error-handling"],
           summary:"Classify errors as retriable, terminal, or user-facing; map each to a response.",
@@ -729,7 +751,9 @@ function conceptIndex(b){
   b.docs.forEach(d=>d.chapters.forEach(c=>c.concepts.forEach(t=>{
     (map[t]=map[t]||[]).push({docId:d.id,docTitle:d.title,chId:c.id,chTitle:c.title,desc:c.summary,stale:c.status!=='ok',status:c.status});
   })));
-  return Object.keys(map).sort().map(t=>({name:t,count:map[t].length,covers:map[t],stale:map[t].some(x=>x.stale)}));
+  (b.personTerms||[]).forEach(pt=>{ const covs=[]; pt.covers.forEach(cv=>{ const c=findCh(b,cv.docId,cv.chId); if(!c) return; covs.push({docId:cv.docId,docTitle:findDoc(b,cv.docId).title,chId:cv.chId,chTitle:c.title,desc:c.summary,stale:c.status!=='ok',status:c.status}); }); (map[pt.name]=map[pt.name]||[]).push.apply(map[pt.name],covs); });
+  const personSet=new Set((b.personTerms||[]).map(p=>p.name));
+  return Object.keys(map).sort().map(t=>({name:t,kind:personSet.has(t)?'person':'topic',count:map[t].length,covers:map[t],stale:map[t].some(x=>x.stale)}));
 }
 function findDoc(b,id){ return b.docs.find(d=>d.id===id); }
 function findCh(b,docId,chId){ const d=findDoc(b,docId); return d&&d.chapters.find(c=>c.id===chId); }
@@ -851,7 +875,7 @@ function renderDetail(){
   const b=BUNDLES[state.bundleId]; const st=bundleStats(b);
   const idx=conceptIndex(b);
   const tabs=[
-    ['conceptIndex','Concept Index',I('layers',15),st.concepts],
+    ['conceptIndex','Concept Index',I('layers',15),idx.length],
     ['documents','Documents',I('list',15),st.docs],
     ['health','Health','',st.stale],
     ['io','Import / Export','',0]
@@ -889,15 +913,15 @@ function renderConceptIndex(b,idx){
   let list=idx.filter(t=>!q || t.name.toLowerCase().includes(q) || t.covers.some(c=>c.desc.toLowerCase().includes(q)));
   if(q && state.expandedTerm && !list.some(t=>t.name===state.expandedTerm)) state.expandedTerm=null;
   let h='<div class="search">'+I('search',15)
-    + '<input placeholder="Search concept terms (concept-anchored — matches the vocabulary, not full text)…" value="'+escapeHtml(state.termQuery)+'" oninput="onTermQuery(this.value)">'
+    + '<input placeholder="Search terms (concept-anchored — matches the vocabulary + people, not full text)…" value="'+escapeHtml(state.termQuery)+'" oninput="onTermQuery(this.value)">'
     + (state.termQuery?'<span class="clear" onclick="state.termQuery=\'\';renderDetail()">'+I('x',14)+'</span>':'')
     + '</div>';
-  h+='<div class="note">'+I('info',14)+'<span><b>Concept index</b> — the bundle-level routing table. Each row is a <span style="color:var(--violet)">concept term</span> (the searchable vocabulary); expand it to see the <b>(document, chapter)</b> pairs it covers, each with a one-line description. This is O(V) — bounded by distinct terms, not by documents. <b>Derived &amp; regenerable</b> from chapter frontmatter; rebuild any time.</span></div>';
+  h+='<div class="note">'+I('info',14)+'<span><b>Concept index</b> — the bundle-level routing table. Each row is a <span style="color:var(--violet)">concept term</span> (the searchable vocabulary) or a <span style="color:var(--teal)">person-kind term</span> (a salient person the bundle is about — shown in teal); expand it to see the <b>(document, chapter)</b> pairs it covers, each with a one-line description. This is O(V) — bounded by distinct terms, not by documents. <b>Derived &amp; regenerable</b> from chapter frontmatter; rebuild any time.</span></div>';
   if(!list.length){
     h+='<div class="empty" style="padding:40px"><h3 style="font-size:15px">No concept terms match</h3><p>'+(q?'Try a broader term, or read the full vocabulary — the vocabulary grows organically as documents are ingested.':'')+'</p></div>';
     return h;
   }
-  h+='<div class="count" style="margin-bottom:10px">'+list.length+' of '+idx.length+' concept terms</div>';
+  h+='<div class="count" style="margin-bottom:10px">'+list.length+' of '+idx.length+' terms</div>';
   h+=list.map(t=>{
     const open = state.expandedTerm===t.name;
     let body='';
@@ -914,7 +938,7 @@ function renderConceptIndex(b,idx){
       + '<div class="t-head" onclick="toggleTerm(\''+t.name+'\')">'
       + I('caret',15,'caret')
       + '<span class="t-name">'+escapeHtml(t.name)+'</span>'
-      + '<span class="t-key">concept</span>'
+      + '<span class="t-key'+(t.kind==='person'?' person':'')+'">'+(t.kind==='person'?'person':'concept')+'</span>'
       + (t.stale?'<span class="pill stale">attention</span>':'')
       + '<span class="t-cnt">'+t.count+' chapter'+(t.count!==1?'s':'')+'</span>'
       + '</div>'+body+'</div>';
@@ -1137,14 +1161,16 @@ function graphData(bundleId){
   const docs=b.docs.map(d=>({id:d.id,label:d.title,type:'doc'}));
   const chaps=[];
   b.docs.forEach(d=>d.chapters.forEach(c=>chaps.push({id:d.id+'/'+c.id,docId:d.id,chId:c.id,label:c.title,type:'chap'})));
-  const concepts=conceptIndex(b).map(t=>({id:t.name,label:t.name,type:'concept',count:t.count}));
+  const idx=conceptIndex(b);
+  const concepts=idx.filter(t=>t.kind==='topic').map(t=>({id:t.name,label:t.name,type:'concept',count:t.count}));
+  const persons=idx.filter(t=>t.kind==='person').map(t=>({id:t.name,label:t.name,type:'person',count:t.count}));
   const containment=chaps.map(c=>({from:c.docId,to:c.id,kind:'contain'}));
   const coverage=[];
   b.docs.forEach(d=>d.chapters.forEach(c=>c.concepts.forEach(t=>coverage.push({from:d.id+'/'+c.id,to:t,kind:'cover'}))));
   const links=(EXPLICIT_LINKS[bundleId]||[]).map(l=>({from:l[0],to:l[1],kind:'link'}));
-  return {docs,chaps,concepts,containment,coverage,links};
+  return {docs,chaps,concepts,persons,containment,coverage,links};
 }
-function nodeRadius(n){ if(n.type==='doc') return 22; if(n.type==='concept') return 14+Math.min(9,(n.count||1)*2.2); return 15; }
+function nodeRadius(n){ if(n.type==='doc') return 22; if(n.type==='concept'||n.type==='person') return 14+Math.min(9,(n.count||1)*2.2); return 15; }
 function renderGraph(g){
   const stage=document.getElementById('graphStage');
   const svg=stage&&stage.querySelector('.g-svg');
@@ -1160,13 +1186,13 @@ function renderGraph(g){
   svg.setAttribute('width','100%');
   svg.setAttribute('height','100%');
   if(G.resizeObs){ G.resizeObs.disconnect(); G.resizeObs=null; }
-  const all=g.docs.concat(g.chaps).concat(g.concepts);
+  const all=g.docs.concat(g.chaps).concat(g.concepts).concat(g.persons||[]);
   const center=G.center;
   const baseR=Math.max(120,Math.min(W,H)/2 - 74);
-  const byType={doc:0,chap:0,concept:0};
+  const byType={doc:0,chap:0,concept:0,person:0};
   G.nodes=all.map(n=>{
-    const total=g[n.type==='doc'?'docs':n.type==='chap'?'chaps':'concepts'].length;
-    const i=byType[n.type]++; const a=(i/total)*Math.PI*2+(n.type==='doc'?0:n.type==='chap'?1.2:2.3);
+    const total=g[n.type==='doc'?'docs':n.type==='chap'?'chaps':n.type==='person'?'persons':'concepts'].length;
+    const i=byType[n.type]++; const a=(i/total)*Math.PI*2+(n.type==='doc'?0:n.type==='chap'?1.2:n.type==='person'?3.4:2.3);
     const rr=baseR*(n.type==='doc'?0.28:n.type==='chap'?0.58:0.9);
     return Object.assign({},n,{r:nodeRadius(n),fixed:false,fx:null,fy:null,vx:0,vy:0,
       x:center.x+Math.cos(a)*rr+(Math.random()-.5)*10, y:center.y+Math.sin(a)*rr*0.82+(Math.random()-.5)*10});
@@ -1250,7 +1276,7 @@ function renderGraphSVG(){
   h+='</g><g class="g-nodes">';
   G.nodes.forEach(n=>{
     const sel=isNodeSelected(n.id)?' sel':'';
-    const ringCol=n.type==='doc'?'#5a6a82':n.type==='concept'?'var(--violet)':'var(--accent)';
+    const ringCol=n.type==='doc'?'#5a6a82':n.type==='concept'?'var(--violet)':n.type==='person'?'var(--teal)':'var(--accent)';
     h+='<g class="g-node '+n.type+sel+'" data-id="'+n.id+'"><title>'+escapeHtml(n.label)+'</title>'
       +'<circle class="g-ring" r="'+(n.r+5)+'" stroke="'+ringCol+'"/>'
       +'<circle class="g-circ" r="'+n.r+'"/>'
@@ -1305,10 +1331,10 @@ function attachGraphInteractions(svg){
     if(G.moved) return;
     const gEl=e.target.closest('.g-node'); if(!gEl) return;
     const n=G.byId[gEl.getAttribute('data-id')];
-    openPane(n.type==='doc'?'doc':n.type==='concept'?'concept':'chap',
+    openPane(n.type==='doc'?'doc':(n.type==='concept'||n.type==='person')?'concept':'chap',
       n.type==='doc'? n.id : (n.type==='chap'? n.docId : null),
       n.type==='chap'? n.chId : null,
-      n.type==='concept'? n.id : null);
+      (n.type==='concept'||n.type==='person')? n.id : null);
   });
   svg.addEventListener('mouseover',e=>{ const gEl=e.target.closest('.g-node'); setGraphHover(gEl? G.byId[gEl.getAttribute('data-id')].id : null); });
 }
@@ -1341,6 +1367,7 @@ function legendHtml(){
   return '<span class="lg-item"><span class="lg-sw doc"></span>Document</span>'
     +'<span class="lg-item"><span class="lg-sw chap"></span>Chapter</span>'
     +'<span class="lg-item"><span class="lg-sw concept"></span>Concept term</span>'
+    +'<span class="lg-item"><span class="lg-sw person"></span>Person</span>'
     +'<span class="lg-sep"></span>'
     +'<span class="lg-item"><span class="lg-line contain"></span>contains</span>'
     +'<span class="lg-item"><span class="lg-line cover"></span>covers</span>'
@@ -1358,7 +1385,8 @@ function tableRows(bundleId){
     });
   });
   conceptIndex(b).forEach(t=>{
-    rows.push({type:'concept', name:t.name, desc:'covers '+t.count+' chapter'+(t.count!==1?'s':''), kind:'concept', docId:null, chId:null, term:t.name});
+    if(t.kind==='person') rows.push({type:'person', name:t.name, desc:'person · covers '+t.count+' chapter'+(t.count!==1?'s':''), kind:'person', docId:null, chId:null, term:t.name});
+    else rows.push({type:'concept', name:t.name, desc:'covers '+t.count+' chapter'+(t.count!==1?'s':''), kind:'topic', docId:null, chId:null, term:t.name});
   });
   return rows;
 }
@@ -1372,16 +1400,18 @@ function renderTableView(bundleId, q){
     h+='<div class="empty" style="padding:36px"><h3 style="font-size:15px">No nodes match</h3><p>The filter matches node names/labels (case-insensitive). Try a broader term.</p></div>';
     return h;
   }
-  h+='<table><thead><tr><th style="width:128px">Type</th><th>Name</th><th>Description / Label</th></tr></thead><tbody>';
+  h+='<table><thead><tr><th style="width:128px">Type</th><th>Name</th><th style="width:96px">Kind</th><th>Description / Label</th></tr></thead><tbody>';
   h+=rows.map(r=>{
     const onClick = r.kind==='doc'? "openPane('doc','"+r.docId+"')"
       : r.kind==='chap'? "openPane('chap','"+r.docId+"','"+r.chId+"')"
       : "openPane('concept',null,null,'"+r.term+"')";
-    const dotClass = r.type==='doc'?'dot-doc':r.type==='chap'?'dot-chap':'dot-concept';
-    const typeLabel = r.type==='doc'?'Document':r.type==='chap'?'Chapter':'Concept';
+    const dotClass = r.type==='doc'?'dot-doc':r.type==='chap'?'dot-chap':r.type==='person'?'dot-person':'dot-concept';
+    const typeLabel = r.type==='doc'?'Document':r.type==='chap'?'Chapter':r.type==='person'?'Person':'Concept';
+    const kindPill = r.kind==='topic'?'<span class="t-key">topic</span>':r.kind==='person'?'<span class="t-key person">person</span>':'—';
     return '<tr class="clickable" onclick="'+onClick+'">'
       +'<td><span class="dot '+dotClass+'"></span><span style="color:var(--muted);font-size:12px">'+typeLabel+'</span></td>'
       +'<td><span class="name" style="font-weight:'+(r.type==='doc'?'600':'500')+'">'+escapeHtml(r.name)+'</span></td>'
+      +'<td>'+kindPill+'</td>'
       +'<td style="color:var(--muted)">'+escapeHtml(r.desc)+'</td>'
       +'</tr>';
   }).join('');
@@ -1429,7 +1459,7 @@ function searchBundle(bundleId,q){
       const descHit=tokens.some(tok=>cov.desc.toLowerCase().includes(tok));
       if(termHit||descHit){
         const key=cov.docId+'/'+cov.chId;
-        if(!seen.has(key)){ seen.add(key); rows.push({docId:cov.docId,docTitle:cov.docTitle,chId:cov.chId,chTitle:cov.chTitle,desc:cov.desc,status:cov.status,matched:term.name}); }
+        if(!seen.has(key)){ seen.add(key); rows.push({docId:cov.docId,docTitle:cov.docTitle,chId:cov.chId,chTitle:cov.chTitle,desc:cov.desc,status:cov.status,matched:term.name,kind:term.kind}); }
       }
     }
   }
@@ -1441,7 +1471,7 @@ function renderSearchHost(){
     +(state.qsearch?'<span class="clear" onclick="clearQSearch()">'+I('x',14)+'</span>':'')
     +'</div>';
   h+='<div class="q-suggest">Try a concept term: '+['rollback','idempotency','versioning','monitoring','logging'].map(s=>'<button class="sug" onclick="runQSearch(\''+s+'\')">'+s+'</button>').join(' ')+'</div>';
-  h+='<div class="note">'+I('info',14)+'<span><b>Concept-anchored</b> — this runs the same deterministic <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_search</code> pass the agent uses: it matches the bundle\'s <span style="color:var(--violet)">concept vocabulary</span> and the one-line descriptions in the index, <b>not full text</b>. Each result is a TOC row (document › chapter) with the concept term that matched. Click a result to open the full chapter in the reader pane.</span></div>';
+  h+='<div class="note">'+I('info',14)+'<span><b>Concept-anchored</b> — this runs the same deterministic <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_search</code> pass the agent uses: it matches the bundle\'s <span style="color:var(--violet)">concept vocabulary</span> and the one-line descriptions in the index, <b>not full text</b>. Each result is a TOC row (document › chapter) with the concept/person term that matched. Click a result to open the full chapter in the reader pane.</span></div>';
   if(!state.qsearchRun){
     h+='<div class="empty" style="padding:36px"><h3 style="font-size:15px">Run a search</h3><p>Type a concept term or a phrase from a stored description. Results mirror exactly what the agent gets from <b>okf_search</b>.</p></div>';
     return h;
@@ -1453,10 +1483,10 @@ function renderSearchHost(){
   }
   h+='<div class="count" style="margin:0 0 10px">'+rows.length+' result'+(rows.length!==1?'s':'')+' for “'+escapeHtml(state.qsearch)+'”</div>';
   h+='<div class="srow-list">'+rows.map(r=>
-    '<div class="srow" onclick="openPane(\'chap\',\''+r.docId+'\',\''+r.chId+'\')">'
+    '<div class="srow'+(r.kind==='person'?' person':'')+'" onclick="openPane(\'chap\',\''+r.docId+'\',\''+r.chId+'\')">'
     +'<div class="s-loc"><span class="doc">'+escapeHtml(r.docTitle)+'</span><span class="arrow">›</span>'+escapeHtml(r.chTitle)+' '+statusPill(r.status)+'</div>'
     +'<div class="s-desc">'+escapeHtml(r.desc)+'</div>'
-    +'<div class="s-term"><span class="t-key">matched concept</span><span class="st">'+escapeHtml(r.matched)+'</span></div>'
+    +'<div class="s-term"><span class="t-key'+(r.kind==='person'?' person':'')+'">'+(r.kind==='person'?'matched person':'matched concept')+'</span><span class="st">'+escapeHtml(r.matched)+'</span></div>'
     +'<span class="s-go">open '+I('back',12)+'</span>'
     +'</div>'
   ).join('')+'</div>';
@@ -1522,7 +1552,7 @@ function renderQuery(){
     const g=graphData(state.qBundle);
     content.innerHTML='<div class="g-legend">'+legendHtml()+'</div>'
       +'<div id="graphStage" class="graph-stage"><svg class="g-svg"></svg></div>'
-      +'<div class="note">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>contains</b> (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>covers</b> (chapter → the concept term it covers, via the concept index), and <b>related</b> (explicit <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_add_link</code> edges). Force-directed layout — <b>drag</b> a node, <b>scroll</b> to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbors. Click any node to open it in the reader pane. Type in the search box above to highlight matching nodes (everything else dims to 30%).</span></div>';
+      +'<div class="note">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>contains</b> (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>covers</b> (chapter → the concept/person term it covers, via the concept index), and <b>related</b> (explicit <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_add_link</code> edges). Force-directed layout — <b>drag</b> a node, <b>scroll</b> to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbors. Click any node to open it in the reader pane. Type in the search box above to highlight matching nodes (everything else dims to 30%).</span></div>';
     renderGraph(g);
     applyGraphSearch(state.qsearch);
   } else {
@@ -1543,7 +1573,8 @@ function renderPane(){
   const b=BUNDLES[p.bundleId]||BUNDLES[state.qBundle];
   if(p.kind==='concept'){
     const idx=conceptIndex(b); const term=idx.find(t=>t.name===p.term); const n=term?term.count:0;
-    head.innerHTML='<div class="q-pane-kind concept">'+I('layers',14)+' Concept term</div><div class="q-pane-term">'+escapeHtml(p.term)+'</div><div class="q-pane-sub">vocabulary term · covered by '+n+' chapter'+(n!==1?'s':'')+' · no single source document</div><button class="ibtn" onclick="closePane()" title="Close reader">'+I('x',15)+'</button>';
+    const isPerson=term&&term.kind==='person';
+    head.innerHTML='<div class="q-pane-kind '+(isPerson?'person':'concept')+'">'+I(isPerson?'eye':'layers',14)+' '+(isPerson?'Person term':'Concept term')+'</div><div class="q-pane-term'+(isPerson?' person':'')+'">'+escapeHtml(p.term)+'</div><div class="q-pane-sub">'+(isPerson?'person-kind term · subject of ':'vocabulary term · covered by ')+n+' chapter'+(n!==1?'s':'')+' · no single source document</div><button class="ibtn" onclick="closePane()" title="Close reader">'+I('x',15)+'</button>';
     body.innerHTML=paneConcept(b,term);
     return;
   }
@@ -1591,10 +1622,11 @@ function paneDoc(b,d){
 }
 function paneConcept(b,term){
   if(!term) return '<div class="empty" style="margin:14px;padding:30px">Concept term not found in this bundle.</div>';
-  let h='<div class="note" style="margin:0 14px 0">'+I('layers',14)+'<span><b>'+escapeHtml(term.name)+'</b> is a concept-term in the bundle vocabulary (the O(V) routing table). It routes to the chapters below — concept-anchored. Click a chapter to open it in full.</span></div>';
+  const isPerson=term.kind==='person';
+  let h='<div class="note" style="margin:0 14px 0">'+I(isPerson?'eye':'layers',14)+'<span><b>'+escapeHtml(term.name)+'</b> is a '+(isPerson?'<span style="color:var(--teal)">person-kind term</span>':'<span style="color:var(--violet)">concept term</span>')+' in the bundle vocabulary (the O(V) routing table). It routes to the '+(isPerson?'documents / chapters this person is the subject of':'chapters below — concept-anchored')+'. Click a chapter to open it in full.</span></div>';
   h+='<div class="toc" style="margin:12px 14px 0">'+term.covers.map(c=>
     '<div class="toc-item" onclick="openPane(\'chap\',\''+c.docId+'\',\''+c.chId+'\')">'
-    +'<span class="toc-num" style="color:var(--violet)">◆</span>'
+    +'<span class="toc-num" style="color:'+(isPerson?'var(--teal)':'var(--violet)')+'">◆</span>'
     +'<span class="toc-title"><span style="font-weight:500;color:var(--muted)">'+escapeHtml(c.docTitle)+'</span> › '+escapeHtml(c.chTitle)+'</span>'
     +'<span class="toc-desc">'+escapeHtml(c.desc)+'</span>'
     +'<span class="toc-go">open '+I('back',12)+'</span>'
