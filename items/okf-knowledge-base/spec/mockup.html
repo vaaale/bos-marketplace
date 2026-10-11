@@ -8,7 +8,7 @@
   :root {
     --bg: #0e1116; --panel: #171b22; --panel2: #1d222b; --border: #2a313c;
     --text: #e6edf3; --muted: #8b98a5; --accent: #4f8cff; --green: #3fb950;
-    --amber: #d29922; --red: #f85149; --violet: #8b7cf6; --radius: 8px;
+    --amber: #d29922; --red: #f85149; --violet: #8b7cf6; --stopped: #d0894e; --radius: 8px;
     --pane-w: 430px;
   }
   * { box-sizing: border-box; margin: 0; }
@@ -73,7 +73,7 @@
   .count { color: var(--muted); font-size:12px; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; vertical-align:middle; }
   .dot.green { background: var(--green); } .dot.amber { background: var(--amber); } .dot.red { background: var(--red); }
-  .dot.violet { background: var(--violet); } .dot.queued { background:#5b6675; }
+  .dot.violet { background: var(--violet); } .dot.queued { background:#5b6675; } .dot.cancelled { background: var(--stopped); }
   .dot-doc { background:#6b7688; } .dot-chap { background: var(--accent); } .dot-concept { background: var(--violet); }
   .dot.running { background: var(--accent); animation: pulse 1.6s infinite; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(79,140,255,.5)} 70%{box-shadow:0 0 0 7px rgba(79,140,255,0)} 100%{box-shadow:0 0 0 0 rgba(79,140,255,0)} }
@@ -225,6 +225,7 @@
   .job-status { font-size:11px; text-transform:uppercase; letter-spacing:.4px; width:78px; flex:0 0 auto; }
   .job-status.completed { color:var(--green); } .job-status.failed { color:var(--red); }
   .job-status.running { color:var(--accent); } .job-status.queued { color:var(--muted); }
+  .job-status.cancelled { color:var(--stopped); }
   .job-bundle { display:flex; align-items:center; gap:6px; font-weight:500; min-width:0; flex:0 1 auto; }
   .job-src { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; min-width:0; flex:1; overflow:hidden; }
   .job-src span.txt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -256,6 +257,17 @@
   .prog-sub { margin-top:4px; font-size:11.5px; color:var(--muted); }
   .job-queued { display:flex; gap:10px; align-items:flex-start; font-size:12.5px; color:var(--muted); background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; }
   .job-queued svg { flex:0 0 auto; color:var(--muted); margin-top:1px; }
+
+  .job-cancelled { display:flex; gap:10px; align-items:flex-start; font-size:12.5px; color:var(--text); background:rgba(208,137,78,.09); border:1px solid rgba(208,137,78,.34); border-radius:8px; padding:12px 14px; }
+  .job-cancelled>svg { flex:0 0 auto; color:var(--stopped); margin-top:1px; }
+  .job-cancelled b { color:var(--text); }
+
+  .job-acts { display:flex; gap:6px; flex:0 0 auto; margin-left:2px; }
+  .job-act { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; padding:3px 9px; border-radius:5px; border:1px solid var(--border); background:var(--panel2); color:var(--muted); cursor:pointer; white-space:nowrap; }
+  .job-act:hover { color:var(--text); background:#232a35; }
+  .job-act svg { flex:0 0 auto; }
+  .job-act.cancel:hover { border-color:rgba(208,137,78,.55); color:#f0b57e; background:rgba(208,137,78,.12); }
+  .job-act.delete:hover { border-color:rgba(248,81,73,.4); color:#ff9a94; background:rgba(248,81,73,.14); }
 
   /* ================= QUERY ================= */
   .q-main { flex:1; min-width:0; display:flex; flex-direction:column; }
@@ -367,7 +379,7 @@
       </div>
     </div>
     <div class="tb-right">
-      <span class="badge">standalone app · 18 okf_* tools</span>
+      <span class="badge">standalone app · 21 okf_* tools</span>
       <div class="seg" id="modeSeg">
         <button data-mode="populated" class="on">Populated</button>
         <button data-mode="empty">Empty</button>
@@ -517,6 +529,7 @@ function I(name, size, cls){
     alert:'<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/>',
     check:'<path d="M20 6L9 17l-5-5"/>',
     x:'<path d="M6 6l12 12M18 6L6 18"/>',
+    stop:'<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
     clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     zap:'<path d="M13 2L4 14h6l-1 8 9-12h-6z"/>',
     graph:'<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="10" cy="18" r="2.5"/><path d="M8 6.5l7.5 1M7 8l1.5 8M16.5 10l-5 5.5"/>'
@@ -687,6 +700,9 @@ const JOBS = [
   { id:'run-1041', status:'completed', bundleId:'internal-policies', source:'https://policies.example.net/security-incident-response', started:'2026-10-08 14:32', duration:'00:48',
     summary:{chapters:4, concepts:5, assets:1, refsSkipped:2, refsFailed:0},
     written:['Incident Severity Levels','Severity Response SLAs','Communication & Status Updates','Post-Incident Review'] },
+  { id:'run-1040', status:'cancelled', bundleId:'engineering', source:'https://engineering.example.com/handbook/observability-basics', started:'2026-10-08 09:20', duration:'00:31',
+    cancelledPct:'60%', partialChapters:3, partialConcepts:4, partialAssets:1,
+    cancelReason:'3 of 5 chapters were decomposed before the stop. Because writes are atomic, nothing was committed — the concept index and existing chapters are untouched.' },
   { id:'run-1039', status:'completed', bundleId:'employee-handbook', source:'raw/onboarding-playbook.pdf', started:'2026-10-07 09:11', duration:'01:05',
     summary:{chapters:3, concepts:3, assets:0, refsSkipped:0, refsFailed:1},
     written:['First Week','Buddy Program','Probation Review'] },
@@ -695,10 +711,11 @@ const JOBS = [
   { id:'run-1033', status:'queued',    bundleId:'internal-policies', source:'https://policies.example.net/vendor-risk-assessment', started:null }
 ];
 const STATUS = {
-  queued:{dot:'queued',    label:'queued'},
-  running:{dot:'running',  label:'running'},
-  completed:{dot:'green',  label:'completed'},
-  failed:{dot:'red',       label:'failed'}
+  queued:{dot:'queued',      label:'queued'},
+  running:{dot:'running',    label:'running'},
+  completed:{dot:'green',    label:'completed'},
+  cancelled:{dot:'cancelled', label:'cancelled'},
+  failed:{dot:'red',         label:'failed'}
 };
 
 /* ---------------- derived helpers ---------------- */
@@ -1023,18 +1040,25 @@ function renderJobs(){
   const host=document.getElementById('jobs-content');
   document.getElementById('jobsBadge').textContent=JOBS.length;
   if(state.mode==='empty'){
-    host.innerHTML='<div class="empty"><h3>No ingest runs</h3><p>Ingest a document from the Overview tab (or an agent calls <b>okf_ingest</b>) and the run appears here with a live status — queued → running → completed / failed.</p><button class="btn primary" onclick="openModal(\'ingest\')">'+I('import',14)+' Ingest document</button></div>';
+    host.innerHTML='<div class="empty"><h3>No ingest runs</h3><p>Ingest a document from the Overview tab (or an agent calls <b>okf_ingest</b>) and the run appears here with a live status — queued → running → completed · cancelled · failed.</p><button class="btn primary" onclick="openModal(\'ingest\')">'+I('import',14)+' Ingest document</button></div>';
     return;
   }
   const active=JOBS.filter(j=>j.status==='running'||j.status==='queued').length;
   let h='<div class="toolbar"><button class="btn primary" onclick="openModal(\'ingest\')">'+I('import',15)+' Ingest document</button><div class="spacer"></div><span class="count">'+JOBS.length+' runs · '+active+' active</span></div>';
-  h+='<div class="note">'+I('info',14)+'<span><b>Ingest runs (jobs)</b> — each is one delegated invocation of the <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf-ingest</code> agent against a bundle. Statuses: <span class="dot queued" style="margin:0 4px"></span>queued <span class="dot running" style="margin:0 4px"></span>running <span class="dot green" style="margin:0 4px"></span>completed <span class="dot red"></span>failed. The list reflects a run\'s status as it changes. Click a run to expand its detail.</span></div>';
+  h+='<div class="note">'+I('info',14)+'<span><b>Ingest runs (jobs)</b> — each is one delegated invocation of the <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf-ingest</code> agent against a bundle. Statuses: <span class="dot queued" style="margin:0 4px"></span>queued <span class="dot running" style="margin:0 4px"></span>running <span class="dot green" style="margin:0 4px"></span>completed <span class="dot cancelled" style="margin:0 4px"></span>cancelled <span class="dot red"></span>failed. <b>cancelled</b> is an intentional stop, not a failure — because a run\'s writes are atomic, a cancelled run never leaves a bundle half-updated. The list reflects a run\'s status as it changes. Click a run to expand its detail.</span></div>';
   h+='<div class="jobs-list">'+JOBS.map(jobRow).join('')+'</div>';
   host.innerHTML=h;
 }
 function jobRow(j){
   const s=STATUS[j.status]; const b=BUNDLES[j.bundleId];
   const open=state.jobOpen===j.id;
+  let acts='';
+  if(j.status==='running' || j.status==='queued'){
+    acts+='<button class="job-act cancel" title="Cancel this run — POST /jobs/'+j.id+'/cancel" onclick="event.stopPropagation();cancelJob(\''+j.id+'\')">'+I('x',13)+' Cancel</button>';
+  }
+  if(j.status!=='running'){
+    acts+='<button class="job-act delete" title="Delete this run — DELETE /jobs/'+j.id+'" onclick="event.stopPropagation();deleteJob(\''+j.id+'\')">'+I('trash',13)+' Delete</button>';
+  }
   let h='<div class="job'+(open?' open':'')+'">';
   h+='<div class="job-row" onclick="toggleJob(\''+j.id+'\')">'+I('caret',14,'jobcaret')
     +'<span class="dot '+s.dot+'" style="width:9px;height:9px;margin-right:0"></span>'
@@ -1043,6 +1067,7 @@ function jobRow(j){
     +'<span class="job-src">'+I('export',12)+'<span class="txt">'+escapeHtml(shortSrc(j.source))+'</span></span>'
     +'<span class="job-time">'+(j.started||'—')+'</span>'
     +'<span class="job-dur">'+(j.status==='running'? '<span class="run-elapsed">'+j.elapsed+'</span>' : (j.duration||'—'))+'</span>'
+    +(acts?'<span class="job-acts">'+acts+'</span>':'')
     +'</div>';
   if(open) h+='<div class="job-detail">'+jobDetail(j)+'</div>';
   h+='</div>';
@@ -1065,6 +1090,16 @@ function jobDetail(j){
     h+='<div class="jd-foot">'+I('import',13)+' Retry from the Overview tab (Ingest) or by re-calling <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_ingest</code>.</div>';
   } else if(j.status==='running'){
     h+='<div class="job-progress"><div class="prog-bar"><span class="prog-fill"></span></div><div class="prog-txt">'+escapeHtml(j.progress)+'</div><div class="prog-sub">Live · updates as the agent decomposes and writes chapters. The run reflects its status as it changes.</div></div>';
+  } else if(j.status==='cancelled'){
+    h+='<div class="job-cancelled">'+I('stop',15)+'<div><b>Cancelled</b>'+(j.cancelledPct?' — stopped by user at ~'+escapeHtml(j.cancelledPct):' — stopped by user')+'. '+escapeHtml(j.cancelReason||'Because a run\'s writes are atomic, nothing was committed to the bundle — existing chapters and the concept index are untouched.')+'</div></div>';
+    h+='<div class="jd-sub">Work done before stop · not committed</div><div class="job-summary">'
+      + sumCell('list', j.partialChapters!=null?j.partialChapters:0, 'chapters decomposed')
+      + sumCell('layers', j.partialConcepts!=null?j.partialConcepts:0, 'concept terms assigned')
+      + sumCell('check', 0, 'chapters written')
+      + sumCell('image', j.partialAssets!=null?j.partialAssets:0, 'assets interpreted')
+      + sumCell('clock', j.duration||'—', 'elapsed before stop')
+      +'</div>';
+    h+='<div class="jd-foot">'+I('import',13)+' Re-run from the Overview tab (Ingest) or by re-calling <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_ingest</code>.</div>';
   } else if(j.status==='queued'){
     h+='<div class="job-queued">'+I('clock',15)+'<div>Waiting for the <b>okf-ingest</b> agent to pick this up. No bundle content has been modified yet — a run only writes once decomposition succeeds.</div></div>';
   }
@@ -1072,6 +1107,25 @@ function jobDetail(j){
 }
 function sumCell(ic,val,lab){ return '<div class="js-cell"><span class="js-ic">'+I(ic,15)+'</span><span class="js-num">'+val+'</span><span class="js-lbl">'+lab+'</span></div>'; }
 function toggleJob(id){ state.jobOpen = state.jobOpen===id? null : id; renderJobs(); }
+function mockFetch(method, path){ console.log('[okf-mockup] '+method+' '+path); }
+function cancelJob(id){
+  const j=JOBS.find(x=>x.id===id); if(!j) return;
+  mockFetch('POST','/jobs/'+id+'/cancel');
+  j.duration = j.elapsed || j.duration || '—';
+  if(j.partialChapters==null) j.partialChapters = 2;
+  if(j.partialConcepts==null) j.partialConcepts = 3;
+  if(j.partialAssets==null) j.partialAssets = 0;
+  j.cancelReason = j.cancelReason || 'Because a run\'s writes are atomic, nothing was committed — the concept index and existing chapters are untouched.';
+  j.status='cancelled';
+  renderJobs();
+}
+function deleteJob(id){
+  const j=JOBS.find(x=>x.id===id); if(!j) return;
+  mockFetch('DELETE','/jobs/'+id);
+  JOBS.splice(JOBS.indexOf(j),1);
+  if(state.jobOpen===id) state.jobOpen=null;
+  renderJobs();
+}
 
 /* ================= QUERY ================= */
 const L = { k:5200, rest:120, center:0.02, damp:0.8, maxV:9, ticks:150 }; // force-sim params: Coulomb k, spring rest length, centering, damping, velocity cap, ticks
