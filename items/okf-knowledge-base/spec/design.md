@@ -74,8 +74,7 @@ is a *new, small, generic* mechanism, not a re-scope of those.
   itself (different process, no shared import).
 - **BOS already has the abort handle** — `abortHeadlessRun(runId)` registers every
   headless run's `AbortController` in a run-registry (on `globalThis`, so an in-process
-  route can reach a run started elsewhere) and cascades the abort to the whole run family
-  (a run + any nested runs it spawned). The missing piece was only its *HTTP face*; that
+  route can reach a run started elsewhere); it can also, via `parentRunId`, cascade the abort across a run family — a capability OKF's nested reference runs do **not** use (they're independent top-level runs, each stopped by its own job — ADR-010). The missing piece was only its *HTTP face*; that
   is the one `src/` file. This is a **handle on existing machinery, not a new cancel
   path** (the same logic the run-registry header documents for self-heal).
 - **No reasoning toward deeper `bos-core` work**: the route does not add routing/
@@ -102,7 +101,7 @@ status to the job. The route never knows or cares that an OKF job exists — it 
 | **III. Always Delegate; Claude Codes** — development on a sub-agent. | ✅ This design is authored by the Architect; implementation is delegated to the Developer. The feature's *runtime* delegation is the existing fire-and-forget headless surface (`POST /api/subagents/delegate` → `runSubAgent`), not new infra (ADR-005). |
 | **IV. Minimize Blast Radius** — feature branch; self-modification isolated. | ✅ Lands on the active feature branch; item work is branch-coupled in `data/user-apps`. The one `src/` route is additive and generic (a new file; no existing route/signature change), so its blast radius is one route handler. |
 | **V. The VFS Is Not the Source** — user data under `data/`; versioned apps in their own GitFS repo. | ✅ Bundles live under the VFS at `/KnowledgeBase/` (user data, owned by the service). The item's code lives in the `user-apps` GitFS repo, reached through the item symlink. The abort route is BOS *source* (platform), not user data. |
-| **VI. Specs & Docs Stay in Sync** | ✅ The item ships its own `docs/usage/OKF Knowledge Base/` and `docs/dev/OKF Knowledge Base/` facets, updated in the same change (the tool-surface doc now reflects 21 tools + the abort dependency). This `design.md` is the architecture artifact the later `plan`/`tasks` reference. |
+| **VI. Specs & Docs Stay in Sync** | ✅ The item ships its own `docs/usage/OKF Knowledge Base/` and `docs/dev/OKF Knowledge Base/` facets, updated in the same change (the item's `docs/dev/OKF Knowledge Base/tool-surface.md` (this change) reflects the 21-tool surface + the abort dependency (the store-root spec-040 tool-surface.md is superseded)). This `design.md` is the architecture artifact the later `plan`/`tasks` reference. |
 | **VII. Respect Boundaries** — confirm destructive ops; no new deps unasked. | ✅ `okf_delete_bundle`/`okf_delete_concept`/`okf_delete_job` are the destructive ops and stay explicit-intent (the app gates them behind confirmation per the mockup; `okf_delete_job` removes a job record only, never bundle content — FR-051). No new *runtime dependency* is introduced: the app reuses BOS's existing in-app SVG force simulation (no `d3`/`vis.js` — ADR-009); the cancel path reuses the existing run-registry (no new library). |
 | **OKF invariants (NFR-001/005)** — schema-less, human-readable, unknown keys preserved, raw immutable. | ✅ Retained from the installed `okf-core.js` (frontmatter shallow-merge already preserves unknown keys; `raw/` is append-only and never overwritten). The derived index/TOC add *new* frontmatter keys (`type`, `parent`, `concepts`, `summary`, `status`, `stale_after`, `sources`) — all preserved verbatim on write. Cancelling/deleting a job never touches this content (FR-050/FR-051). |
 | **Least privilege (NFR-009)** — the ingest sub-agent's allowlist stays narrow. | ✅ §8.4 lists the exact allowlist; it excludes destructive tools, unrestricted `run_command`, and the full assistant surface. The job-control tools (`okf_list_jobs`/`okf_cancel_job`/`okf_delete_job`) are *top-level/app* tools — the `okf-ingest` sub-agent does not need them (it does the work; it doesn't manage the job it's running). |
@@ -632,8 +631,7 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
 - **What already exists (verified in source, not assumed):**
   - `abortHeadlessRun(runId)` (`src/lib/agent/subagents/run-registry.ts:152`) — the
     in-process abort handle. It looks up the run in a registry on `globalThis` (so an
-    in-process route can reach a run started elsewhere), aborts the run's `AbortController`,
-    and **cascades to the whole run family** (the run + any nested runs it spawned). Returns
+    in-process route can reach a run started elsewhere), aborts the run's `AbortController`, and can — via `parentRunId` — cascade the abort to a run family (the capability OKF's delegate-fired nested runs do **not** participate in; each is an independent top-level run, ADR-010/S1). Returns
     `boolean` — `false` means "no such live run" (already finished, or never started in
     this process). Already consumed in-process by self-heal (`src/lib/self-heal/intake.ts`).
   - **`run_started` carries the `runId`** — `runLocalHeadless` (`runner.ts`, ADR-12) emits
@@ -670,9 +668,7 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
   2. Otherwise (running — a `runId` is stored on the job; or queued, see note below), the
      worker calls **`POST /api/subagents/<runId>/abort`** over loopback.
   3. That route calls `abortHeadlessRun(runId)` → the run's `AbortController` aborts →
-     the agent loop returns `cancelled` → the run-registry cascades the abort to any
-     **nested** runs the run spawned (so a whole reference-crawl subtree stops, not just
-     the top run). The route returns `{aborted:true, runId}` (or `{aborted:false}` if the
+     the agent loop returns `cancelled`. (OKF relies on per-run abort by `runId` — **not** the run-registry's family cascade, which requires `parentRunId` and which `POST /api/subagents/delegate` does not forward; so a nested reference run — FR-047 — is an independent top-level run with its own `runId`, cancelled by its own job, not by the parent's.) The route returns `{aborted:true, runId}` (or `{aborted:false}` if the
      run already ended between the check and the abort — idempotent).
   4. The delegate stream the worker **already holds** then delivers the terminal
      `{type:"done", result.endedReason:"cancelled"}` → `delegate-bridge` finalizes the job
@@ -684,10 +680,7 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
      rollback).
   - **Queued-not-yet-started note:** FR-050 scopes cancel to *running* jobs. A `queued`
     job that hasn't started its run has no live `runId` to abort yet; the worker marks it
-    `cancelled` (it's non-terminal, so cancel applies) and, when/whether the run's
-    `run_started` arrives, `delegate-bridge` sees the job is already `cancelled` and the
-    terminal line simply confirms it. A `queued` job is also **deletable** (FR-051) since
-    it isn't running. The two documented tool outcomes hold: non-terminal → `cancelled`,
+    `cancelled` (it's non-terminal, so cancel applies). The run is already executing in the main process the moment `okf_ingest` returns, so `delegate-bridge`, **as soon as `run_started` lands and it captures the `runId`**, checks whether the job is already `cancelled` — if so it **immediately** fires `POST /api/subagents/<runId>/abort` (it does **not** wait for the run to finish naturally). This makes a queued-window cancel behave identically to a running cancel. (A `queued` job is also **deletable** — FR-051 — since it isn't running.) The two documented tool outcomes hold: non-terminal → `cancelled`,
     terminal → `{cancelled:false, reason:"already terminal"}`. A non-existent `jobId` is
     an in-band not-found (the retained `statusForError` 404), consistent with
     `okf_delete_job`.
@@ -1082,7 +1075,7 @@ CANCEL (this scope-add, ADR-010) — from the app (Cancel on a running job) or o
    Worker: job terminal? → {cancelled:false, reason:"already terminal"}  (no-op)
            else (running/queued) →
              POST /api/subagents/<runId>/abort  (loopback; the ONE src/ route)
-                → route: abortHeadlessRun(runId)  [run-registry; cascades to nested runs]
+                → route: abortHeadlessRun(runId)  [run-registry; per-run abort — nested reference runs are independent jobs, not cascaded (ADR-010/S1)]
                 → {aborted:true}
              run's AbortController aborts → okf-ingest run returns cancelled →
              delegate stream delivers done { endedReason:cancelled } →
@@ -1336,6 +1329,7 @@ final message (ADR-006). Managing/listing/cancelling/deleting jobs is a **top-le
 assistant and app** concern:
 
 ```
+okf_ingest,
 okf_add_raw_source,
 okf_list_concepts, okf_read_concept, okf_read_toc, okf_search,
 okf_upsert_concept, okf_add_link,
@@ -1351,10 +1345,10 @@ file_read, file_list
   `file_to_markdown`, `view_image`, `video_keyframes` — the last two **specifically for
   inline-asset interpretation** (FR-039 names them). `file_read`/`file_list` to read the
   raw source from the bundle.
+- **`okf_ingest`** is granted so the run can fire **independent nested reference jobs** (FR-019/FR-047) — it is the **only** job-lifecycle tool the `okf-ingest` run gets; it still does **not** get `okf_list_jobs`/`okf_cancel_job`/`okf_delete_job` (those stay top-level-assistant / app concerns — the run fires nested jobs, it doesn't list/cancel/delete them).
 - **`okf_add_raw_source`** is granted so the run registers its own source into `raw/`
   (the self-sufficient run, FR-047). Recursive reference ingest, if the run follows one,
-  spawns **its own nested job** (a separate `okf_ingest` inside the run — the run-registry
-  cascade, ADR-010, stops the whole family on cancel).
+  spawns independent nested jobs — each `okf_ingest` call mints its own job, fires its own headless run, and captures its own runId; they appear as separate rows in the Jobs list and are cancelled/deleted independently (per-run abort, not family cascade — ADR-010, S1).
 - **Explicitly NOT granted:** `okf_delete_concept`/`okf_delete_bundle` (destructive stays
   a top-level-assistant / app-explicit action), `okf_merge_concepts` (curation, not
   ingest), the job-control tools (`okf_list_jobs`/`okf_cancel_job`/`okf_delete_job`),
@@ -1396,7 +1390,7 @@ Ingest (auto-triggered, headless — ADR-005/ADR-006):
 Job control (this scope-add — ADR-010 / FR-050 / FR-051):
   cancel: okf_cancel_job / POST /jobs/<id>/cancel
           → (terminal? no-op) → POST /api/subagents/<runId>/abort (generic src/ route)
-          → abortHeadlessRun cascades → run ends cancelled → worker writes job: cancelled
+          → abortHeadlessRun(runId) aborts the run → run ends cancelled → worker writes job: cancelled
   delete: okf_delete_job / DELETE /jobs/<id>
           → (running? 409 cancel-first) → (missing? 404) → remove job record only
 
@@ -1437,12 +1431,7 @@ with `okf_delete_bundle`.
 3. **Cancel before the `runId` is captured (queued race).** The worker can only abort a
    run once it has the `runId` from the `run_started` line. A cancel arriving in the tiny
    window between `okf_ingest` returning and `run_started` arriving: the job is marked
-   `cancelled` (non-terminal → cancel applies), and when the run's terminal line comes the
-   worker confirms it (or aborts the now-known run id and lets the terminal line carry
-   `cancelled`). **Residual:** the run may have done a few steps before the abort lands —
-   that's acceptable (cancel is a stop, not a rollback; partial content is preserved and
-   the index rebuilds). Confirm the reviewer is OK with "best-effort prompt stop," not
-   "atomic no-side-effects cancel."
+   `cancelled` (non-terminal → cancel applies); then `delegate-bridge`, **the moment `run_started` lands and the `runId` is captured**, sees the job is already `cancelled` and **immediately fires `POST /api/subagents/<runId>/abort`** (the committed behavior — it does **not** wait for natural completion). **Residual:** the run may have done a few steps before the abort lands — that's the committed bar (cancel is a stop, not a rollback; partial content is preserved and the index regenerates). The reviewer confirmed this "best-effort prompt stop" (not "atomic no-side-effects cancel") is the right bar.
 4. **The one `src/` change must stay generic.** `POST /api/subagents/[runId]/abort` is the
    only BOS-source file. It must not leak OKF knowledge (no job store, no bundle, no agent
    id) or a future headless consumer will inherit OKF coupling. It also relies on the
@@ -1505,12 +1494,7 @@ with `okf_delete_bundle`.
     with descriptions) → document → **stored TOC** → **full chapter** (frontmatter card,
     markdown body, **inline-asset** blocks with thumbnail + stored interpretation,
     "View source (.md)" toggle). Modals: New / Import / Export / **Ingest** / Delete.
-  - **Jobs** — run list (status dots **queued/running/completed/cancelled/failed**, bundle,
-    source, time, elapsed/duration) with a **Cancel** control on running jobs and a
-    **Delete** control on non-running jobs (FR-041, FR-050, FR-051) → expandable detail
-    (summary cells: chapters/concepts/assets/refsSkipped/refsFailed; written-chapter chips;
-    error card; live progress bar). Cancel → `POST /jobs/<id>/cancel`; Delete →
-    `DELETE /jobs/<id>` (§8.3).
+  - **Jobs** (scope-add surface — updated for this change) — run list (status dots **queued/running/completed/cancelled/failed**, bundle, source, time, elapsed/duration), with **a cancelled status dot and a cancelled sample run**, a **Cancel** control on running jobs, and a **Delete** control on non-running jobs (FR-041, FR-050, FR-051) → expandable detail (summary cells: chapters/concepts/assets/refsSkipped/refsFailed; written-chapter chips; error card; live progress bar). Cancel → `POST /jobs/<id>/cancel`; Delete → `DELETE /jobs/<id>` (§8.3) — driven by these routes.
   - **Query** — bundle selector + a **shared search box** + a **Graph / Table** view toggle;
     a **mouse-resizable reader pane** (the `.resizer`) that opens the full chapter
     (frontmatter + markdown + assets + **"Open source"** link at top) or a document's TOC
@@ -1534,5 +1518,5 @@ with `okf_delete_bundle`.
 - **No separate mockup files** — the spec asks for one consolidated `mockup.html`, which
   this is. The app implements it; where the spec's "To be added at the design step" items
   (shell, Jobs incl. cancel/delete, Query/Graph/Search, resizable pane) are concerned,
-  **the mockup already contains them** and this design's §8.3 supplies the data routes that
+  **the mockup contains them (updated for this scope-add)** and this design's §8.3 supplies the data routes that
   drive them.
