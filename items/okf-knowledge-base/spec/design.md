@@ -928,6 +928,7 @@ type: concept-index
 bundle: engineering
 terms:
   - name: api-design
+    kind: topic
     covers:
       - { docId: api-design, docTitle: API Design Rules, chId: endpoint-naming,
           chTitle: Endpoint Naming Conventions,
