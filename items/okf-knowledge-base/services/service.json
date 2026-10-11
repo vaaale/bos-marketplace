@@ -2,7 +2,7 @@
   "id": "okf-knowledge-base",
   "name": "OKF Knowledge Base",
   "version": "2.1.0",
-  "description": "A general-purpose, agent-managed knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Maintains a two-level derived index (bundle concept index + per-document TOC), serves deterministic concept-anchored search, auto-triggers ingest runs in a bundled least-privilege sub-agent and tracks them as cancellable, deletable jobs, and exposes 21 okf_* tools natively to the BOS assistant plus a loopback REST bridge for the standalone OKF Knowledge Base app.",
+  "description": "A general-purpose, agent-managed knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Maintains a two-level derived index (bundle concept index + per-document TOC), serves deterministic concept-anchored search, auto-triggers ingest runs in a bundled least-privilege sub-agent and tracks them as jobs, and exposes 19 okf_* tools natively to the BOS assistant plus a loopback REST bridge for the standalone OKF Knowledge Base app.",
   "entry": "index.js",
   "deploymentMode": "tools",
   "toolGroups": [
@@ -47,10 +47,10 @@
         "default": 3,
         "description": "How many references an ingest run ingests concurrently. Overridable per okf_ingest call."
       },
-      "jobFinalizeTimeoutMs": {
+      "staleJobMs": {
         "type": "number",
         "default": 1800000,
-        "description": "How long (ms) an ingest job may sit queued or running before the stale reaper marks it failed. The launcher writes a terminal state for every run it watches \u2014 completed, cancelled or failed \u2014 so this only catches runs orphaned by a service or BOS restart. Default 1800000 (30 minutes) \u2014 comfortably longer than a real run."
+        "description": "How long (ms) an ingest job may sit queued or running before the reaper marks it failed(stale). The launcher writes a terminal state for every run it watches, so this only catches runs orphaned by a service or BOS restart. Default 1800000 (30 minutes) \u2014 comfortably longer than a real run."
       }
     }
   },

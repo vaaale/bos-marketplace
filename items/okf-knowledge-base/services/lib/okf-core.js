@@ -542,6 +542,30 @@ function assetBlockMarkdown({ assetPath, caption, interpretation }) {
 // ════════════════════════════════════════════════════════════════════════
 
 /**
+ * The `person_terms` frontmatter array (ADR-011) — a PARALLEL sibling of
+ * `concepts`, same shape (an array of strings), read from the very same
+ * chapter/document-stub files the concept terms are read from. Two
+ * differences from `concepts`:
+ *
+ *   • ORIGINAL CASE SURVIVES. A person's name is a display name ("Diego
+ *     Córdoba"); only the derivation key and the search match are
+ *     lowercased, so the index can show the name as the source wrote it.
+ *   • It is never written by this module. The shallow-merge write path
+ *     preserves it verbatim (NFR-005) — ingest authors it, `rebuildIndex`
+ *     derives `kind` from it, and nothing in between rewrites it (the one
+ *     exception is `mergeConcepts`, which canonicalizes names).
+ */
+function personTermList(fm) {
+  const byKey = new Map();
+  for (const raw of Array.isArray(fm.person_terms) ? fm.person_terms : []) {
+    const name = String(raw).trim();
+    if (!name) continue;
+    if (!byKey.has(name.toLowerCase())) byKey.set(name.toLowerCase(), name);
+  }
+  return Array.from(byKey.values());
+}
+
+/**
  * Walk every concept file once and classify it into documents + chapters.
  *
  * Redesigned bundles are unambiguous: `type: document` is a document stub,
@@ -582,6 +606,8 @@ async function classifyBundle(bDir) {
         summary: parsed.frontmatter.summary || firstProse(parsed.body),
         sources: Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [],
         updatedAt: parsed.frontmatter.updated_at || null,
+        // the AUTHOR rides here (ADR-011): a document-level person term
+        personTerms: personTermList(parsed.frontmatter),
         frontmatter: parsed.frontmatter,
         legacy: false,
       });
@@ -608,6 +634,7 @@ async function classifyBundle(bDir) {
           summary: fm.summary || fm.description || firstProse(parsed.body),
           sources: Array.isArray(fm.sources) ? fm.sources : [],
           updatedAt: fm.updated_at || null,
+          personTerms: personTermList(fm),
           frontmatter: fm,
           legacy: true,
         });
@@ -628,6 +655,9 @@ async function classifyBundle(bDir) {
       title: fm.title || id,
       summary,
       concepts: Array.from(new Set(terms)),
+      // named key figures the chapter is ABOUT (ADR-011) — parallel to
+      // `concepts`, never merged into it
+      personTerms: personTermList(fm),
       status: fm.status || "draft",
       stale: isStale(fm, now),
       updatedAt: fm.updated_at || null,
@@ -642,7 +672,7 @@ async function classifyBundle(bDir) {
     if (!documents.has(docId)) {
       documents.set(docId, {
         id: docId, title: docId, summary: "", sources: [], updatedAt: null,
-        frontmatter: {}, legacy: true, synthetic: true,
+        personTerms: [], frontmatter: {}, legacy: true, synthetic: true,
       });
     }
   }
@@ -651,29 +681,90 @@ async function classifyBundle(bDir) {
   return { documents, chapters, legacyChapters, needsRegeneration, ids };
 }
 
-/** Level 1 — the O(V) routing table, keyed by DISTINCT TERM (FR-011/SC-006). */
+/**
+ * Level 1 — the O(V) routing table, keyed by DISTINCT TERM (FR-011/SC-006).
+ *
+ * Every term carries a `kind` (ADR-011): `person` iff its lowercased name
+ * appears in ANY `person_terms` array in the bundle — a chapter stub's (a
+ * named key figure) or a document stub's (the author) — else `topic`. The
+ * kind is DERIVED here on every rebuild and nowhere else, so it cannot rot
+ * out of sync with the frontmatter it comes from (NFR-004). A person term is
+ * an ordinary term in every other respect: same row, same `covers`, same
+ * search path (SC-016 — `okf_search` has no person case at all).
+ */
 function buildConceptIndex(classified) {
-  const byTerm = new Map();
+  // lowercased key -> original-case display name. First spelling seen wins,
+  // so "Diego Córdoba" survives the rebuild as written (S1).
+  const personNames = new Map();
+  const registerPersons = (names) => {
+    for (const name of names || []) {
+      const key = name.toLowerCase();
+      if (!personNames.has(key)) personNames.set(key, name);
+    }
+  };
+  for (const doc of classified.documents.values()) registerPersons(doc.personTerms);
+  for (const ch of classified.chapters) registerPersons(ch.personTerms);
+
+  const byTerm = new Map(); // lowercased key -> covers[]
+  const seenCover = new Map(); // lowercased key -> Set("<docId>/<chId>")
+  const addCover = (rawTerm, cover) => {
+    const key = String(rawTerm).toLowerCase();
+    if (!byTerm.has(key)) {
+      byTerm.set(key, []);
+      seenCover.set(key, new Set());
+    }
+    const coverKey = `${cover.docId}/${cover.chId}`;
+    // a name listed in BOTH `concepts` and `person_terms` covers once
+    if (seenCover.get(key).has(coverKey)) return;
+    seenCover.get(key).add(coverKey);
+    byTerm.get(key).push(cover);
+  };
+
   for (const ch of classified.chapters) {
     const doc = classified.documents.get(ch.docId);
-    for (const term of ch.concepts) {
-      if (!byTerm.has(term)) byTerm.set(term, []);
-      byTerm.get(term).push({
-        docId: ch.docId,
-        docTitle: (doc && doc.title) || ch.docId,
-        chId: ch.chId,
-        chTitle: ch.title,
-        description: ch.summary || "",
-        status: ch.status,
-        stale: ch.stale,
+    const cover = {
+      docId: ch.docId,
+      docTitle: (doc && doc.title) || ch.docId,
+      chId: ch.chId,
+      chTitle: ch.title,
+      description: ch.summary || "",
+      status: ch.status,
+      stale: ch.stale,
+    };
+    for (const term of ch.concepts) addCover(term, cover);
+    // a chapter's key figures are covered EXACTLY like its topics
+    for (const person of ch.personTerms || []) addCover(person, cover);
+  }
+
+  // The author is registered on the DOCUMENT stub, so their coverage is the
+  // document itself — an empty `chId` marks a document-level row, which is
+  // what `core.graph` turns into the `doc -> person` coverage edge.
+  for (const doc of classified.documents.values()) {
+    for (const person of doc.personTerms || []) {
+      addCover(person, {
+        docId: doc.id,
+        docTitle: doc.title,
+        chId: "",
+        chTitle: doc.title,
+        description: doc.summary || "",
+        status: "stable",
+        stale: false,
       });
     }
   }
+
   return Array.from(byTerm.keys())
     .sort()
-    .map((name) => {
-      const covers = byTerm.get(name).sort((a, b) => (a.docId + a.chId).localeCompare(b.docId + b.chId));
-      return { name, count: covers.length, covers, stale: covers.some((c) => c.stale || c.status === "deprecated") };
+    .map((key) => {
+      const covers = byTerm.get(key).sort((a, b) => (a.docId + a.chId).localeCompare(b.docId + b.chId));
+      const person = personNames.has(key);
+      return {
+        name: person ? personNames.get(key) : key,
+        kind: person ? "person" : "topic",
+        count: covers.length,
+        covers,
+        stale: covers.some((c) => c.stale || c.status === "deprecated"),
+      };
     });
 }
 
@@ -832,7 +923,11 @@ async function getModel(bundleRoot, bundleName, { allowRebuild = true } = {}) {
           storedTerms.every((t) => t && typeof t.name === "string" && Array.isArray(t.covers));
         const model = {
           bundle: bundleName,
-          terms: usable ? storedTerms : buildConceptIndex(classified),
+          // A pre-person-kind index carries no `kind` on its terms. Default
+          // it to `topic` right here (ADR-011 S4) so a legacy bundle is
+          // served correctly off the fast path — no migration, no forced
+          // rebuild, and nothing downstream ever sees `kind: undefined`.
+          terms: usable ? storedTerms.map((t) => ({ ...t, kind: t.kind || "topic" })) : buildConceptIndex(classified),
           tocByDoc,
           classified,
           indexGeneratedAt: frontmatter.index_generated_at,
@@ -907,6 +1002,9 @@ function searchIndex(terms, query, limit = 25) {
         chTitle: cov.chTitle,
         description: cov.description || "",
         matchedConcept: term.name,
+        // additive (ADR-011): WHICH KIND of term matched. The algorithm
+        // above is untouched — a person's name is an ordinary term-name hit.
+        kind: term.kind || "topic",
         status: cov.status || "draft",
         stale: !!cov.stale,
         _tier: termHit ? 0 : 1, // a term-name match outranks a description-only match
@@ -991,15 +1089,21 @@ function documentSource(frontmatter) {
 }
 
 /** The concept VOCABULARY with per-term chapter counts (FR-006). */
-async function listConcepts(bundleRoot, bundleName, { type, status } = {}) {
+async function listConcepts(bundleRoot, bundleName, { type, status, kind } = {}) {
   const model = await getModel(bundleRoot, bundleName);
-  let terms = model.terms.map((t) => ({
-    term: t.name,
-    count: t.count,
-    covers: t.covers
-      .filter((c) => !status || c.status === status)
-      .map((c) => ({ docId: c.docId, chId: c.chId, title: c.chTitle, description: c.description, status: c.status })),
-  }));
+  // `kind` is an OPTIONAL filter (ADR-011): "topic" | "person" | "all"
+  // (anything else, including the default, means all).
+  const wantKind = kind === "topic" || kind === "person" ? kind : null;
+  let terms = model.terms
+    .filter((t) => !wantKind || (t.kind || "topic") === wantKind)
+    .map((t) => ({
+      term: t.name,
+      kind: t.kind || "topic",
+      count: t.count,
+      covers: t.covers
+        .filter((c) => !status || c.status === status)
+        .map((c) => ({ docId: c.docId, chId: c.chId, title: c.chTitle, description: c.description, status: c.status })),
+    }));
   if (status) terms = terms.map((t) => ({ ...t, count: t.covers.length })).filter((t) => t.count > 0);
 
   const documents = Array.from(model.classified.documents.values()).map((d) => ({
@@ -1052,19 +1156,36 @@ async function graph(bundleRoot, bundleName) {
   const present = new Set();
 
   for (const doc of model.classified.documents.values()) {
-    nodes.push({ id: doc.id, type: "doc", label: doc.title, description: doc.summary || "" });
+    nodes.push({ id: doc.id, key: `doc:${doc.id}`, type: "doc", label: doc.title, description: doc.summary || "" });
     present.add(doc.id);
   }
   for (const ch of model.classified.chapters) {
-    nodes.push({ id: ch.id, type: "chap", label: ch.title, description: ch.summary || "", docId: ch.docId, chId: ch.chId, status: ch.status });
+    nodes.push({ id: ch.id, key: `chap:${ch.id}`, type: "chap", label: ch.title, description: ch.summary || "", docId: ch.docId, chId: ch.chId, status: ch.status });
     present.add(ch.id);
     edges.push({ from: ch.docId, to: ch.id, kind: "containment", label: "contains" });
   }
   for (const term of model.terms) {
-    nodes.push({ id: term.name, type: "concept", label: term.name, count: term.count, description: `covers ${term.count} chapter${term.count === 1 ? "" : "s"}` });
-    present.add(term.name);
+    // The 4th node category (ADR-011/FR-054): a person-kind term is its own
+    // type so the renderer can colour it, but it is NOT a new shape — same
+    // count-driven radius, same `coverage` edge kind as a topic term. Its
+    // `id` is the lowercased name (the app's maps key on it); its `label`
+    // keeps the original case for display.
+    const person = term.kind === "person";
+    const type = person ? "person" : "concept";
+    const id = person ? String(term.name).toLowerCase() : term.name;
+    nodes.push({
+      id,
+      key: `${type}:${id}`,
+      type,
+      label: term.name,
+      count: term.count,
+      description: `${person ? "person · covers" : "covers"} ${term.count} chapter${term.count === 1 ? "" : "s"}`,
+    });
+    present.add(id);
     for (const cov of term.covers) {
-      edges.push({ from: `${cov.docId}/${cov.chId}`, to: term.name, kind: "coverage", label: "covers" });
+      // an empty `chId` is a DOCUMENT-level cover (the author) — the edge
+      // then runs doc -> person instead of chap -> person
+      edges.push({ from: cov.chId ? `${cov.docId}/${cov.chId}` : cov.docId, to: id, kind: "coverage", label: "covers" });
     }
   }
   for (const e of await readLinksSidecar(bDir)) {
@@ -1372,15 +1493,33 @@ async function deleteConcept(bundleRoot, bundleName, id, { rewriteBacklinks = fa
   return { id, deleted: true, rewroteBacklinks: rewriteBacklinks, backlinksRewritten: linkers };
 }
 
+/** Replace `fromKey` (a lowercased name) with `toDisplay` in a person_terms
+ *  array, de-duplicating case-insensitively and preserving order. */
+function rewritePersonTerms(list, fromKey, toDisplay) {
+  const out = [];
+  const seen = new Set();
+  for (const p of list || []) {
+    const next = p.toLowerCase() === fromKey ? toDisplay : p;
+    const key = next.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(next);
+  }
+  return out;
+}
+
 /**
  * Merge concept term `from` into canonical term `to` (FR-026 / US6 / SC-008).
  *
  * A concept TERM is not a file — it's a key in the Level-1 index, derived
  * from chapter frontmatter. So the merge rewrites the one place terms are
- * actually authored: every chapter's `concepts` array. The concept index and
- * every affected document TOC then follow from the rebuild, which is the
- * whole point of them being derived. A query that previously matched either
- * term now routes through the single canonical term to the union of chapters.
+ * actually authored: every chapter's `concepts` array — and, since ADR-011,
+ * every chapter's and document stub's parallel `person_terms` array, because
+ * a person term is a term too and its kind is derived from that array. The
+ * concept index and every affected document TOC then follow from the rebuild,
+ * which is the whole point of them being derived. A query that previously
+ * matched either term now routes through the single canonical term to the
+ * union of chapters.
  */
 async function mergeConcepts(bundleRoot, bundleName, from, to) {
   const fromTerm = String(from || "").trim().toLowerCase();
@@ -1390,16 +1529,47 @@ async function mergeConcepts(bundleRoot, bundleName, from, to) {
 
   const bDir = bundleDir(bundleRoot, bundleName);
   const before = await getModel(bundleRoot, bundleName);
-  if (!before.terms.some((t) => t.name === fromTerm)) throw new Error(`concept term not found in ${bundleName}: ${fromTerm}`);
+  // a person term's stored name keeps its original case, so the lookup (and
+  // every comparison below) is on the lowercased key
+  if (!before.terms.some((t) => String(t.name).toLowerCase() === fromTerm)) {
+    throw new Error(`concept term not found in ${bundleName}: ${fromTerm}`);
+  }
+
+  // What to WRITE into a rewritten `person_terms`: the canonical term's own
+  // display name when it already exists as a person, else the caller's `to`
+  // spelling. (`concepts` stays lowercased, as it always was.)
+  const toExisting = before.terms.find((t) => String(t.name).toLowerCase() === toTerm);
+  const toDisplay = toExisting && toExisting.kind === "person" ? toExisting.name : String(to).trim();
 
   const rewritten = [];
   for (const ch of before.classified.chapters) {
-    if (!ch.concepts.includes(fromTerm)) continue;
-    const next = Array.from(new Set(ch.concepts.map((t) => (t === fromTerm ? toTerm : t))));
+    const hitsConcepts = ch.concepts.includes(fromTerm);
+    // ADR-011 S3: a person term IS a term, so canonicalizing has to clear the
+    // from-name out of the PARALLEL `person_terms` array as well — otherwise
+    // the next rebuild would re-derive `kind: person` for a name nothing
+    // routes to any more.
+    const hitsPersons = (ch.personTerms || []).some((p) => p.toLowerCase() === fromTerm);
+    if (!hitsConcepts && !hitsPersons) continue;
     const parsed = await readConceptRaw(bDir, ch.id);
-    const merged = { ...parsed.frontmatter, concepts: next, updated_at: nowIso() };
+    const merged = { ...parsed.frontmatter, updated_at: nowIso() };
+    if (hitsConcepts) merged.concepts = Array.from(new Set(ch.concepts.map((t) => (t === fromTerm ? toTerm : t))));
+    if (hitsPersons) merged.person_terms = rewritePersonTerms(ch.personTerms, fromTerm, toDisplay);
     await vfs.writeText(conceptFilePath(bDir, ch.id), stringifyDocument(merged, parsed.body));
     rewritten.push(ch.id);
+  }
+  // the author rides on the document stub, which carries `person_terms` too
+  for (const doc of before.classified.documents.values()) {
+    if (doc.synthetic) continue;
+    if (!(doc.personTerms || []).some((p) => p.toLowerCase() === fromTerm)) continue;
+    const parsed = await readConceptRaw(bDir, doc.id);
+    if (!parsed) continue;
+    const merged = {
+      ...parsed.frontmatter,
+      person_terms: rewritePersonTerms(doc.personTerms, fromTerm, toDisplay),
+      updated_at: nowIso(),
+    };
+    await vfs.writeText(conceptFilePath(bDir, doc.id), stringifyDocument(merged, parsed.body));
+    rewritten.push(doc.id);
   }
 
   markGraphDirty(bDir);
@@ -1408,14 +1578,14 @@ async function mergeConcepts(bundleRoot, bundleName, from, to) {
     event: "concepts_merge",
     message: `merged concept term "${fromTerm}" into "${toTerm}" across ${rewritten.length} chapter(s)`,
   });
-  const canonical = after.terms.find((t) => t.name === toTerm);
+  const canonical = after.terms.find((t) => String(t.name).toLowerCase() === toTerm);
   return {
     from: fromTerm,
     to: toTerm,
     chaptersRewritten: rewritten,
     tocsRebuilt: Array.from(new Set(rewritten.map((id) => id.split("/")[0]))),
-    canonicalTerm: canonical ? { name: canonical.name, count: canonical.count } : null,
-    fromTermRemaining: after.terms.some((t) => t.name === fromTerm),
+    canonicalTerm: canonical ? { name: canonical.name, kind: canonical.kind || "topic", count: canonical.count } : null,
+    fromTermRemaining: after.terms.some((t) => String(t.name).toLowerCase() === fromTerm),
   };
 }
 
@@ -1805,281 +1975,81 @@ async function lintBundle(bundleRoot, bundleName) {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  JOBS (ADR-006 / ADR-010) — global ingest-run records
+//  JOBS (T007 / ADR-006) — global ingest-run records
 // ════════════════════════════════════════════════════════════════════════
 //
 // Jobs are SERVICE-LEVEL, not bundle-level (plan.md open item #2): the app's
 // Jobs tab is global, a single user runs one service, and a run's job must
-// survive the bundle it targets being deleted mid-flight. They live under the
-// bundle root's `.jobs/` directory, ONE FILE PER RUN — `<bundleRoot>/.jobs/
-// <id>.md` (design.md §5.1) — operational state, deliberately NOT part of the
-// OKF content contract, so it is never included in an export.
+// survive the bundle it targets being deleted mid-flight. They live in one
+// `jobs.json` under the bundle root's `.jobs/` directory — operational state,
+// deliberately NOT part of the OKF content contract, so it is never included
+// in an export (design.md Risk #2, resolved: exclude).
 //
-// ── Why one file per run, not one jobs.json ──────────────────────────────
-//
-// `deleteJob` (FR-051) removes ONE run's record and nothing else. With a
-// single shared `jobs.json` that is a read-modify-write of the whole history
-// — a delete racing a concurrent run's progress write silently resurrects or
-// drops records. With `<id>.md` the delete is a file delete, the write is a
-// write, and neither run's record can clobber another's. It is also what the
-// rest of the bundle already looks like: everything is a readable `.md`.
-// A legacy `jobs.json` from the previous layout is migrated on first load.
-//
-// ── The lifecycle ────────────────────────────────────────────────────────
-//
-//   queued ──▶ running ──▶ completed | cancelled | failed
-//
-// `cancelled` is a TERMINAL state DISTINCT from `failed` (FR-050): an
-// intentional stop, not an error, so its `error` stays null. The worker mints
-// the job when `okf_ingest` is called; the run itself executes in the MAIN
-// Next.js process, and `delegate-bridge` — which holds the run's stream —
-// captures its `runId` and writes the terminal state from the run's own
-// signal (ADR-006). Cancelling asks the platform to abort that `runId`
-// (ADR-010); deleting only ever removes the record.
+// The lifecycle crosses a thread boundary the service cannot see across. The
+// worker mints the job when `okf_ingest` is called; the okf-ingest sub-agent
+// runs in the MAIN Next.js process and reports back over this service's own
+// loopback HTTP bridge (start/complete/fail). The calling assistant's
+// safety-net closes the gap if the sub-agent dies without reporting.
 
 const JOBS_DIR = ".jobs";
-/** The pre-`<id>.md` layout. Read once, migrated, then left alone. */
-const LEGACY_JOBS_FILE = "jobs.json";
+const JOBS_FILE = "jobs.json";
 const JOB_HISTORY_LIMIT = 200;
 
 let jobsState = null; // { jobs: [...], seq: n } — hot map, mirrored to disk
 
-function jobsDir(bundleRoot) {
-  return safeJoin(bundleRoot, JOBS_DIR);
-}
-
-/** Job ids are minted here (`run-<n>`); this is still enforced, because an
- *  id also names a file and an id from a restored store is just data. */
-function validateJobId(id) {
-  const value = String(id || "");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value) || value.includes("..")) {
-    throw new Error(`invalid job id: ${id}`);
-  }
-  return value;
-}
-
-function jobFilePath(bundleRoot, id) {
-  return safeJoin(bundleRoot, JOBS_DIR, `${validateJobId(id)}.md`);
-}
-
-/**
- * One run as a readable `.md`.
- *
- * The frontmatter carries the scalar lifecycle fields so the file is
- * legible in the Files app and greppable on disk. The fenced `json` block in
- * the body is the AUTHORITATIVE record: `summary.text` is the agent's own
- * multi-line prose and `error` is an arbitrary message, and the bundle's
- * YAML-lite serializer is a frontmatter serializer, not a general one. One
- * authority, stated plainly, beats two that can disagree.
- */
-function jobMarkdown(job) {
-  const frontmatter = {
-    type: "ingest-job",
-    id: job.id,
-    status: job.status,
-    bundle: job.bundleId,
-    source: job.source,
-    runId: job.runId || null,
-    queued_at: job.queuedAt || null,
-    started_at: job.startedAt || null,
-    ended_at: job.endedAt || null,
-    duration_ms: job.durationMs === null || job.durationMs === undefined ? null : job.durationMs,
-  };
-  const lines = [
-    `# Ingest run \`${job.id}\``,
-    "",
-    `- **Status:** ${job.status}`,
-    `- **Bundle:** ${job.bundleId}`,
-    `- **Source:** ${job.source}`,
-    `- **Run id:** ${job.runId || "—"}`,
-    `- **Queued:** ${job.queuedAt || "—"}`,
-    `- **Ended:** ${job.endedAt || "—"}`,
-    "",
-    "Operational state, not OKF content — this file is excluded from exports and is",
-    "safe to delete (that is exactly what `okf_delete_job` does). Deleting it removes",
-    "the run from the Jobs tab and touches no bundle content.",
-    "",
-    "<!-- okf:job — the authoritative record -->",
-    "```json",
-    JSON.stringify(job, null, 2),
-    "```",
-    "",
-  ];
-  return stringifyDocument(frontmatter, lines.join("\n"));
-}
-
-const JOB_JSON_BLOCK = /```json\s*\n([\s\S]*?)\n```/;
-
-/** Parse a `.jobs/<id>.md` back into a record. The JSON block wins; the
- *  frontmatter is the fallback for a hand-edited or truncated file. */
-function parseJobMarkdown(raw) {
-  const match = JOB_JSON_BLOCK.exec(String(raw || ""));
-  if (match) {
-    try {
-      const parsed = JSON.parse(match[1]);
-      if (parsed && typeof parsed === "object" && parsed.id) return normalizeJob(parsed);
-    } catch {
-      /* fall through to the frontmatter */
-    }
-  }
-  const { frontmatter } = parseFrontmatter(String(raw || ""));
-  if (!frontmatter || !frontmatter.id) return null;
-  return normalizeJob({
-    id: frontmatter.id,
-    status: frontmatter.status,
-    bundleId: frontmatter.bundle,
-    source: frontmatter.source || "",
-    runId: frontmatter.runId || null,
-    queuedAt: frontmatter.queued_at || null,
-    startedAt: frontmatter.started_at || null,
-    endedAt: frontmatter.ended_at || null,
-    durationMs: frontmatter.duration_ms ?? null,
-  });
-}
-
-/** Every record the rest of the module may touch has every field, so a
- *  restored or hand-written one can't be the reason a reader crashes. */
-function normalizeJob(job) {
-  return {
-    id: String(job.id),
-    status: JOB_STATUSES.includes(job.status) ? job.status : "failed",
-    bundleId: job.bundleId || job.bundle || "",
-    source: job.source || "",
-    maxDepth: job.maxDepth ?? null,
-    maxWorkers: job.maxWorkers ?? null,
-    runId: job.runId || null,
-    queuedAt: job.queuedAt || null,
-    startedAt: job.startedAt || null,
-    endedAt: job.endedAt || null,
-    durationMs: job.durationMs ?? null,
-    progress: job.progress ?? null,
-    summary: job.summary ?? null,
-    error: job.error ?? null,
-  };
-}
-
-/** Newest first, the order both the Jobs tab and okf_list_jobs render. */
-function sortJobs(jobs) {
-  return jobs.sort((a, b) => {
-    const at = Date.parse(a.queuedAt || a.startedAt || "") || 0;
-    const bt = Date.parse(b.queuedAt || b.startedAt || "") || 0;
-    if (bt !== at) return bt - at;
-    return String(b.id).localeCompare(String(a.id), undefined, { numeric: true });
-  });
-}
-
-function seqFloor(jobs) {
-  let max = 1000;
-  for (const job of jobs) {
-    const m = /^run-(\d+)$/.exec(job.id);
-    if (m) max = Math.max(max, Number(m[1]));
-  }
-  return max;
-}
-
-/**
- * Migrate a pre-`<id>.md` `jobs.json` into per-run files. Additive and
- * one-way: each record is written as its own file (never clobbering one that
- * already exists), then the legacy file is RENAMED, not deleted, so a failed
- * migration loses nothing and a successful one never runs twice.
- */
-async function migrateLegacyJobsFile(bundleRoot) {
-  const legacyPath = safeJoin(bundleRoot, JOBS_DIR, LEGACY_JOBS_FILE);
-  const raw = await vfs.readText(legacyPath).catch(() => null);
-  if (!raw) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return []; // corrupt: leave it in place for a human, start clean
-  }
-  if (!parsed || !Array.isArray(parsed.jobs)) return [];
-  const migrated = [];
-  for (const record of parsed.jobs) {
-    if (!record || !record.id) continue;
-    let job;
-    try {
-      job = normalizeJob(record);
-      const target = jobFilePath(bundleRoot, job.id);
-      if (!(await vfs.exists(target))) await vfs.writeText(target, jobMarkdown(job));
-    } catch {
-      continue; // a single unreadable record never blocks the rest
-    }
-    migrated.push(job);
-  }
-  await vfs
-    .writeText(`${legacyPath}.migrated`, raw)
-    .then(() => vfs.remove(legacyPath))
-    .catch(() => {
-      /* best effort: a legacy file we could not archive is re-read next boot,
-         and the per-job files it produces already exist, so this is a no-op */
-    });
-  return migrated;
+function jobsPath(bundleRoot) {
+  return safeJoin(bundleRoot, JOBS_DIR, JOBS_FILE);
 }
 
 async function loadJobs(bundleRoot) {
   if (jobsState) return jobsState;
-  const dir = jobsDir(bundleRoot);
-  const entries = await vfs.list(dir).catch(() => []);
-  const jobs = [];
-  for (const entry of entries) {
-    if (entry.type === "dir" || !entry.name.endsWith(".md")) continue;
-    const raw = await vfs.readText(path.join(dir, entry.name)).catch(() => null);
-    if (!raw) continue;
-    const job = parseJobMarkdown(raw);
-    if (job) jobs.push(job);
+  const raw = await vfs.readText(jobsPath(bundleRoot)).catch(() => null);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.jobs)) {
+        jobsState = { jobs: parsed.jobs, seq: Number(parsed.seq) || parsed.jobs.length };
+        return jobsState;
+      }
+    } catch {
+      /* corrupt file: start clean rather than refusing to run ingests */
+    }
   }
-  for (const job of await migrateLegacyJobsFile(bundleRoot)) {
-    if (!jobs.some((j) => j.id === job.id)) jobs.push(job);
-  }
-  sortJobs(jobs);
-  jobsState = { jobs, seq: seqFloor(jobs) };
+  jobsState = { jobs: [], seq: 1000 };
   return jobsState;
 }
 
-/** Write ONE run's file. A job record must never fail the ingest it
- *  describes, so a failed write is logged by its absence, not thrown. */
-async function persistJob(bundleRoot, job) {
-  await vfs.writeText(jobFilePath(bundleRoot, job.id), jobMarkdown(job)).catch(() => {
-    /* best effort — see above */
+async function persistJobs(bundleRoot) {
+  if (!jobsState) return;
+  if (jobsState.jobs.length > JOB_HISTORY_LIMIT) jobsState.jobs = jobsState.jobs.slice(0, JOB_HISTORY_LIMIT);
+  await vfs.writeText(jobsPath(bundleRoot), JSON.stringify(jobsState, null, 2) + "\n").catch(() => {
+    /* best effort — a job record must never fail the ingest it describes */
   });
-}
-
-/** Drop the oldest records past the history cap, file and all. */
-async function trimJobHistory(bundleRoot) {
-  if (!jobsState || jobsState.jobs.length <= JOB_HISTORY_LIMIT) return;
-  const dropped = jobsState.jobs.slice(JOB_HISTORY_LIMIT);
-  jobsState.jobs = jobsState.jobs.slice(0, JOB_HISTORY_LIMIT);
-  for (const job of dropped) {
-    await vfs.remove(jobFilePath(bundleRoot, job.id)).catch(() => {});
-  }
 }
 
 async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers }) {
   const state = await loadJobs(bundleRoot);
   state.seq++;
-  const job = normalizeJob({
+  const job = {
     id: `run-${state.seq}`,
     status: "queued",
     bundleId,
     source,
     maxDepth: maxDepth ?? null,
     maxWorkers: maxWorkers ?? null,
-    runId: null,
     queuedAt: nowIso(),
-  });
+    startedAt: null,
+    endedAt: null,
+    durationMs: null,
+    progress: null,
+    summary: null,
+    error: null,
+  };
   state.jobs.unshift(job);
-  await persistJob(bundleRoot, job);
-  await trimJobHistory(bundleRoot);
+  await persistJobs(bundleRoot);
   return job;
 }
 
-/**
- * The ONE job listing (FR-048). Backs `okf_list_jobs` AND `GET /jobs`, so
- * what an agent sees and what the Jobs tab shows cannot disagree — including
- * `cancelled` runs, which are listed like any other terminal state, and the
- * `runId` of a run that got as far as starting.
- */
 async function listJobs(bundleRoot, { bundleId, status, limit } = {}) {
   const state = await loadJobs(bundleRoot);
   let jobs = state.jobs;
@@ -2093,26 +2063,19 @@ async function getJob(bundleRoot, id) {
   return state.jobs.find((j) => j.id === id) || null;
 }
 
-/** `cancelled` joins the terminal set: an intentional stop is still an end. */
-const TERMINAL = new Set(["completed", "cancelled", "failed"]);
-const JOB_STATUSES = ["queued", "running", "completed", "cancelled", "failed"];
-
-function notFoundJob(id) {
-  const err = new Error(`job not found: ${id}`);
-  err.status = 404;
-  return err;
-}
+const TERMINAL = new Set(["completed", "failed"]);
+const JOB_STATUSES = ["queued", "running", "completed", "failed"];
 
 /**
- * Apply a lifecycle transition. Terminal states are FINAL: a late signal
- * (the run's own terminal line arriving after a cancel already recorded the
- * stop, or the reaper and the launcher racing) is recorded as a no-op rather
- * than resurrecting or relabelling a finished run.
+ * Apply a lifecycle transition. Terminal states are FINAL: a late callback
+ * (the sub-agent reporting after the assistant's safety-net already failed
+ * the run, or vice-versa) is recorded as a no-op rather than resurrecting a
+ * finished run — which is what makes it safe for BOTH paths to report.
  */
 async function updateJob(bundleRoot, id, patch = {}) {
   const state = await loadJobs(bundleRoot);
   const job = state.jobs.find((j) => j.id === id);
-  if (!job) throw notFoundJob(id);
+  if (!job) throw new Error(`job not found: ${id}`);
 
   if (patch.status !== undefined && !JOB_STATUSES.includes(patch.status)) {
     throw new Error(`invalid job status: ${patch.status} (expected ${JOB_STATUSES.join(" | ")})`);
@@ -2124,10 +2087,6 @@ async function updateJob(bundleRoot, id, patch = {}) {
   if (patch.progress !== undefined) job.progress = patch.progress;
   if (patch.summary !== undefined) job.summary = patch.summary;
   if (patch.error !== undefined) job.error = patch.error;
-  // The run's own id, captured from its first `run_started` line (FR-052).
-  // It is what `cancelJob` has to hand the platform's abort route, so it is
-  // persisted with the record rather than kept only in the bridge's memory.
-  if (patch.runId !== undefined) job.runId = patch.runId || null;
 
   if (patch.status === "running" && job.status !== "running") {
     job.status = "running";
@@ -2143,106 +2102,8 @@ async function updateJob(bundleRoot, id, patch = {}) {
     job.status = patch.status;
   }
 
-  await persistJob(bundleRoot, job);
+  await persistJobs(bundleRoot);
   return job;
-}
-
-/**
- * CANCEL a run (FR-050 / ADR-010 / SC-014).
- *
- * Three outcomes, and only three:
- *   • unknown id          → not-found (404), in band like every other error
- *   • already terminal    → `{cancelled:false, reason:"already terminal"}` — a
- *                           NO-OP. Nothing is re-ended, nothing is relabelled.
- *   • queued or running   → the job becomes `cancelled` (terminal, `error`
- *                           null — a stop is not a failure) and the underlying
- *                           headless run is aborted through the platform's
- *                           per-run abort route, which `delegate-bridge` owns.
- *
- * The record and any bundle content the run already wrote are PRESERVED:
- * cancelling is a stop, not a rollback. The derived index rebuilds from
- * whatever landed, so a cancelled run leaves a smaller bundle, not a broken
- * one.
- *
- * The status is written BEFORE the abort resolves, so the Jobs tab reflects
- * the stop immediately; the run's own terminal line then arrives and is
- * correctly ignored as a late transition against a terminal job.
- */
-async function cancelJob(bundleRoot, jobId) {
-  const job = await getJob(bundleRoot, jobId);
-  if (!job) throw notFoundJob(jobId);
-
-  if (TERMINAL.has(job.status)) {
-    return { cancelled: false, reason: "already terminal", jobId: job.id, status: job.status, job };
-  }
-
-  const updated = await updateJob(bundleRoot, jobId, { status: "cancelled", error: null });
-
-  // Signal the bridge, which holds this run's stream and knows its runId.
-  // A queued job whose run has not announced itself yet is remembered there
-  // and aborted the instant `run_started` lands (ADR-010/S4) — the caller is
-  // never told to come back later.
-  let abort = { aborted: false, reason: "no live run was registered for this job" };
-  try {
-    const delegate = require("./delegate-bridge");
-    abort = await delegate.cancelRun(jobId, updated.runId);
-  } catch (err) {
-    abort = { aborted: false, error: err.message };
-  }
-
-  return {
-    cancelled: true,
-    status: "cancelled",
-    jobId: job.id,
-    runId: updated.runId || null,
-    abort,
-    job: updated,
-    note:
-      "The run was stopped. Anything it had already written to the bundle is kept — cancelling is a stop, not a " +
-      "rollback — and the derived index reflects what landed. The job record is still here; remove it with " +
-      "okf_delete_job if you don't want it in the list.",
-  };
-}
-
-/**
- * DELETE a run's record (FR-051 / SC-015).
- *
- * Removes the record from the hot map and deletes its `.jobs/<id>.md`, and
- * NOTHING else: chapters, the concept index, every TOC and `raw/` are
- * untouched. A run's record is bookkeeping about a run, not the knowledge the
- * run produced.
- *
- *   • running job  → rejected, 409 — cancel it first. Deleting the record of
- *                    a live run would leave the run writing into a bundle
- *                    with nothing watching it.
- *   • unknown id   → clean 404.
- *   • anything else (completed / cancelled / failed / queued) → deleted.
- */
-async function deleteJob(bundleRoot, jobId) {
-  const state = await loadJobs(bundleRoot);
-  const index = state.jobs.findIndex((j) => j.id === jobId);
-  if (index === -1) throw notFoundJob(jobId);
-  const job = state.jobs[index];
-
-  if (job.status === "running") {
-    const err = new Error(
-      `job ${jobId} is still running — cancel it first (okf_cancel_job / POST /jobs/${jobId}/cancel), then delete it.`,
-    );
-    err.status = 409;
-    throw err;
-  }
-
-  state.jobs.splice(index, 1);
-  await vfs.remove(jobFilePath(bundleRoot, jobId)).catch(() => {
-    /* already gone — the record is what the caller asked to remove */
-  });
-
-  return {
-    deleted: true,
-    jobId,
-    status: job.status,
-    note: "The run record is gone. No bundle content was touched — chapters, the concept index, the TOCs and raw/ are unchanged.",
-  };
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -2447,30 +2308,9 @@ async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers,
     job,
     note:
       `Run ${job.id} started. It is running now in the bundled okf-ingest agent — there is nothing for you to run. ` +
-      `Check on it with okf_list_jobs({}) (or the app's Jobs tab); it ends as completed with a summary, cancelled if ` +
-      `it is stopped, or failed with an error. Stop it with okf_cancel_job({jobId: "${job.id}"}).`,
+      `Check on it with okf_list_jobs({}) (or the app's Jobs tab); it ends as completed with a summary, or failed with ` +
+      `an error.`,
   };
-}
-
-/**
- * The run's terminal `endedReason` → the job's terminal status (ADR-006 +
- * ADR-010). The run's own signal is the authority; this is the whole map.
- *
- *   completed  → completed   the only success
- *   cancelled  → cancelled   an intentional stop (ADR-010) — DISTINCT from
- *                            failed, and its `error` stays null, because
- *                            "the user stopped it" is not an error about the
- *                            run and showing it in red would be a lie
- *   error      → failed      with the run's own error
- *   max_steps  → failed      the agent ran out of budget mid-document; the
- *                            bundle may hold a half-decomposed document, and
- *                            calling that a success would be the job store
- *                            lying about its own data
- */
-function statusForEndedReason(endedReason) {
-  if (endedReason === "completed") return "completed";
-  if (endedReason === "cancelled") return "cancelled";
-  return "failed";
 }
 
 /**
@@ -2490,13 +2330,6 @@ async function driveRun(bundleRoot, jobId, task) {
   try {
     const run = await delegate.runIngestAgent({
       task,
-      jobId,
-      // The run's own id, off the FIRST `run_started` line (FR-052). It is
-      // stored on the record so cancel has something to abort and so both
-      // job surfaces can show which run a job actually is.
-      onRunStarted: ({ runId }) => {
-        void updateJob(bundleRoot, jobId, { runId }).catch(() => {});
-      },
       onTool: ({ tool, index }) => {
         void updateJob(bundleRoot, jobId, { progress: progressFor(tool, index) }).catch(() => {});
       },
@@ -2508,12 +2341,9 @@ async function driveRun(bundleRoot, jobId, task) {
         summary: summaryFromOutput(run.output, run.toolCalls),
       });
     } else {
-      const status = statusForEndedReason(run.endedReason);
       await updateJob(bundleRoot, jobId, {
-        status,
-        // A cancelled run has no error to report: it did exactly what it was
-        // told to do, which was stop.
-        error: status === "cancelled" ? null : run.error || `the run ended as "${run.endedReason || "unknown"}"`,
+        status: "failed",
+        error: run.error || `the run ended as "${run.endedReason || "unknown"}"`,
       });
     }
   } catch (err) {
@@ -2563,16 +2393,13 @@ function summaryFromOutput(output, toolCalls) {
  * and a Jobs tab with a permanently-spinning row is worse than one that says
  * plainly that the run was lost.
  *
- * So: any job still non-terminal and older than `jobFinalizeTimeoutMs` is
- * marked `failed` with an honest "stale" reason. Run on a timer AND as a
- * sweep on (re)start, because a restart is exactly the event that orphans
- * jobs and waiting a full interval to admit it is the wrong default.
- *
- * Only `queued`/`running` jobs are candidates, so a `cancelled` run — which
- * is terminal — is never re-labelled `failed` by the reaper (ADR-010).
+ * So: any job still non-terminal and older than `staleJobMs` is marked
+ * `failed` with an honest "stale" reason. Run on a timer AND as a sweep on
+ * (re)start, because a restart is exactly the event that orphans jobs and
+ * waiting a full interval to admit it is the wrong default.
  */
-async function reapStaleJobs(bundleRoot, jobFinalizeTimeoutMs) {
-  const cutoffMs = Number.isFinite(jobFinalizeTimeoutMs) && jobFinalizeTimeoutMs > 0 ? jobFinalizeTimeoutMs : 30 * 60 * 1000;
+async function reapStaleJobs(bundleRoot, staleJobMs) {
+  const cutoffMs = Number.isFinite(staleJobMs) && staleJobMs > 0 ? staleJobMs : 30 * 60 * 1000;
   const state = await loadJobs(bundleRoot);
   const now = Date.now();
   const reaped = [];
@@ -2641,10 +2468,7 @@ module.exports = {
   listJobs,
   getJob,
   updateJob,
-  cancelJob,
-  deleteJob,
   reapStaleJobs,
-  statusForEndedReason,
   // the auto-trigger (THE single ingest path)
   triggerIngest,
   acquisitionFirstSteps,

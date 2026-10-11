@@ -38,68 +38,16 @@
 //   {type:"done", result, text}         TERMINAL — result.{output, endedReason, error}
 //   {type:"error", error}               TERMINAL — the run threw before finishing
 //
-// We deliberately parse only what we act on (`run_started` for the run id,
-// `tool` for progress, `done` / `error` for the terminal state) and ignore
-// unknown line types rather than failing on them: the endpoint is allowed to
-// add event kinds, and a service that crashed on an unrecognised line would
-// be broken by an additive change.
-//
-// ── Stopping a run (ADR-010) ─────────────────────────────────────────────
-//
-// The run executes in the MAIN Next.js process; this worker is a separate
-// thread holding its stream. The worker cannot reach the run's
-// `AbortController` directly, and it must NOT abort its own `fetch` to stop
-// it: the delegate route never wires the request's signal into the run, so
-// aborting the client side closes the stream and leaves the run executing —
-// writing chapters, burning tokens — with nothing watching it. The run and
-// the job would disagree.
-//
-// So the worker asks the process that owns the run, over the same loopback
-// channel it already uses for `/api/fs` and the delegate endpoint:
-//
-//   POST /api/subagents/<runId>/abort   ->   {aborted: boolean, runId}
-//
-// `aborted:false` is not an error — it means "no such live run" (already
-// finished, or never started here), which makes the call idempotent.
-//
-// Two pieces are needed for that, and both live here because this is the
-// only module that sees the stream:
-//
-//   • the `runId`, captured from the FIRST `run_started` line (the delegate
-//     route forwards it verbatim, before anything else, precisely so a
-//     fire-and-forget caller learns the id while the run is in flight);
-//   • the QUEUED WINDOW — a cancel that arrives before `run_started` has
-//     nothing to abort yet, so it is remembered against the job and fired
-//     the instant the id lands. A queued-window cancel then behaves exactly
-//     like a running cancel, instead of quietly waiting out a whole run.
-//
-// ── The mock-delegate seam ───────────────────────────────────────────────
-//
-// `OKF_DELEGATE_URL` overrides where the headless-run endpoint lives. When
-// it is set, BOTH calls follow it: the run is started at that URL and the
-// abort goes to `<that origin>/api/subagents/<runId>/abort`. That is the
-// whole seam — one env var, no branch in the logic below — and it is what
-// lets the e2e suite point the bridge at a deterministic mock that emits
-// `run_started` and then stays open, so cancel/delete are asserted in
-// milliseconds instead of waiting out a real multi-minute agent run.
+// We deliberately parse only what we act on (`tool` for progress, `done` /
+// `error` for the terminal state) and ignore unknown line types rather than
+// failing on them: the endpoint is allowed to add event kinds, and a service
+// that crashed on an unrecognised line would be broken by an additive change.
 
 const http = require("http");
 const vfs = require("./vfs-bridge");
 
 /** The agent id this service delegates to (bundled in agents/okf-ingest/). */
 const INGEST_AGENT = "okf-ingest";
-
-/**
- * The runs this worker is currently holding a stream for, keyed by JOB id —
- * the id the job store and both cancel surfaces speak in. `runId` is null
- * until `run_started` lands; `pendingAbort` is a cancel that arrived before
- * it did (the queued window).
- *
- * An entry is removed when the run ends, so a cancel against a finished run
- * finds nothing live and reports `aborted:false` rather than inventing a
- * stop that did not happen.
- */
-const liveRuns = new Map();
 
 /**
  * The loopback base for BOS's own API — resolved exactly the way vfs-bridge
@@ -110,138 +58,20 @@ function loopbackBaseUrl() {
   return vfs.vfsBaseUrl();
 }
 
-/** Where the headless-run endpoint lives (see "the mock-delegate seam"). */
-function delegateUrl() {
-  const override = process.env.OKF_DELEGATE_URL;
-  if (override) return new URL(override);
-  return new URL("/api/subagents/delegate", loopbackBaseUrl());
-}
-
-/**
- * The platform's per-run abort route. It follows the delegate endpoint's
- * origin, because the run and the thing that can stop it are the same
- * process by construction — the run registry is `globalThis`-scoped, so an
- * abort has to reach the process that launched the run.
- */
-function abortUrl(runId) {
-  const base = process.env.OKF_DELEGATE_URL ? new URL(process.env.OKF_DELEGATE_URL).origin : loopbackBaseUrl();
-  return new URL(`/api/subagents/${encodeURIComponent(runId)}/abort`, base);
-}
-
-/** True while this worker still holds a stream for `jobId`. */
-function isRunLive(jobId) {
-  return liveRuns.has(jobId);
-}
-
-/**
- * POST the platform's abort route for one run.
- *
- * Returns the route's own answer — `{aborted:true}` when it found and
- * stopped a live run, `{aborted:false}` when there was nothing live to stop.
- * NEVER throws for a run that was already gone: an abort that finds nothing
- * is the idempotent case, not a failure, and cancel must not break because
- * the run beat it to the finish line by a millisecond.
- */
-function abortRun(runId) {
-  return new Promise((resolve) => {
-    if (!runId) {
-      resolve({ aborted: false, reason: "no runId was captured for this run yet" });
-      return;
-    }
-    const url = abortUrl(runId);
-    const req = http.request(
-      {
-        method: "POST",
-        hostname: url.hostname,
-        port: url.port,
-        path: url.pathname + url.search,
-        headers: { "Content-Length": 0, Accept: "application/json" },
-      },
-      (res) => {
-        let data = "";
-        res.setEncoding("utf8");
-        res.on("data", (c) => {
-          data += c;
-        });
-        res.on("end", () => {
-          let body = null;
-          try {
-            body = data ? JSON.parse(data) : null;
-          } catch {
-            body = null;
-          }
-          if (res.statusCode === 200 && body && typeof body.aborted === "boolean") {
-            resolve({ ...body, runId });
-            return;
-          }
-          resolve({
-            aborted: false,
-            runId,
-            reason: `the abort route answered HTTP ${res.statusCode || 0}`,
-          });
-        });
-      },
-    );
-    req.on("error", (err) => resolve({ aborted: false, runId, error: err.message }));
-    req.end();
-  });
-}
-
-/**
- * Cancel the run this worker is holding for `jobId` (ADR-010 step 2/3).
- *
- * Three shapes, and the caller (`core.cancelJob`) treats all three as "the
- * stop was recorded", because the job's `cancelled` state is written from
- * the job store either way — this only decides whether a live run was
- * actually interrupted:
- *
- *   • the runId is known       → abort it now
- *   • the run has not started  → remember it; `run_started` fires the abort
- *   • nothing is live          → try the stored runId anyway (it may be a
- *                                run a previous worker started), and report
- *                                whatever the route says
- */
-async function cancelRun(jobId, storedRunId) {
-  const entry = liveRuns.get(jobId);
-  if (entry) {
-    entry.cancelled = true;
-    if (entry.runId) return abortRun(entry.runId);
-    // The queued window: the run is in flight but has not announced its id
-    // yet. Remember the intent — consumeNdjson fires it on `run_started`.
-    entry.pendingAbort = true;
-    return { aborted: false, pending: true, reason: "the run has not reported its runId yet — it will be aborted the moment it does" };
-  }
-  // No stream held here. If the record remembers a runId, ask anyway: the
-  // route is idempotent and answers honestly if the run is already gone.
-  if (storedRunId) return abortRun(storedRunId);
-  // Nothing live and nothing to abort — but a cancel that arrives in the
-  // sliver before the run is registered must not be lost either.
-  const placeholder = { runId: null, cancelled: true, pendingAbort: true };
-  liveRuns.set(jobId, placeholder);
-  // …and must not be remembered forever: a job whose run never starts (an
-  // orphan from before a restart, say) would otherwise leave an entry in
-  // this map for the life of the worker. Well past any queued window.
-  const expiry = setTimeout(() => {
-    if (liveRuns.get(jobId) === placeholder) liveRuns.delete(jobId);
-  }, 5 * 60 * 1000);
-  if (typeof expiry.unref === "function") expiry.unref();
-  return { aborted: false, pending: true, reason: "no live run is registered for this job yet" };
-}
-
 /**
  * Open the NDJSON stream. Resolves once the response HEAD is in, so the
  * caller can start consuming lines while the run is still going.
  */
 function openDelegateStream({ task, agent }) {
   return new Promise((resolve, reject) => {
-    const url = delegateUrl();
+    const url = new URL("/api/subagents/delegate", loopbackBaseUrl());
     const body = JSON.stringify({ task, agent: agent || INGEST_AGENT });
     const req = http.request(
       {
         method: "POST",
         hostname: url.hostname,
         port: url.port,
-        path: url.pathname + url.search,
+        path: url.pathname,
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(body),
@@ -270,35 +100,15 @@ function openDelegateStream({ task, agent }) {
  *
  * @param {object}   opts
  * @param {string}   opts.task         the full task text (embeds jobId/bundle/source)
- * @param {string}  [opts.jobId]       the job this run belongs to — the key cancel speaks in
  * @param {string}  [opts.agent]       defaults to "okf-ingest"
- * @param {function} [opts.onRunStarted] ({runId}) => void — the run's own id, once
  * @param {function} [opts.onTool]     ({tool, index}) => void — progress ticks
- * @returns {Promise<{ok: boolean, output?: string, endedReason?: string, error?: string, runId?: string, toolCalls: number}>}
+ * @returns {Promise<{ok: boolean, output?: string, endedReason?: string, error?: string, toolCalls: number}>}
  *          Resolves with the run's own terminal signal. NEVER rejects for a
  *          run that failed — a failed run is a result, not an exception. It
  *          rejects only when the stream itself could not be established or
  *          read, which the launcher reports as a failed job all the same.
  */
-async function runIngestAgent({ task, agent, jobId, onRunStarted, onTool }) {
-  // Register BEFORE the request goes out, and preserve an entry a cancel
-  // already created: `okf_cancel_job` can land in the sliver between
-  // createJob and this line, and a cancel that arrives first must not be
-  // silently dropped on the floor.
-  const key = jobId || `anonymous-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const entry = liveRuns.get(key) || { runId: null, cancelled: false, pendingAbort: false };
-  liveRuns.set(key, entry);
-
-  try {
-    return await consumeRun({ task, agent, entry, onRunStarted, onTool });
-  } finally {
-    // The run is over: nothing here is live any more, so a later cancel
-    // correctly reports that there was nothing to stop.
-    liveRuns.delete(key);
-  }
-}
-
-async function consumeRun({ task, agent, entry, onRunStarted, onTool }) {
+async function runIngestAgent({ task, agent, onTool }) {
   const res = await openDelegateStream({ task, agent });
 
   if (res.statusCode && res.statusCode >= 400) {
@@ -320,27 +130,6 @@ async function consumeRun({ task, agent, entry, onRunStarted, onTool }) {
 
   await consumeNdjson(res, (line) => {
     if (!line || typeof line !== "object") return;
-    // The FIRST line of a run, by contract (runner.ts emits it before
-    // anything else). Everything cancel needs hangs off it.
-    if (line.type === "run_started") {
-      if (entry.runId || !line.runId) return; // the first one is the run's id; later ones are noise
-      entry.runId = String(line.runId);
-      if (onRunStarted) {
-        try {
-          onRunStarted({ runId: entry.runId });
-        } catch {
-          /* storing the id must never abort the run it identifies */
-        }
-      }
-      // ADR-010/S4 — the queued window closed with a cancel already in it.
-      // Abort NOW rather than letting the run proceed to a natural end that
-      // the user has already said they do not want.
-      if (entry.pendingAbort || entry.cancelled) {
-        entry.pendingAbort = false;
-        void abortRun(entry.runId);
-      }
-      return;
-    }
     if (line.type === "tool") {
       toolCalls++;
       if (onTool) {
@@ -364,13 +153,12 @@ async function consumeRun({ task, agent, entry, onRunStarted, onTool }) {
       ok: false,
       error: "the sub-agent stream ended without a terminal line — the run was interrupted",
       endedReason: "error",
-      runId: entry.runId,
       toolCalls,
     };
   }
 
   if (terminal.type === "error") {
-    return { ok: false, error: String(terminal.error || "the sub-agent run threw"), endedReason: "error", runId: entry.runId, toolCalls };
+    return { ok: false, error: String(terminal.error || "the sub-agent run threw"), endedReason: "error", toolCalls };
   }
 
   const result = terminal.result || {};
@@ -378,16 +166,13 @@ async function consumeRun({ task, agent, entry, onRunStarted, onTool }) {
   // "completed" is the ONLY success. `max_steps` means the agent ran out of
   // budget mid-job: the bundle may hold a half-decomposed document, and
   // calling that a success would be the job store lying about its own data.
-  // `cancelled` is not a success either — but it is not a failure, and the
-  // launcher maps it to its own distinct terminal state (ADR-010).
   const ok = endedReason === "completed" && !result.error;
   return {
     ok,
     output: typeof result.output === "string" ? result.output : terminal.text || "",
     endedReason,
-    error: ok || endedReason === "cancelled" ? undefined : result.error || `the run ended as "${endedReason}"`,
+    error: ok ? undefined : result.error || `the run ended as "${endedReason}"`,
     steps: typeof result.steps === "number" ? result.steps : undefined,
-    runId: entry.runId,
     toolCalls,
   };
 }
@@ -448,13 +233,4 @@ function consumeNdjson(res, onLine) {
   });
 }
 
-module.exports = {
-  runIngestAgent,
-  cancelRun,
-  abortRun,
-  isRunLive,
-  loopbackBaseUrl,
-  delegateUrl,
-  abortUrl,
-  INGEST_AGENT,
-};
+module.exports = { runIngestAgent, loopbackBaseUrl, INGEST_AGENT };

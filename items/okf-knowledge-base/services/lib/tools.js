@@ -7,35 +7,29 @@
 // hands the sub-agent). Handlers validate shape and delegate to okf-core,
 // which owns all storage semantics.
 //
-// ── EXACTLY 21 TOOLS (spec FR-037 / SC-007, design.md §8.2) ─────────────
+// ── EXACTLY 19 TOOLS (spec FR-037 / SC-007, design.md §8.2 + the auto-trigger
+//    rework's okf_list_jobs) ─────────────────────────────────────────────
 //
-// The pre-redesign surface declared 31. This declares 21 and nothing else:
+// The pre-redesign surface declared 31. This declares 19 and nothing else:
 //
 //   Retrieval      okf_search · okf_read_toc · okf_read_concept · okf_list_concepts
 //   Concepts       okf_upsert_concept · okf_delete_concept · okf_merge_concepts
 //   Bundles        okf_list_bundles · okf_init_bundle · okf_import_bundle
 //                  okf_export_bundle · okf_delete_bundle
-//   Ingest         okf_ingest · okf_add_raw_source
-//   Jobs           okf_list_jobs · okf_cancel_job · okf_delete_job
+//   Ingest         okf_ingest · okf_add_raw_source · okf_list_jobs
 //   Organization   okf_add_link · okf_backlinks
 //   Health         okf_lint · okf_stale_report
 //
-// ADDED (6): okf_search, okf_read_toc, okf_merge_concepts, okf_list_jobs,
-// and — with job control (FR-050/FR-051, ADR-010) — okf_cancel_job and
-// okf_delete_job.
+// ADDED (4): okf_search, okf_read_toc, okf_merge_concepts, okf_list_jobs.
 //
-// The three JOB tools are one group for a reason. Design.md's ADR-006
-// explicitly rejected a jobs tool — but it rejected it as a way for the
-// SUB-AGENT to report lifecycle, which the launcher now owns instead. What
-// that ADR never gave the agent was a way to ANSWER "did that ingest
-// finish?", and then to act on the answer. Since okf_ingest returns a jobId
-// and nothing else, without these the only observer and controller of a run
-// would be the app. They read and drive the same core job-store operations
-// the Jobs tab does — one capability, two surfaces, like okf_search.
-//
-// okf_list_jobs is readOnly (parallel-safe). okf_cancel_job and
-// okf_delete_job are WRITES: one stops a live run, the other removes a
-// record, and neither is something to run concurrently with itself.
+// okf_list_jobs is the 19th. Design.md's ADR-006 explicitly rejected a jobs
+// tool — but it rejected it as a way for the SUB-AGENT to report lifecycle,
+// which the launcher now owns instead. What that ADR never gave the agent was
+// a way to ANSWER "did that ingest finish?". Since okf_ingest returns a jobId
+// and nothing else, without this tool the only observer of a run would be the
+// app, and an agent that started an ingest would have no way to learn how it
+// went. It reads the same core.listJobs() records the Jobs tab renders — one
+// capability, two surfaces, like okf_search.
 //
 // REMOVED (16 by name, 12 net): okf_bundle_status (folded into
 // okf_list_bundles health), okf_find_concepts (-> okf_search),
@@ -71,7 +65,8 @@ const DECLARATIONS = [
     description:
       "START HERE to find knowledge in a bundle. Concept-anchored search: it matches your query against the bundle's concept vocabulary and the one-line descriptions in its index, and returns a ranked TABLE OF CONTENTS — one row per relevant chapter, each carrying the document, the chapter, a one-line description, and the concept term that matched.\n\n" +
       "Rows are pointers, not content. Follow up with okf_read_concept (the full chapter or document) or okf_read_toc (a document's chapter list). Retrieval is always full documents or full chapters — this tool never returns a snippet.\n\n" +
-      "The match is deterministic and concept-anchored, NOT full text: a query that paraphrases body text but misses both the vocabulary and the stored descriptions returns nothing. An empty result is a real answer — widen the query, or read the vocabulary with okf_list_concepts and route from there. Never invent a row.",
+      "The match is deterministic and concept-anchored, NOT full text: a query that paraphrases body text but misses both the vocabulary and the stored descriptions returns nothing. An empty result is a real answer — widen the query, or read the vocabulary with okf_list_concepts and route from there. Never invent a row.\n\n" +
+      "Each row also carries `kind`: `topic` for an ordinary concept term, `person` when the term that matched is a SALIENT PERSON (an author or a named key figure the content is about). Searching a person's name needs no special call — it is an ordinary term-name hit.",
     inputSchema: required(
       {
         bundle: STRING,
@@ -96,9 +91,15 @@ const DECLARATIONS = [
   readOnly({
     name: "okf_list_concepts",
     description:
-      "Read the bundle's concept VOCABULARY — every concept term with the number of chapters it covers and which (document, chapter) pairs those are, plus the document and chapter listings. Use this to route semantically when okf_search comes back empty, and ALWAYS before introducing a new term, so you extend an existing term instead of creating a near-duplicate.",
+      "Read the bundle's concept VOCABULARY — every concept term with its `kind` (`topic`, or `person` for a salient person the bundle registered at ingest), the number of chapters it covers and which (document, chapter) pairs those are, plus the document and chapter listings. Use this to route semantically when okf_search comes back empty, and ALWAYS before introducing a new term, so you extend an existing term instead of creating a near-duplicate.\n\n" +
+      "Pass `kind: \"person\"` to list only the people the bundle knows about (authors and named key figures), or `kind: \"topic\"` for only the subject vocabulary. The default is every term.",
     inputSchema: required(
-      { bundle: STRING, type: { type: "string", enum: ["document", "section"] }, status: STATUS_ENUM },
+      {
+        bundle: STRING,
+        type: { type: "string", enum: ["document", "section"] },
+        status: STATUS_ENUM,
+        kind: { type: "string", enum: ["topic", "person", "all"], description: "Filter the vocabulary by term kind. Default `all`." },
+      },
       ["bundle"],
     ),
   }),
@@ -181,7 +182,7 @@ const DECLARATIONS = [
     description:
       "Ingest a source into a knowledge base as organized chapters. ONE CALL — pass `source` as a URL, a VFS file path, or a raw/ path already in the bundle. You do not need to fetch, convert, stage or delegate anything first, and there is nothing for you to run afterwards.\n\n" +
       "The service starts the run itself: it records a job and launches the bundled least-privilege `okf-ingest` agent, which acquires the source (streaming it to disk, never through anyone's context), decomposes it at its heading structure into chapters with concept terms and one-line summaries, interprets inline assets, and maintains the document TOC and the concept index.\n\n" +
-      "Returns IMMEDIATELY with `{jobId, status: 'queued'}` — your turn is not held open for the run. Check how it went with okf_list_jobs: it ends `completed` with a summary, `cancelled` if someone stopped it, or `failed` with an error. Stop one with okf_cancel_job.\n\n" +
+      "Returns IMMEDIATELY with `{jobId, status: 'queued'}` — your turn is not held open for the run. Check how it went with okf_list_jobs: it ends `completed` with a summary, or `failed` with an error.\n\n" +
       "A source already in the bundle's provenance ledger returns `already_ingested` with the existing document id and starts no run.",
     inputSchema: required(
       {
@@ -218,39 +219,21 @@ const DECLARATIONS = [
       ["bundle"],
     ),
   },
-  // ── Jobs ───────────────────────────────────────────────────────────────
   readOnly({
     name: "okf_list_jobs",
     description:
-      "List ingest runs and how they went — the same records the app's Jobs tab shows. Each is `{id, status, bundleId, source, runId, queuedAt, startedAt, endedAt, durationMs, progress, summary, error}`, newest first.\n\n" +
-      "`status` is one of queued · running · completed · cancelled · failed. **cancelled is an intentional stop, not a failure** — its `error` is null and whatever the run wrote before it stopped is still in the bundle. `runId` identifies the underlying headless run once it has started.\n\n" +
-      "This is how you follow up on an okf_ingest you started: the run is asynchronous and okf_ingest returns only a jobId, so this is the only way to learn whether it completed (with a summary), was cancelled, or failed (with a reason). Filter by `bundle`, by `status`, or pass the `jobId` you were given.",
+      "List ingest runs and how they went — the same records the app's Jobs tab shows. Each is `{id, status, bundleId, source, queuedAt, startedAt, endedAt, durationMs, progress, summary, error}`, newest first.\n\n" +
+      "This is how you follow up on an okf_ingest you started: the run is asynchronous and okf_ingest returns only a jobId, so this is the only way to learn whether it completed (with a summary) or failed (with a reason). Filter by `bundle`, by `status`, or pass the `jobId` you were given.",
     inputSchema: {
       type: "object",
       properties: {
         bundle: { type: "string", description: "Only runs against this bundle." },
-        status: { type: "string", enum: ["queued", "running", "completed", "cancelled", "failed"] },
+        status: { type: "string", enum: ["queued", "running", "completed", "failed"] },
         jobId: { type: "string", description: "Return just this one run." },
         limit: { type: "number", description: "Most recent N runs (default: all)." },
       },
     },
   }),
-  {
-    name: "okf_cancel_job",
-    description:
-      "Stop a running (or just-queued) ingest run. The underlying headless run is aborted and the job moves to the distinct `cancelled` terminal state — NOT `failed`, because a deliberate stop is not an error; a cancelled run's `error` is null.\n\n" +
-      "Cancelling is a stop, not a rollback: the job record stays, and every chapter the run had already written stays with it (writes are atomic and the derived index rebuilds from content, so the bundle is smaller, never broken). Use okf_delete_job afterwards if you also want the record gone.\n\n" +
-      "Returns `{cancelled: true, status: 'cancelled'}`. Cancelling a run that has already finished is a NO-OP: `{cancelled: false, reason: 'already terminal'}` — nothing is re-ended and nothing is relabelled. An unknown jobId is a not-found.",
-    inputSchema: required({ jobId: { type: "string", description: "The run to stop, as returned by okf_ingest or okf_list_jobs." } }, ["jobId"]),
-  },
-  {
-    name: "okf_delete_job",
-    description:
-      "Delete one ingest run's RECORD — a completed, cancelled, failed or still-queued run. Returns `{deleted: true}`.\n\n" +
-      "This removes bookkeeping about a run, never the knowledge the run produced: chapters, the concept index, every document TOC and raw/ are untouched. To remove ingested content, delete the concepts or the bundle instead.\n\n" +
-      "A **running** run is rejected (409) — cancel it first with okf_cancel_job, so the record is never torn out from under a live run. An unknown jobId is a clean 404.",
-    inputSchema: required({ jobId: { type: "string", description: "The run whose record to remove." } }, ["jobId"]),
-  },
 
   // ── Organization ───────────────────────────────────────────────────────
   {
@@ -297,6 +280,8 @@ function makeHandlers(core) {
   return {
     // ── Retrieval ────────────────────────────────────────────────────────
     okf_search: async (args, ctx) => {
+      // core.search() is untouched by the person-kind work (SC-016): the
+      // rows it returns simply carry an additive `kind` per row now.
       const rows = await core.search(ctx.bundleRoot, args.bundle, args.query, args.limit);
       return {
         bundle: args.bundle,
@@ -310,7 +295,10 @@ function makeHandlers(core) {
     },
     okf_read_toc: (args, ctx) => core.readToc(ctx.bundleRoot, args.bundle, args.docId),
     okf_read_concept: (args, ctx) => core.readConcept(ctx.bundleRoot, args.bundle, args.id),
-    okf_list_concepts: (args, ctx) => core.listConcepts(ctx.bundleRoot, args.bundle, { type: args.type, status: args.status }),
+    // `kind` is an additive, optional filter (ADR-011) — omitted means every
+    // term, and every term in the response now carries its own `kind`.
+    okf_list_concepts: (args, ctx) =>
+      core.listConcepts(ctx.bundleRoot, args.bundle, { type: args.type, status: args.status, kind: args.kind }),
 
     // ── Concepts ─────────────────────────────────────────────────────────
     okf_upsert_concept: (args, ctx) =>
@@ -359,13 +347,9 @@ function makeHandlers(core) {
         defaults: ctx.ingestDefaults,
       }),
 
-    // ── Jobs ─────────────────────────────────────────────────────────────
-    //
-    // All three read and drive the SAME core job-store operations the app's
-    // Jobs tab does (ADR-003) — so what an agent sees and does, and what the
-    // user sees and does, can never disagree about a run.
-
-    // The run observer.
+    // The run observer. Reads the SAME core.listJobs() records the app's Jobs
+    // tab renders — so what an agent sees and what the user sees can never
+    // disagree about a run.
     okf_list_jobs: async (args, ctx) => {
       if (args.jobId) {
         const job = await core.getJob(ctx.bundleRoot, args.jobId);
@@ -383,15 +367,6 @@ function makeHandlers(core) {
         active: jobs.filter((j) => j.status === "running" || j.status === "queued").length,
       };
     },
-
-    // The stop. core.cancelJob owns the no-op-on-terminal rule and the abort
-    // (ADR-010); this is the agent's face on it, identical to the app's
-    // POST /jobs/<id>/cancel.
-    okf_cancel_job: (args, ctx) => core.cancelJob(ctx.bundleRoot, args.jobId),
-
-    // The record removal. 409 on a running run, 404 on an unknown one —
-    // both in band, both from core.deleteJob, identical to DELETE /jobs/<id>.
-    okf_delete_job: (args, ctx) => core.deleteJob(ctx.bundleRoot, args.jobId),
 
     // ── Organization ─────────────────────────────────────────────────────
     okf_add_link: (args, ctx) => core.addLink(ctx.bundleRoot, args.bundle, args.id, args.target, { label: args.label }),

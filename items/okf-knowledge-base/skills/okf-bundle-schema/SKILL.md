@@ -1,6 +1,6 @@
 ---
 name: OKF bundle conventions
-description: The ingest, query and lint conventions for OKF knowledge bundles — chapter decomposition, concept-term assignment, one-line summaries, the inline-asset block, and how the two-level derived index is maintained.
+description: The ingest, query and lint conventions for OKF knowledge bundles — chapter decomposition, concept-term assignment, person extraction, one-line summaries, the inline-asset block, and how the two-level derived index is maintained.
 when_to_use: When ingesting a source into an OKF bundle, querying one, or linting one.
 created_by: seed
 ---
@@ -44,6 +44,7 @@ type: section                         # section (chapter) | document (stub)
 parent: api-design                    # the document this chapter belongs to
 title: Endpoint Naming Conventions
 concepts: [api-design, naming]        # the concept TERMS this chapter covers
+person_terms: [Diego Córdoba]         # salient PERSONS — parallel to concepts
 summary: "REST resource naming: plural nouns, no verbs, versioned paths."
 status: stable                        # draft | stable | deprecated
 stale_after: 2026-12-01               # optional ISO date; stale once passed
@@ -63,6 +64,8 @@ updated_at: 2026-08-01T00:00:00.000Z
 | `concepts` | The index vocabulary. **A chapter with no `concepts` is unreachable by `okf_search`** — it is stored, and invisible. |
 | `summary` | One line. It is BOTH the description a user reads in the index/TOC and the text the deterministic match runs against. Write what someone searching would actually type; don't restate the title. |
 
+(`person_terms` is the fourth retrieval-bearing field, and it is optional — see **Person terms** below.)
+
 Everything else is ordinary frontmatter, and **unknown keys are preserved verbatim on every write — preserving them is not optional.** If you find a key you don't recognise, leave it exactly as it is: it belongs to someone, and dropping it is silent data loss.
 
 Lifecycle, trust and provenance are *also* just frontmatter on `okf_upsert_concept` (merge-on-fields). There are no separate setter tools: `status`/`stale_after` for lifecycle, `verified` for the trust ladder (`unverified` → `machine-confirmed` → `human-reviewed`; machine-extracted content starts `unverified` and only a human moves it to `human-reviewed`), `sources` for provenance. Set them in the same call that writes the chapter.
@@ -74,7 +77,38 @@ A concept term is **not a file** — it is a key in `concept-index.md`, derived 
 - Terms are lowercase, hyphenated, and name a *topic*, not a document (`rollback`, `rate-limiting`, `api-design` — not `the-deployment-doc`).
 - Two to four per chapter is usually right. One is often too coarse to route; eight means the chapter is doing too much.
 - The vocabulary grows organically. That is intended — but check it first (`okf_list_concepts`) so it grows by extension, not duplication.
-- Near-duplicates are fixed with `okf_merge_concepts`, which rewrites every affected chapter's `concepts`, then the index and TOCs follow from the rebuild.
+- Near-duplicates are fixed with `okf_merge_concepts`, which rewrites every affected chapter's `concepts` **and `person_terms`** (a person term is a term — merging "D. Córdoba" into "Diego Córdoba" rewrites both arrays), then the index and TOCs follow from the rebuild.
+- A term that names a **person** does not follow the lowercase-hyphenated rule and does not live in `concepts` — see **Person terms** below.
+
+## Person terms — `person_terms`, parallel to `concepts`
+
+A bundle is about **topics** and, often, about **people**. Both are terms in the same derived index; a person's term simply carries `kind: person`. Nothing else differs — same index, same `okf_search`, same covering rows.
+
+**Who is salient.** Two groups, and no more:
+
+- **The author — always.** Registered at **document** level, on the document stub's `person_terms`.
+- **Named key figures who are *subjects* of the content.** Registered at **chapter** level, on the `person_terms` of the chapters they are the subject of.
+
+Not every name that appears. Someone quoted in passing, cited in a footnote, or listed in a reference is **not** salient; registering them floods the vocabulary with people the bundle isn't actually about.
+
+**Where it goes.** `person_terms` is a frontmatter array — a **sibling of `concepts`**, same shape (an array of strings) — on the chapter stub and/or the document stub:
+
+```yaml
+# concepts/water-rights.md — the document stub: the AUTHOR
+person_terms: [Diego Córdoba]
+
+# concepts/water-rights/history.md — a chapter: a named KEY FIGURE
+concepts: [water-rights, andean-history]
+person_terms: [María Quispe]
+```
+
+**Never in `concepts`.** They are parallel arrays. If you are genuinely unsure whether someone is salient, `concepts` is the safe default — a person's name there is still searchable, it is just tagged `topic` instead of `person`. What you must not do is put the same name in both and hope.
+
+**Reusing a person across chapters.** Add the name to **each** relevant chapter's `person_terms`, plus the document stub's when they are the author. The derived index consolidates every mention into **one** term with `kind: person`, whose `count` is the number of covering chapters/documents — exactly how a topic term consolidates.
+
+**Original case.** Write the name as the source writes it — "Diego Córdoba", not "diego-córdoba". The service lowercases internally for kind derivation and for search matching (so `Diego`, `Córdoba` and `diego córdoba` all hit), and keeps your spelling as the display name. This is the one place the lowercase-hyphenated term rule does **not** apply.
+
+**It is derived, never stored by hand.** You write `person_terms`; the service derives the `kind` on every index rebuild. There is no per-person file, no second place to keep in sync, and nothing to migrate — a bundle with no `person_terms` is simply all-`topic`.
 
 ## The inline-asset block
 
@@ -99,7 +133,7 @@ The point is that the interpretation is written **once, at ingest, as stored tex
 2. **Acquire the source with `output_path` pinned.** URL → `web_fetch({url, output_path})`; PDF/DOCX/PPTX/XLSX → `file_to_markdown({path, output_path})`; plain text → straight to `okf_add_raw_source({sourcePath})`. Then `okf_add_raw_source` registers it into `raw/`, which is append-only and never edited. Dropping `output_path` and passing the document back as `content` re-emits the whole thing as output tokens — it is the one mistake that makes this pipeline pointless.
 3. Read the raw source from `raw/` with `file_read`.
 4. Decide chapter boundaries at the source's headings. No headings = one chapter.
-5. Upsert the document stub (`type: document`, with the original URL in `sources`), then each chapter with `parent` / `concepts` / `summary`.
+5. Upsert the document stub (`type: document`, with the original URL in `sources`, and the **author** in `person_terms`), then each chapter with `parent` / `concepts` / `summary` — plus `person_terms` for any named key figure the chapter is about.
 6. Download, interpret and inline every non-HTML asset.
 7. Link new chapters to the existing ones they genuinely relate to.
 8. Finish with an honest summary (below).
@@ -130,8 +164,8 @@ The agent's final message becomes the run's report in the Jobs tab, so it has to
 
 ## Query
 
-1. **`okf_search(bundle, query)` first.** It returns TOC rows — document, chapter, one-line description, and the concept term that matched. The match is deterministic and concept-anchored: it runs over the vocabulary and the stored descriptions, **not full text**.
-2. **An empty result is a real answer.** It means nothing in the vocabulary matched, not that the bundle is empty. Widen the query, or read the vocabulary with `okf_list_concepts` and route semantically from there. Never invent a row.
+1. **`okf_search(bundle, query)` first.** It returns TOC rows — document, chapter, one-line description, the concept term that matched, and that term's `kind` (`topic` or `person`). The match is deterministic and concept-anchored: it runs over the vocabulary and the stored descriptions, **not full text**. A person's name is an ordinary term-name hit: searching "Córdoba" needs no special call.
+2. **An empty result is a real answer.** It means nothing in the vocabulary matched, not that the bundle is empty. Widen the query, or read the vocabulary with `okf_list_concepts` and route semantically from there (`okf_list_concepts({bundle, kind: "person"})` lists just the people the bundle knows about). Never invent a row.
 3. Then fetch **full** content: `okf_read_toc(docId)` for a document's chapter list, `okf_read_concept(id)` for the entire chapter or document. Retrieval is whole documents or whole chapters — never a snippet.
 4. Weigh what you find by its `status` and `stale_after`, and say so when it matters ("this is `deprecated` and `stale_after` has passed"). Cite the chapters you used by id.
 5. Scope matters: search the bundle that holds the knowledge you want. Bundles are the unit of curation *and* of retrieval scope — checking a design against a rules bundle means querying that bundle, not everything.

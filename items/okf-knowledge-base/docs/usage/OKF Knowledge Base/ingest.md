@@ -37,8 +37,7 @@ The **Jobs** tab lists every run, newest first, with a status dot and a live ela
 | **queued** | The run has been created and the agent is starting. Nothing has been written yet. |
 | **running** | In progress. Expand the row for the progress line. |
 | **completed** | Finished. The detail shows the summary cells — chapters, concepts, assets, references skipped, references failed — and the agent's own report. |
-| **cancelled** | You stopped it. Not a failure — whatever it had already written is still in the bundle. |
-| **failed** | It couldn't finish. The detail shows why. |
+| **failed** | Stopped. The detail shows why. |
 
 The assistant can see the same records:
 
@@ -51,34 +50,6 @@ okf_list_jobs({ bundle: "engineering-rules", status: "failed" })
 This is how you follow up on an ingest: `okf_ingest` returns only a job id, so `okf_list_jobs` is what turns that id into an outcome.
 
 **The run's final status is written by the service, not by the agent.** The service launched the run and watched it end, so a run that crashes, loops, or stops talking still gets an honest record — it doesn't sit "running" because an agent forgot to say it finished.
-
-## Stopping a run
-
-A long ingest you didn't mean to start, or one crawling a document you've decided you don't want: press **Cancel** on its row in the Jobs tab. The run itself is stopped — not just hidden from the list — and the row turns **cancelled**, in a muted amber that is deliberately not the red of a failure. Cancelling is a stop, not an undo:
-
-- **Nothing is rolled back.** Every chapter the run had already written stays in the bundle, and the concept index and TOCs reflect it. Each write is atomic, so you get a smaller knowledge base, never a half-written one.
-- **The record stays**, so you can see what happened and what it got through.
-- **Cancel is for a run that's still going.** If it finished a second before you clicked, nothing happens and nothing is relabelled — the list just refreshes.
-
-The assistant can do the same thing: `okf_cancel_job({ jobId: "run-1042" })`.
-
-## Clearing a run off the list
-
-Press **Delete** on any run that isn't currently running. The row disappears and that is all that happens:
-
-**Deleting a run deletes the record of the run, never the knowledge it produced.** Chapters, the concept index, the document TOCs and the raw sources are untouched. If you want to remove what an ingest *added*, that's a concept or bundle deletion in Overview — not this.
-
-A **running** run has no Delete button, and asking for one is refused: cancel it first, then delete. That ordering exists so a live run is never left writing into a bundle with nothing tracking it.
-
-The assistant's equivalent is `okf_delete_job({ jobId: "run-1042" })`.
-
-So the two controls on a row are always the ones that make sense for its state:
-
-| Row state | Controls |
-|---|---|
-| running | **Cancel** |
-| queued | **Cancel** · **Delete** |
-| completed · cancelled · failed | **Delete** |
 
 ## Ingesting the same thing twice
 

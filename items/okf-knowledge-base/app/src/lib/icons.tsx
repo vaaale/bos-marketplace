@@ -70,12 +70,6 @@ const PATHS: Record<string, React.ReactNode> = {
   ),
   check: <path d="M20 6L9 17l-5-5" />,
   x: <path d="M6 6l12 12M18 6L6 18" />,
-  stop: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <rect x="9" y="9" width="6" height="6" rx="1" />
-    </>
-  ),
   clock: (
     <>
       <circle cx="12" cy="12" r="9" />

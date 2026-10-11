@@ -51,7 +51,8 @@ export interface Sim {
 
 export function nodeRadius(n: GraphNode): number {
   if (n.type === "doc") return 22;
-  if (n.type === "concept") return 14 + Math.min(9, (n.count || 1) * 2.2);
+  // a person term is sized by coverage exactly like a topic term (ADR-011)
+  if (n.type === "concept" || n.type === "person") return 14 + Math.min(9, (n.count || 1) * 2.2);
   return 15;
 }
 
@@ -72,12 +73,17 @@ export function buildSim(nodes: GraphNode[], edges: GraphEdge[], width: number, 
     doc: nodes.filter((n) => n.type === "doc").length || 1,
     chap: nodes.filter((n) => n.type === "chap").length || 1,
     concept: nodes.filter((n) => n.type === "concept").length || 1,
+    // the 4th category (ADR-011) — persons seed on the outer ring too, just
+    // at their own phase, so they don't land on top of the topic terms
+    person: nodes.filter((n) => n.type === "person").length || 1,
   };
-  const seen = { doc: 0, chap: 0, concept: 0 };
+  const seen = { doc: 0, chap: 0, concept: 0, person: 0 };
 
   const simNodes: SimNode[] = nodes.map((n) => {
     const i = seen[n.type]++;
-    const a = (i / totals[n.type]) * Math.PI * 2 + (n.type === "doc" ? 0 : n.type === "chap" ? 1.2 : 2.3);
+    const a =
+      (i / totals[n.type]) * Math.PI * 2 +
+      (n.type === "doc" ? 0 : n.type === "chap" ? 1.2 : n.type === "person" ? 3.4 : 2.3);
     const rr = baseR * (n.type === "doc" ? 0.28 : n.type === "chap" ? 0.58 : 0.9);
     return {
       ...n,
