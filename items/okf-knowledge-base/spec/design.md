@@ -737,6 +737,59 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
   Deleting a job (FR-051) is handled entirely in the worker's job store — no platform
   involvement.
 
+### ADR-011 — Person `kind` rides on `person_terms` frontmatter; the derived index copies it through (FR-053/FR-054, US10, SC-016)
+
+- **Context.** FR-053/FR-054 require ingest to register **salient persons** (the author +
+  named key figures) as **person-kind concept terms** — findable by name via the *existing*
+  `okf_search`, distinct in the graph, kind-reported by `okf_list_concepts` — while keeping
+  them in the **same** derived concept index (not a new entity, not a separate content
+  file). The load-bearing question: **where does a term's `kind` live** so it (a) survives
+  the derived-index rebuild, (b) is **not** a second source of truth, and (c) is **not** a
+  per-term content file?
+- **Options.**
+  - **(a) `kind` on the frontmatter of the chapter/doc-stub that carries the person** — a
+    **parallel `person_terms` array** (sibling of `concepts`); `rebuildIndex` derives the
+    per-term `kind` from it. **The source of truth the index already rebuilds FROM.**
+  - **(b) `kind` on the `concept-index.md` frontmatter term entries** (the derived artifact
+    carries it). But the index is *derived* — the kind would have to come from *somewhere*;
+    storing it only in the index makes the index partly authoritative, which NFR-004
+    forbids (the index must never be the sole source of truth).
+  - **(c) A separate `person-terms.md` (or similar) content file.** A new entity/file in the
+    bundle — exactly what FR-053 rules out ("not a separate content file"); a second
+    artifact to keep in sync.
+- **Decision.** **(a)**. `person_terms` is a new **frontmatter key** on the chapter (key
+  figures) and the document stub (author). The write path's shallow-merge already preserves
+  unknown keys verbatim (NFR-005, SC-005) — so it round-trips with **no writer change** —
+  and `rebuildIndex`, which already walks `concepts/**` + doc stubs to read `concepts`,
+  reads `person_terms` from the *same* files and derives
+  `kind(term) = person` iff the name appears in any `person_terms`, else `topic`. The index,
+  graph, `okf_search` rows, and `okf_list_concepts` all **copy the kind through** from that
+  single derived source. It is the cleanest fit: no new file, no new entity,
+  NFR-005-compliant, and rebuild-surviving *by construction* (the kind is recomputed, not
+  stored-then-forgotten).
+- **Why (a) over (b)/(c).** (b) makes the *derived* artifact partly authoritative — the
+  anti-pattern NFR-004 exists to kill (the index would carry a fact no stored source re-
+  derives it from). (c) adds a file + a sync burden for a one-facet distinction. (a) reuses
+  the field the topic `concepts` already ride on, so the kind is a property of *where the
+  name was registered*, not a separate record.
+- **Alternatives Considered — a single `concepts` array of `{name, kind}` objects.**
+  Cleaner in principle, but it changes the **existing** `concepts` shape (today a flat name
+  array), ripples through `rebuildIndex`/`merge_concepts`/the TOC `concepts` field and the
+  export round-trip, and risks colliding with a topic whose *name* happens to be a person.
+  The parallel `person_terms` array leaves `concepts` **untouched** (a strictly additive
+  key) and makes `kind` a pure function of array membership — the smaller blast radius for
+  an increment. (If a name must ever be *both* a topic and a person, the index stores
+  `kind:[topic,person]`; the parallel-array shape already leaves that open.)
+- **Consequences.** `okf_search`'s algorithm is **unchanged** — a person's name is an
+  ordinary term-name hit over `terms[]` (SC-016: "no separate search path"). The only
+  surface changes are **additive `kind` fields**: the index `terms[]`, `core.graph`'s node
+  set (a 4th `type:"person"`), `okf_search` rows, and `okf_list_concepts` terms (+ optional
+  `kind` filter). **No new tool** (21 stays 21). **No new `src/` file** — pure
+  `marketplace-item`. `okf_merge_concepts` canonicalizes across the `person_terms` arrays
+  too (a person term is a term). The **extraction convention** (who is salient) is **LLM
+  judgment** in the `okf-ingest` agent, encoded in `okf-bundle-schema/SKILL.md` (§7.4); the
+  service only **stores and derives** — it does not decide salience.
+
 ---
 
 ## 5. Data model & storage layout
@@ -1038,6 +1091,7 @@ search(bundleRoot, bundle, query):
           rows.push({ docId, docTitle, chId, chTitle,
                       description: cov.description,
                       matchedConcept: term.name,
+                      kind: term.kind,            # "topic" | "person" (ADR-011, additive)
                       status: cov.status, stale: cov.stale })
   rank rows:
     # primary: term-name matches before description-only matches
@@ -1057,6 +1111,12 @@ search(bundleRoot, bundle, query):
 - **Full-text is the *next* step, not this one** (NFR-003): `okf_search` returns TOC rows;
   the agent then `okf_read_concept`s a chapter for its **entire** body. Search never
   returns a chunk in place of the full text.
+- **Person names are ordinary term-name hits (FR-053, SC-016).** Person-kind terms live in
+  `index.terms` exactly like topic terms, so a query token matching a person's name matches
+  the *term name* above — **the algorithm has no person case at all.** The row's additive
+  `kind` field (§8.2) is what tells the caller the match was a person vs a topic; it costs
+  nothing and helps the agent route (open the person's covering documents/chapters). This is
+  why US10's "no separate search path" holds.
 
 ### 6.2 Derived read views
 
@@ -1066,8 +1126,10 @@ search(bundleRoot, bundle, query):
   frontmatter + **entire** body + resolved inline-asset links (FR-005, SC-001). For a
   document id it returns the document stub; its TOC is `readToc`. For a chapter it returns
   the chapter markdown including any inline-asset link + interpretation blocks (FR-023).
-- **`core.listConcepts(bundle, {type?, status?})`** — the vocabulary with per-term chapter
-  counts (FR-006), plus (for the app) the full (doc, chapter) rows.
+- **`core.listConcepts(bundle, {type?, status?, kind?})`** — the vocabulary with each term's
+  **`kind`** (`"topic"|"person"`) and per-term chapter counts (FR-006/FR-054), plus (for the
+  app) the full (doc, chapter) rows. The optional `kind` filter lists only persons or only
+  topics (US10).
 
 ### 6.3 Graph derivation (ADR-004) — `core.graph(bundle)`
 
@@ -1077,18 +1139,27 @@ force-directed renderer (FR-042/FR-045):
 - **Nodes:**
   - `type:"doc"` — one per document stub (`concepts/<docId>.md`), `label` = title.
   - `type:"chap"` — one per chapter, `id` = `<docId>/<chId>`, `label` = title.
-  - `type:"concept"` — one per concept-term in the index, `label` = term, `count` =
-    covering-chapter count (drives node radius in the renderer, as in the mockup).
+  - `type:"concept"` — one per **topic** term in the index (`kind: topic`), `label` = term,
+    `count` = covering-chapter count (drives node radius in the renderer, as in the mockup).
+  - `type:"person"` — one per **person-kind** term in the index (`kind: person`), `label` =
+    the person's name, `count` = covering-chapter count (FR-054, ADR-011). A distinct 4th
+    node category — the renderer gives it its own color (teal/green). A person node opens
+    the *same* term view as a topic (the chapters/documents it covers) — no new view.
 - **Edges (typed, directed):**
   - `containment` — `doc → chap`, from each chapter's `parent` frontmatter (the mockup's
     `contains` label).
-  - `coverage` — `chap → concept`, from the concept index (the mockup's `covers` label).
+  - `coverage` — `chap → concept` **and** `chap`/`doc → person`, all from the concept index
+    (the mockup's `covers` label). Person terms are index terms, so their covering edges are
+    derived identically: the author's `doc → person` edge comes from the doc stub's
+    `person_terms`; a key-figure's `chap → person` edge comes from the chapter's
+    `person_terms` (FR-053/FR-054).
   - `link` — explicit `okf_add_link` edges from `links.json`/`extractLinks` (the mockup's
     `related` label).
 - The app computes neighbor highlighting client-side from this list; no `neighbors`/
   `shortest_path` tool is needed (ADR-004). Node/edge color + label scheme is the
-  mockup's (documents gray, chapters blue, concept-terms violet; contains solid, covers
-  dashed-violet, related solid-amber), rendered in the BOS dark palette.
+  mockup's (documents gray, chapters blue, **topic** concept-terms violet, **persons
+  teal/green — the 4th node category, FR-054**; contains solid, covers dashed-violet,
+  related solid-amber), rendered in the BOS dark palette.
 
 ---
 
@@ -1287,10 +1358,10 @@ tool is declared** (SC-007). Grouping per FR-037, with input/output at implement
 level:
 
 **Retrieval**
-- `okf_search` `{bundle, query, limit?}` → `[{docId, docTitle, chId, chTitle, description, matchedConcept, status, stale}]` (FR-001/002, §6.1). *readOnly.*
+- `okf_search` `{bundle, query, limit?}` → `[{docId, docTitle, chId, chTitle, description, matchedConcept, kind, status, stale}]` (FR-001/002, §6.1). The additive `kind` (`"topic"|"person"`) tells the caller a match was a person vs a topic — free, additive, helps the agent route (FR-053/SC-016, ADR-011); a person's name is an ordinary term-name hit (no algorithm change). *readOnly.*
 - `okf_read_toc` `{bundle, docId}` → the document's TOC: `{docId, docTitle, chapters:[{id, title, summary, concepts, status}]}` (FR-004, §6.2). *readOnly.*
 - `okf_read_concept` `{bundle, id}` → `{id, frontmatter, body, links, assets?}` — **full** body incl. inline-asset links + interpretations (FR-003/005, SC-001). *readOnly.*
-- `okf_list_concepts` `{bundle, type?, status?}` → the vocabulary: `[{term, count, covers:[{docId, chId, title, description}] }]` (FR-006, §6.2). *readOnly.*
+- `okf_list_concepts` `{bundle, type?, status?, kind?}` → the vocabulary: `[{term, kind, count, covers:[{docId, chId, title, description}] }]` (FR-006/FR-054, §6.2). Each term carries `kind` (`"topic"|"person"`) so persons are distinguishable from topics (US10/SC-016); the optional `kind` filter lists only persons or only topics. *readOnly.*
 
 **Concepts**
 - `okf_upsert_concept` `{bundle, id, title?, body?, frontmatter?}` → the merged concept. Merge-on-fields; unknown keys preserved (FR-024). Triggers derived index/TOC rebuild.
@@ -1364,7 +1435,7 @@ reusing the *same* `core` functions and job-store operations as the tools.
 | `GET /bundles/<b>/toc/<docId>` | `core.readToc` | doc TOC (FR-004) | Overview Documents → TOC; Query doc node |
 | `GET /bundles/<b>/concept/<id>` | `core.readConcept` | full chapter/document (FR-005) | Overview chapter; **Query reader pane** |
 | `GET /bundles/<b>/search?query=&limit=` | `core.search` | **identical** to `okf_search` (FR-036/043) | **Query Search results** |
-| `GET /bundles/<b>/graph` | `core.graph` | `{nodes:[{id, type:doc|chap|concept, label, count?}], edges:[{from, to, kind:containment|coverage|link}]}` (FR-045, ADR-004) | **Query Knowledge Graph** |
+| `GET /bundles/<b>/graph` | `core.graph` | `{nodes:[{id, type:doc|chap|concept|person, label, count?}], edges:[{from, to, kind:containment|coverage|link}]}` (FR-045/FR-054, ADR-004) | **Query Knowledge Graph** (4th `person` node color in the app) |
 | `GET /bundles/<b>/assets/<assetPath>` | `vfs.readRaw` | binary (image/video bytes) w/ content-type | reader-pane asset thumbnail (ADR-008) |
 | `GET /bundles/<b>/lint` | `core.lintBundle` | lint report (FR-033) | Overview Health tab |
 | `GET /bundles/<b>/stale` | `core.staleReport` | stale list (FR-034) | Overview Health tab |
