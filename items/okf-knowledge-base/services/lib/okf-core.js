@@ -1322,6 +1322,51 @@ async function exportBundle(bundleRoot, name) {
   return { name, files, assets, conformant: hasIndex, conceptIndexIncluded: hasIndex, tocsIncluded: tocCount };
 }
 
+/** The concept id a bundle-relative file path will be LISTED under, else null. */
+function conceptIdForRelPath(relPath) {
+  const rel = String(relPath || "").replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+  if (!rel.startsWith("concepts/") || !rel.endsWith(".md")) return null;
+  return rel.slice("concepts/".length, -3) || null;
+}
+
+// How long an import waits for its own writes to become listable. Ten tries
+// at 75ms is ~0.7s worst case on a bundle that never converges, and zero
+// extra wait on the normal path (attempt 1 already sees everything).
+const LISTING_SETTLE_ATTEMPTS = 10;
+const LISTING_SETTLE_DELAY_MS = 75;
+
+/**
+ * Wait until `concepts/` LISTS every concept file the caller just wrote.
+ *
+ * A bulk import writes N files through /api/fs and then classifies the
+ * bundle by LISTING that directory (classifyBundle -> listConceptIds). The
+ * write and the listing are two different operations over the VFS HTTP API,
+ * and immediately after a burst of writes the listing can still be missing
+ * just-written entries — so the rebuild classifies a SUBSET of the bundle
+ * and stores a concept-index.md that is permanently short of the document
+ * stubs it never saw (their `person_terms` with it).
+ *
+ * This is not a blind retry of a failed call and not a fixed sleep: it polls
+ * the SAME listing path classifyBundle uses until the listing is a superset
+ * of the known-written set, which is a verifiable snapshot-consistency
+ * condition. On the normal path it costs exactly one extra list; it exits the
+ * instant the listing agrees with the writes.
+ */
+async function settleConceptListing(bDir, expectedIds, {
+  attempts = LISTING_SETTLE_ATTEMPTS,
+  delayMs = LISTING_SETTLE_DELAY_MS,
+} = {}) {
+  if (!expectedIds || !expectedIds.size) return { settled: true, attempts: 0, missing: [] };
+  let missing = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const listed = new Set(await listConceptIds(bDir));
+    missing = Array.from(expectedIds).filter((id) => !listed.has(id));
+    if (!missing.length) return { settled: true, attempts: attempt, missing: [] };
+    if (attempt < attempts) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return { settled: false, attempts, missing };
+}
+
 /**
  * Import a bundle (FR-029). Two vectors, both of which the worker can
  * actually perform (design.md Risk #7 is resolved here):
@@ -1341,11 +1386,19 @@ async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = tru
   const bDir = bundleDir(bundleRoot, name);
   await vfs.mkdir(bDir);
   let imported = 0;
+  // every concept file this import writes, by the id `listConceptIds` will
+  // report it under — the settle condition below is checked against this
+  const expectedConceptIds = new Set();
+  const expectConcept = (relPath) => {
+    const id = conceptIdForRelPath(relPath);
+    if (id) expectedConceptIds.add(id);
+  };
 
   if (Array.isArray(files)) {
     for (const f of files) {
       if (!f || typeof f.path !== "string" || typeof f.content !== "string") continue;
       await vfs.writeText(safeJoin(bDir, f.path), f.content); // /api/fs write creates missing parents
+      expectConcept(f.path);
       imported++;
     }
   } else if (typeof sourcePath === "string" && sourcePath) {
@@ -1362,6 +1415,7 @@ async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = tru
           imported++;
         } else {
           await vfs.writeText(safeJoin(bDir, relPath), await vfs.readText(abs));
+          expectConcept(relPath);
           imported++;
         }
       }
@@ -1375,16 +1429,35 @@ async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = tru
   await vfs.mkdir(path.join(bDir, "raw"));
   await vfs.mkdir(path.join(bDir, "concepts"));
   markGraphDirty(bDir);
+  // The rebuild below runs ONCE and is authoritative, so it has to see the
+  // whole import. Make the directory listing agree with the writes first.
+  const settle = rebuild
+    ? await settleConceptListing(bDir, expectedConceptIds)
+    : { settled: true, attempts: 0, missing: [] };
   const model = rebuild ? await rebuildDerived(bundleRoot, name) : { terms: [], needsRegeneration: true, builtAt: null };
-  await appendLog(bundleRoot, name, { event: "bundle_import", message: `imported ${imported} file(s)` });
+  if (!settle.settled) {
+    // Best-effort: the index was built from a listing we KNOW was short, so
+    // drop the cached model and report it as needing regeneration rather
+    // than serving a partial index as if it were complete.
+    markGraphDirty(bDir);
+  }
+  const needsRegeneration = model.needsRegeneration || !settle.settled;
+  await appendLog(bundleRoot, name, {
+    event: "bundle_import",
+    message: settle.settled
+      ? `imported ${imported} file(s)`
+      : `imported ${imported} file(s); concepts/ listing never caught up (missing ${settle.missing.length} after ${settle.attempts} attempts: ${settle.missing.slice(0, 5).join(", ")})`,
+  });
   const health = await bundleHealth(bundleRoot, name, { allowRebuild: rebuild });
   return {
     ...health,
     imported,
-    indexNeedsRegeneration: model.needsRegeneration,
-    note: model.needsRegeneration
-      ? "Imported. The derived index was rebuilt BEST-EFFORT: some chapters lack `parent`/`concepts`/`summary` frontmatter, so routing for those is partial. Nothing was dropped or overwritten — re-ingest the sources, or upsert the missing frontmatter, to complete the index."
-      : "Imported. The two-level derived index was rebuilt in full from the imported chapter frontmatter.",
+    indexNeedsRegeneration: needsRegeneration,
+    note: !settle.settled
+      ? `Imported, but the bundle's concepts/ listing never caught up with the ${imported} file(s) written (still missing ${settle.missing.length} after ${settle.attempts} attempts). The derived index was rebuilt BEST-EFFORT from an incomplete view and is reported as needing regeneration — re-run the rebuild to complete it.`
+      : model.needsRegeneration
+        ? "Imported. The derived index was rebuilt BEST-EFFORT: some chapters lack `parent`/`concepts`/`summary` frontmatter, so routing for those is partial. Nothing was dropped or overwritten — re-ingest the sources, or upsert the missing frontmatter, to complete the index."
+        : "Imported. The two-level derived index was rebuilt in full from the imported chapter frontmatter.",
   };
 }
 

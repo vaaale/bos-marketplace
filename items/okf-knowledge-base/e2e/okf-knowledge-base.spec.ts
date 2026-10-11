@@ -110,6 +110,7 @@ let api: APIRequestContext;
 let serviceBase: string;
 
 async function resolveServiceBase(shell: APIRequestContext): Promise<string> {
+  if (process.env.OKF_SERVICE_BASE) return process.env.OKF_SERVICE_BASE;
   for (let attempt = 0; attempt < 15; attempt++) {
     const res = await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`);
     if (res.ok()) {
