@@ -870,7 +870,8 @@ Notes:
   `parent` for portability and for graph derivation).
 - **Concept terms are not files.** A term is a key in `concept-index.md` frontmatter.
   Merging terms (FR-026) rewrites the index, the affected `toc/*.md`, and every chapter's
-  `concepts` array that referenced either — no per-term file to delete.
+  `concepts` array that referenced either (and, for person terms, every `person_terms`
+  array that referenced the from-name — ADR-011) — no per-term file to delete.
 
 ### 5.2 Chapter (section) frontmatter — the source of truth
 
