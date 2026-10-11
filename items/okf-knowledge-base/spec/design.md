@@ -785,10 +785,21 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
   surface changes are **additive `kind` fields**: the index `terms[]`, `core.graph`'s node
   set (a 4th `type:"person"`), `okf_search` rows, and `okf_list_concepts` terms (+ optional
   `kind` filter). **No new tool** (21 stays 21). **No new `src/` file** — pure
-  `marketplace-item`. `okf_merge_concepts` canonicalizes across the `person_terms` arrays
-  too (a person term is a term). The **extraction convention** (who is salient) is **LLM
+  `marketplace-item`. **Case preservation (S1):** the person's display name carries the
+  original case from `person_terms` (e.g. 'Diego Córdoba'); kind derivation and search
+  matching use the lowercased key (so 'diego' matches 'Diego Córdoba'). The index
+  `terms[].name` for a person term is the original-case display name; search's `termHit`
+  check (`term.name.toLowerCase().includes(tok)`) handles the case-insensitive match.
+  `okf_merge_concepts` canonicalizes across **both** the `concepts` AND `person_terms`
+  arrays (a person term is a term; merging a person name into another person name, or into
+  a topic name, rewrites every chapter/doc-stub's `person_terms` that referenced the
+  from-name, in addition to its `concepts`). The **extraction convention** (who is salient) is **LLM
   judgment** in the `okf-ingest` agent, encoded in `okf-bundle-schema/SKILL.md` (§7.4); the
-  service only **stores and derives** — it does not decide salience.
+  service only **stores and derives** — it does not decide salience. **Backward compat
+  (S4):** pre-person-kind bundles (no `kind` in their stored index, no `person_terms` in
+  chapter frontmatter) are served correctly without migration — the trust path defaults
+  `kind` to 'topic'; `rebuildIndex` (on the next write or an explicit rebuild) populates
+  `kind` from the now-present `person_terms` (empty set → all topic).
 
 ---
 
@@ -952,7 +963,7 @@ terms:
           chTitle: Endpoint Naming Conventions,
           description: "REST resource naming: plural nouns, no verbs, versioned paths.",
           status: stable, stale: false }
-updated: 2026-10-09T00:00:00.000Z
+index_generated_at: 2026-10-09T00:00:00.000Z
 ---
 # Concept Index — Engineering Rules & Guidelines
 
@@ -969,9 +980,11 @@ updated: 2026-10-09T00:00:00.000Z
   `concepts/**/chId.md` **and the `concepts/<docId>.md` document stubs**, reads their
   `concepts`/`person_terms`/`summary`/`status`/`parent`/title frontmatter, and rebuilds
   `terms[]` (term → `kind` + set of (doc, ch, description)) and the body. A term's
-  **`kind` is derived here**: `person` iff the term name appears in any `person_terms`
-  array, else `topic` (the default) — so the kind survives a rebuild by being *recomputed*
-  from the same frontmatter (FR-053, ADR-011). It is O(chapters). Nothing about search
+  **`kind` is derived here**: `person` iff the lowercased term name appears in any lowercased
+  `person_terms` array, else `topic` (the default) — so the kind survives a rebuild by being
+  *recomputed* from the same frontmatter (FR-053, ADR-011). The term's display name
+  (`terms[].name`) preserves the original case from `person_terms` for persons — see ADR-011
+  (S1). It is O(chapters). Nothing about search
   depends on the file being *current* — a read-through cache validates it (below).
 - **O(V) (FR-011, SC-006).** `terms[]` is keyed by distinct term; a bundle with hundreds of
   articles but a few hundred real topics keeps a small table.
@@ -981,6 +994,11 @@ updated: 2026-10-09T00:00:00.000Z
   graph); a stale/absent cache rebuilds once. The `.md` artifact is **rewritten on the same
   write path** that mutates chapters (so export/import always carries a fresh, correct
   index — FR-010, SC-004), and independently regenerable on read for drift repair.
+  **Stored-terms trust path (S4):** `getModel` has a fast path that, when the stored
+  `concept-index.md`'s `index_generated_at` is fresh, reads the stored `terms[]` directly
+  (shape-checked) without a full rebuild; that path defaults `kind` to 'topic' for terms
+  that lack the field (`kind: t.kind || 'topic'`) — so a pre-person-kind index (no `kind`
+  on its terms) is served correctly without a rebuild.
 
 ### 5.4 Document TOC (`toc/<docId>.md`) — format & derivation
 
@@ -1367,7 +1385,7 @@ level:
 **Concepts**
 - `okf_upsert_concept` `{bundle, id, title?, body?, frontmatter?}` → the merged concept. Merge-on-fields; unknown keys preserved (FR-024). Triggers derived index/TOC rebuild.
 - `okf_delete_concept` `{bundle, id, rewrite_backlinks?}` → deletes the concept file; non-destructive by default; prunes derived artifacts on rebuild (FR-025).
-- `okf_merge_concepts` `{bundle, from, to}` → canonicalizes `from`→`to`: rewrites the concept index, every affected `toc/*.md`, and every chapter `concepts` array that referenced either; single canonical entry (FR-026, US6, SC-008).
+- `okf_merge_concepts` `{bundle, from, to}` → canonicalizes `from`→`to`: rewrites the concept index, every affected `toc/*.md`, and every chapter `concepts` array that referenced either (also rewrites `person_terms` arrays that referenced the from-name — ADR-011); single canonical entry (FR-026, US6, SC-008).
 
 **Bundles**
 - `okf_list_bundles` `{}` → per-bundle health: `{name, docs, chapters, conceptTerms, stale, deprecated, status}` (FR-027, US7). *readOnly.*
@@ -1681,8 +1699,10 @@ with `okf_delete_bundle`.
   Jobs (list/detail/progress/**cancel/delete**)→`app/src/jobs/`; Query (graph + table +
   search + reader pane + resizer)→`app/src/query/`; the force sim is ported verbatim from
   the mockup's `stepGraph/renderGraph/drawGraph/attachGraphInteractions` (ADR-009) — with a
-  **4th node color for `type:"person"` (teal/green)** added on top of the mockup's
-  doc/chapter/topic scheme (FR-054); the
+  **4th node color for `type:"person"` (teal/green)** on the mockup's
+  doc/chapter/topic scheme — and the **mockup.html itself is updated for this scope-add** to
+  carry the 4th person node color (teal/green), a legend entry, and sample person data in
+  the graph, so the app implements exactly what the mockup shows (FR-054); the
   tiny markdown renderer + `assetBlock`/`interp` are ported to `app/src/lib/markdown.ts`;
   the API clients in `app/src/lib/api.ts` map 1:1 to the §8.3 REST routes (incl. the new
   `POST /jobs/<id>/cancel` and `DELETE /jobs/<id>`); `bridge.ts` resolves the service base
