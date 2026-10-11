@@ -28,6 +28,23 @@ cancel/delete scope-add (→ **21** tools, ADR-010). Sections that this scope-ad
 touch (data model §5, retrieval §6, ADR-001–004, ADR-007–009, worker/reachability §8.1,
 the bundled-agent allowlist §8.4) are unchanged from the auto-ingest design.
 
+**Note on the person-kind term scope-add (FR-053/FR-054, US10, SC-016).** This increment
+adds **salient-person retrieval**: ingest registers the author and named key figures as
+**person-kind concept terms** (`kind: person`) in the *same* derived concept index as topic
+terms — **not** a new entity type and **not** a separate content file. They are found by name
+through the **existing** `okf_search` (a query token matching the person's name is an
+ordinary term-name hit — **zero search-algorithm change**) and rendered as a **distinct 4th
+node category** in the Query graph. The load-bearing decision — *where a term's `kind` lives*
+so it survives the derived-index rebuild without becoming a second source of truth — is a
+**parallel `person_terms` frontmatter array** on the chapter/doc-stub that carries the
+person, which the index rebuild copies through as a per-term `kind` (ADR-011). The
+**21-tool surface is unchanged** (no new tools); the increment touches only `okf-core.js`
+(index/graph/search/list derivation), `tools.js` (additive `kind` fields on two existing tool
+responses), the `okf-ingest` `AGENT.md` + `okf-bundle-schema` `SKILL.md` (the extraction
+convention), and the app's Query tab (4th node color + kind label). It is **pure
+`marketplace-item`** — no new `src/` file (the one generic abort route from the cancel/delete
+scope-add is untouched).
+
 ---
 
 ## 1. Classification
@@ -249,14 +266,21 @@ data/user-apps/items/okf-knowledge-base/
 │   │                          #   reaper interval.
 │   └── lib/
 │       ├── okf-core.js        # REWORKED. Retains: frontmatter YAML-lite, path safety,
-│       │                      #   raw/ append-only, shallow-merge upsert, links/extractLinks,
-│       │                      #   log. ADDS: concept index + doc-TOC derivation & rebuild
-│       │                      #   (§5.4), okf_search (§6), graph derivation (ADR-004, §6.3),
-│       │                      #   merge_concepts, bundle health, binary raw-asset
-│       │                      #   write/read, raw/sources.json provenance ledger (FR-018),
-│       │                      #   and the JOB STORE: records under /KnowledgeBase/.jobs/ with
-│       │                      #   status ∈ {queued, running, completed, cancelled, failed},
-│       │                      #   runId (set once captured), cancel/delete helpers.
+│       │                      #   raw/ append-only, shallow-merge upsert (person_terms
+│       │                      #   preserved verbatim as an unknown key — NFR-005),
+│       │                      #   links/extractLinks, log. ADDS: concept index + doc-TOC
+│       │                      #   derivation & rebuild (§5.4), okf_search (§6), graph
+│       │                      #   derivation (ADR-004, §6.3), merge_concepts, bundle health,
+│       │                      #   binary raw-asset write/read, raw/sources.json provenance
+│       │                      #   ledger (FR-018), the JOB STORE (records under
+│       │                      #   /KnowledgeBase/.jobs/ with status ∈ {queued, running,
+│       │                      #   completed, cancelled, failed}, runId, cancel/delete), and
+│       │                      #   PERSON KIND (FR-053/FR-054): rebuildIndex reads
+│       │                      #   person_terms from chapters + doc stubs → a per-term kind in
+│       │                      #   the index (person iff the name appears in any person_terms,
+│       │                      #   else topic); kind surfaced in the graph (4th node type,
+│       │                      #   §6.3), okf_search rows, and okf_list_concepts terms
+│       │                      #   (ADR-011). No search-algorithm change.
 │       ├── vfs-bridge.js      # RETAINED /api/fs loopback. writeBinary/readRaw for non-HTML
 │       │                      #   assets (base64 write; GET /api/fs/raw stream read).
 │       ├── delegate-bridge.js # AUTO-INGEST (baseline) + CANCEL (this scope-add).
@@ -274,27 +298,35 @@ data/user-apps/items/okf-knowledge-base/
 │       │                      #   app-facing surface in §8, now including POST /jobs/<id>/
 │       │                      #   cancel and DELETE /jobs/<id> (this scope-add).
 │       └── tools.js           # REWORKED. DECLARATIONS = exactly the 21 tools in §8.2
-│                              #   (was 31). Read-only tools stay parallelSafe (readOnly()).
-│                              #   okf_ingest mints the job + kicks off delegate-bridge and
-│                              #   returns the jobId immediately (ADR-005). ADDS handlers:
-│                              #   okf_list_jobs (FR-048), okf_cancel_job (FR-050),
-│                              #   okf_delete_job (FR-051).
+│                              #   (was 31; the person-kind increment adds NO tools).
+│                              #   Read-only tools stay parallelSafe (readOnly()). okf_ingest
+│                              #   mints the job + kicks off delegate-bridge and returns the
+│                              #   jobId immediately (ADR-005). Handlers: okf_list_jobs
+│                              #   (FR-048), okf_cancel_job (FR-050), okf_delete_job
+│                              #   (FR-051). PERSON KIND: okf_list_concepts gains kind on each
+│                              #   term (+ optional kind? filter); okf_search rows gain an
+│                              #   additive kind field (ADR-011).
 ├── agents/
 │   └── okf-ingest/
 │       └── AGENT.md           # REWORKED. Least-privilege allowlist (§8.4) scoped to the
-│                              #   ingest/read/write + acquisition tools. Instructions:
-│                              #   chapter decomposition, concept assignment, one-line
-│                              #   summaries, doc-TOC + concept-index maintenance,
-│                              #   inline-asset interpret-and-preserve, and — in its FINAL
-│                              #   message — a concise structured run summary (chapters,
-│                              #   concepts, assets, refsSkipped, refsFailed) the launcher
-│                              #   records (ADR-006).
+│                              #   ingest/read/write + acquisition tools (UNCHANGED — person
+│                              #   extraction rides on okf_upsert_concept, no new tool).
+│                              #   Instructions: chapter decomposition, concept assignment,
+│                              #   one-line summaries, doc-TOC + concept-index maintenance,
+│                              #   inline-asset interpret-and-preserve, PERSON EXTRACTION
+│                              #   (FR-053 — author at doc level, named key figures at chapter
+│                              #   level, as person_terms; the agent judges salience), and —
+│                              #   in its FINAL message — a concise structured run summary
+│                              #   the launcher records (ADR-006).
 ├── skills/
 │   └── okf-bundle-schema/
 │       └── SKILL.md           # REWORKED. Authoritative ingest/query/lint conventions:
 │                              #   two-level index schema, chapter frontmatter, concept-term
 │                              #   naming/merge policy, inline-asset block format, dedup,
-│                              #   and the "end with a structured summary" rule (ADR-006).
+│                              #   the PERSON-KIND CONVENTION (FR-053/FR-054 — what "salient"
+│                              #   means, doc-level author vs chapter-level key figure, the
+│                              #   kind: person semantics, ADR-011), and the "end with a
+│                              #   structured summary" rule (ADR-006).
 ├── config/
 │   └── okf-knowledge-base.json  # RETAINED (bundleRoot, port:0, maxDepth, maxWorkers);
 │                                #   + jobFinalizeTimeoutMs (stale reaper bound).
@@ -317,9 +349,12 @@ data/user-apps/items/okf-knowledge-base/
 │       │                      #   /jobs/<id> — FR-050/FR-051, §8.3.)
 │       ├── query/             # QueryShell (bundle select + shared search + Graph/Table
 │       │                      #   toggle), GraphView (force sim — port of the mockup's
-│       │                      #   stepGraph/renderGraph/drawGraph, dependency-free),
-│       │                      #   TableRows, SearchResults, ReaderPane (frontmatter + md +
-│       │                      #   assets + source link + concept-term view), Resizer.
+│       │                      #   stepGraph/renderGraph/drawGraph, dependency-free; + a 4th
+│       │                      #   PERSON node color, teal/green, for type:"person", FR-054),
+│       │                      #   TableRows (+ a kind column/badge), SearchResults,
+│       │                      #   ReaderPane (frontmatter + md + assets + source link +
+│       │                      #   concept-term view — a person node opens the SAME term view,
+│       │                      #   its covering chapters), Resizer.
 │       └── lib/               # api.ts (typed clients for §8 routes, incl. cancel/delete),
 │                              #   markdown.ts (the mockup's tiny renderer, kept), types.ts.
 └── docs/                       # REQUIRED item facet (target-marketplace-item.md).
