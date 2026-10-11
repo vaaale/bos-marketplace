@@ -1162,7 +1162,7 @@ function graphData(bundleId){
   const persons=idx.filter(t=>t.kind==='person').map(t=>({id:t.name,label:t.name,type:'person',count:t.count}));
   const containment=chaps.map(c=>({from:c.docId,to:c.id,kind:'contain'}));
   const coverage=[];
-  b.docs.forEach(d=>d.chapters.forEach(c=>c.concepts.forEach(t=>coverage.push({from:d.id+'/'+c.id,to:t,kind:'cover'}))));
+  idx.forEach(t=>t.covers.forEach(c=>coverage.push({from:c.docId+'/'+c.chId,to:t.name,kind:'cover'})));
   const links=(EXPLICIT_LINKS[bundleId]||[]).map(l=>({from:l[0],to:l[1],kind:'link'}));
   return {docs,chaps,concepts,persons,containment,coverage,links};
 }
