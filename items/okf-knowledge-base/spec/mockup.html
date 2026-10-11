@@ -615,24 +615,7 @@ const BUNDLES = {
             {t:'md',v:"Full rollout proceeds only after the canary window passes clean, and is always announced in the release channel."}
           ] }
       ]},
-      ]}
-    ],
-    personTerms:[
-      { name:"Diego Córdoba", covers:[
-        {docId:"api-design", chId:"endpoint-naming"},
-        {docId:"api-design", chId:"versioning"},
-        {docId:"api-design", chId:"rate-limiting"}
-      ]},
-      { name:"Sofia Lindqvist", covers:[
-        {docId:"deployment", chId:"pre-deploy"},
-        {docId:"deployment", chId:"canary"}
-      ]}
-    ]
-  },
-  "internal-policies": {
-    name:"Internal Policies", glyph:"📋",
-    docs:[
-      { id:"remote-work", title:"Remote Work Policy", updated:"2026-05-10", chapters:[
+      { id:"error-handling", title:"Error Handling Standards", updated:"2026-06-30", chapters:[
         { id:"taxonomy", title:"Exception Taxonomy", status:"ok",
           concepts:["error-handling"],
           summary:"Classify errors as retriable, terminal, or user-facing; map each to a response.",
@@ -649,6 +632,17 @@ const BUNDLES = {
           concepts:["error-handling","rate-limiting","idempotency"],
           summary:"Exponential backoff with jitter; idempotency keys on all mutating retries.",
           blocks:[{t:'md',v:"## Policy\n- **Exponential backoff with jitter** for retriable errors.\n- Cap at 5 attempts; then surface a terminal error.\n- All **mutating retries** must send an idempotency key so a retry is safe.\n\n> ⚠ Stale — backoff caps were raised last quarter and this section has not been re-verified."}] }
+      ]}
+    ],
+    personTerms:[
+      { name:"Diego Córdoba", covers:[
+        {docId:"api-design", chId:"endpoint-naming"},
+        {docId:"api-design", chId:"versioning"},
+        {docId:"api-design", chId:"rate-limiting"}
+      ]},
+      { name:"Sofia Lindqvist", covers:[
+        {docId:"deployment", chId:"pre-deploy"},
+        {docId:"deployment", chId:"canary"}
       ]}
     ]
   },
