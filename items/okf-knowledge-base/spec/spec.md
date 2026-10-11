@@ -194,6 +194,22 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 2. **Given** the Query tab's Search sub-tab, **When** the user runs a natural-language query, **Then** it returns the same concept-anchored TOC rows the agent's `okf_search` returns.
 3. **Given** a selected search result or graph node, **When** the user opens it, **Then** the chapter renders in full in a mouse-resizable side pane, with a link to the original source document at the top of the pane.
 
+---
+
+### User Story 10 - I can find content by the person it's about or authored by (Priority: P2)
+
+The user asks for content by or about a person — *"what has Diego Córdoba covered?"* or just searches his name. Because ingest registered the salient person as a person-kind term, the name is in the vocabulary and the existing concept-anchored search returns the person's documents/chapters.
+
+**Why this priority**: Person-level retrieval is a high-frequency KB need (authors, key figures, the "who") and the single most common reason a name-based search misses today (names live in chapter bodies, not in the term vocabulary).
+
+**Independent Test**: Ingest an article with a named author and one or more named key figures; verify the author and the named figures appear as person-kind terms in the index; verify `okf_search` on the person's name returns their documents/chapters; verify `okf_list_concepts` reports their `kind: person`; verify the graph renders them as distinct nodes.
+
+**Acceptance Scenarios**:
+
+1. **Given** an ingested article with a named author, **When** the author is registered as a person-kind term, **Then** `okf_search` on the author's name returns the documents that author wrote (and the chapters where they are the subject).
+2. **Given** a person-kind term, **When** the user (or agent) calls `okf_list_concepts`, **Then** the term is reported with `kind: person`, distinguishable from topical terms.
+3. **Given** a person-kind term, **When** the user views the Query tab's Knowledge Graph, **Then** the person renders as a distinct node (its own category color/shape) with edges to the documents/chapters it covers.
+
 ### Edge Cases
 
 - **What happens when a query matches no concept term?** → `okf_search` returns an empty (or near-empty) result set; the agent can widen the query or read the vocabulary via `okf_list_concepts` and route semantically. No invented rows.
@@ -230,7 +246,7 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 ### Functional Requirements — ingest (re-scoped: it builds the index and artifacts)
 
 - **FR-012**: `okf_ingest` MUST decompose a source into chapters from the source's structure/headings, each chapter becoming a concept file (OKF `type: section`) carrying frontmatter: its parent document, the concept terms it covers, and a one-line summary.
-- **FR-013**: `okf_ingest` MUST assign one or more concept terms to each chapter; the vocabulary grows organically (new terms are created as encountered).
+- **FR-013**: `okf_ingest` MUST assign one or more concept terms to each chapter; the vocabulary grows organically (new terms are created as encountered), **including person-kind terms** — the author and named key figures are registered as part of this vocabulary (FR-053).
 - **FR-014**: `okf_ingest` MUST write a one-line summary for each chapter, which feeds both the concept index and the document TOC.
 - **FR-015**: `okf_ingest` MUST create or update the document's TOC artifact and the bundle concept index as part of ingesting.
 - **FR-016**: `okf_ingest` MUST perform the semantic decomposition (chapters, concepts, summaries, inline-asset interpretation, TOC + concept-index maintenance) by starting a **headless run of the bundled `okf-ingest` agent** (not performed by the service worker) — and MUST **start it automatically** (FR-046) rather than returning a plan for the caller to execute. At no point is the full source re-emitted by the caller as output tokens (the run pins `output_path` on its acquisition steps, FR-047).
@@ -316,6 +332,11 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 - **FR-051 (Job deletion)**: A **non-running** (terminal: completed / cancelled / failed, or a queued job whose run has not yet started) ingest job MUST be deletable. The service MUST provide `okf_delete_job` (takes a `jobId`) and the app's Jobs tab MUST provide a **Delete** control on non-running jobs. Deletion removes the job record only — it MUST NOT touch the bundle's content (chapters, index, TOC, `raw/`) that the run may have written. Deleting a **running** job MUST be rejected (cancel it first). Deleting a non-existent job MUST return a clean not-found result.
 - **FR-052 (Platform abort dependency)**: Because the headless run executes in the main Next.js process while the job is owned by the service worker, cancelling a run MUST go through a **generic, platform-level** mechanism in BOS source: a `POST /api/subagents/[runId]/abort` route that invokes the existing in-process `abortHeadlessRun(runId)` (which already registers every headless run's `AbortController` in a run-registry and cascades the abort to any nested runs it spawned). This route is NOT OKF-specific — it is the HTTP face of the existing run-registry, consumable by any future fire-and-forget headless consumer. The OKF item consumes it over loopback; it MUST NOT special-case OKF. (This is the one `src/` change the scope-add introduces.)
 
+### Functional Requirements — person extraction (kind-tagged terms)
+
+- **FR-053 (Person extraction & registration)**: Ingest MUST extract **salient persons** — the **author** and any **named key figures** (people who are *subjects* of the content, not every name that appears) — and register each as a **person-kind concept term**, attached at **document level** (the author) and at **chapter level** (a person a specific section is about). A person term is a concept term carrying `kind: person` (distinct from the default topical kind); it lives in the **same derived concept index** — it is **not** a new entity type and **not** a separate content file. It is **found by name through the existing `okf_search`** (a query token matching the person's name returns the documents/chapters that term covers); no separate search path is introduced.
+- **FR-054 (Person in graph & vocabulary)**: The knowledge graph MUST render person terms as **distinct nodes** (a category color/shape different from topic terms, chapters, and documents), and `okf_list_concepts` MUST report a term's kind so persons are distinguishable from topics.
+
 ### Non-Functional Requirements
 
 - **NFR-001 (OKF portability)**: Every bundle MUST be a spec-conformant OKF bundle usable with git/grep/editor; the concept index and document TOCs are plain `.md` files inside the bundle.
@@ -335,7 +356,8 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 - **KnowledgeBundle**: An OKF bundle at `/KnowledgeBase/<name>/`. Holds documents, chapters, the concept index, and raw sources.
 - **Document**: An ingested source (OKF `type: document`). Decomposed into chapters; has a stored table-of-contents artifact.
 - **Chapter / Concept**: One `.md` concept file (OKF `type: section`). The atomic full-text retrieval unit. Carries frontmatter: `parent` (document), `concepts` (terms it covers), `summary` (one line). May contain inline-asset links + interpretations.
-- **ConceptTerm**: A vocabulary term in the concept index — organic, mergeable, not a separate content-bearing file.
+- **ConceptTerm**: A vocabulary term in the concept index — organic, mergeable, not a separate content-bearing file. Carries a `kind` (default topical; `kind: person` for a salient person).
+- **PersonTerm**: A concept term of `kind: person` — a salient person (author or named key figure) registered at ingest (FR-053). It is a term in the **same** derived index (not a separate content file or entity type), found by name via `okf_search` (FR-053), and rendered as a distinct node in the knowledge graph (FR-054).
 - **ConceptIndex**: Bundle-level stored, derived artifact. Maps each concept term to `(document, chapter, one-line description)` pairs.
 - **DocumentTOC**: Per-document stored `.md`, derived artifact. Lists the document's chapters with one-line descriptions and covered concepts.
 - **InlineAsset**: A downloaded non-HTML source asset in `raw/` plus its interpretation written into the owning chapter's markdown.
@@ -363,6 +385,7 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 - **SC-013**: Calling `okf_ingest` returns a `jobId` immediately, **without** the caller running acquisition or agent-delegation steps itself; the run then proceeds headlessly to completed (with its summary), cancelled (when stopped), or failed (with its error), observable in **both** the app's Jobs tab and `okf_list_jobs`; a run whose headless process dies is reaper-marked failed, not left running.
 - **SC-014**: Cancelling a running job from the Jobs tab or via `okf_cancel_job` aborts the underlying headless run and transitions the job to the distinct `cancelled` state; the job record and any content already written are preserved; cancelling a terminal job is a no-op.
 - **SC-015**: Deleting a non-running job removes its record (via `okf_delete_job` or the Jobs tab) without touching bundle content; deleting a running job is rejected; deleting a non-existent job returns a clean not-found.
+- **SC-016**: Searching a person's name (e.g. "Diego Córdoba") via `okf_search` returns the documents/chapters that person authored or is the subject of — because salient persons are registered as person-kind terms at ingest (FR-053); no separate search path is needed.
 
 ## Assumptions
 
