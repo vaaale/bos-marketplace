@@ -1519,8 +1519,11 @@ file_read, file_list
   unrestricted `run_command`, `agent_delegate`, and every non-OKF, non-acquisition tool.
   No full assistant surface (NFR-009).
 - It has the `okf-bundle-schema` **skill** attached (FR-040) — the conventions (§7.4, §5.2,
-  §7.5 block format, and the "end with a structured run summary" rule for ADR-006) live
-  there, not in a per-bundle file.
+  §5.7/ADR-011 **person-kind convention** — what "salient" means: the author at doc level,
+  named key figures (subjects, not every name) at chapter level, the `kind: person`
+  semantics, and the extend-before-create check that a person name isn't already a topic
+  term — the §7.5 block format, and the "end with a structured run summary" rule for
+  ADR-006) live there, not in a per-bundle file.
 
 ---
 
@@ -1662,16 +1665,23 @@ with `okf_delete_bundle`.
   - **Query** — bundle selector + a **shared search box** + a **Graph / Table** view toggle;
     a **mouse-resizable reader pane** (the `.resizer`) that opens the full chapter
     (frontmatter + markdown + assets + **"Open source"** link at top) or a document's TOC
-    or a concept-term view. The **Knowledge Graph** is a dependency-free **force-directed**
-    SVG of category-colored circular nodes (doc gray / chapter blue / concept violet) with
-    **labeled directed edges** (contains solid / covers dashed-violet / related solid-amber),
-    legend, hover-to-trace-neighbors (dims non-neighbors to 30%), pan/zoom/drag, and
-    search-highlight.
+    or a **concept-term / person view** (both open the same term view — the chapters the
+    term covers; FR-054). The **Knowledge Graph** is a dependency-free **force-directed**
+    SVG of category-colored circular nodes (doc gray / chapter blue / **topic** concept
+    violet / **person teal-green — the 4th node category added by this scope-add**, FR-054)
+    with **labeled directed edges** (contains solid / covers dashed-violet / related
+    solid-amber), legend, hover-to-trace-neighbors (dims non-neighbors to 30%), pan/zoom/
+    drag, and search-highlight. **Person nodes** (e.g. the author) carry `covers`/`doc→`
+    person edges to the documents/chapters they are the subject of and render in the 4th
+    color; the **Table** view lists the node's `kind` (topic vs person) alongside its type
+    and name.
 - **Map to the Component design (§3.3 `app/src/`):** shell→`App.tsx`; Overview
   (list/detail/concept-index/documents/TOC/chapter/health/IO + modals)→`app/src/overview/`;
   Jobs (list/detail/progress/**cancel/delete**)→`app/src/jobs/`; Query (graph + table +
   search + reader pane + resizer)→`app/src/query/`; the force sim is ported verbatim from
-  the mockup's `stepGraph/renderGraph/drawGraph/attachGraphInteractions` (ADR-009); the
+  the mockup's `stepGraph/renderGraph/drawGraph/attachGraphInteractions` (ADR-009) — with a
+  **4th node color for `type:"person"` (teal/green)** added on top of the mockup's
+  doc/chapter/topic scheme (FR-054); the
   tiny markdown renderer + `assetBlock`/`interp` are ported to `app/src/lib/markdown.ts`;
   the API clients in `app/src/lib/api.ts` map 1:1 to the §8.3 REST routes (incl. the new
   `POST /jobs/<id>/cancel` and `DELETE /jobs/<id>`); `bridge.ts` resolves the service base
