@@ -819,6 +819,10 @@ title: Endpoint Naming Conventions
 concepts: [api-design, naming]         # concept TERMS this chapter covers (Level-1 keys)
 summary: "REST resource naming: plural nouns, no verbs, versioned paths."   # one line;
                                      #   feeds the concept index AND the doc TOC
+person_terms: [Diego Córdoba]        # salient persons this chapter is ABOUT — a
+                                     #   PARALLEL array (sibling of concepts); members
+                                     #   are registered as kind: person terms (FR-053,
+                                     #   ADR-011). Absent when none.
 status: stable                         # draft | stable | deprecated (lifecycle)
 stale_after: 2026-12-01                # optional ISO; stale once past (NFR-034 / okf_stale_report)
 sources:                               # provenance (FR-017, retained)
@@ -833,7 +837,23 @@ updated_at: 2026-08-01T00:00:00.000Z
 
 The **document stub** `concepts/<docId>.md` is the same shape minus `parent`/`concepts`,
 with `type: document`, a `title`, a one-line `summary`, `sources` (the original URL and/or
-`raw/` path — this is the "Open source" target's origin, FR-043), and timestamps.
+`raw/` path — this is the "Open source" target's origin, FR-043), and timestamps. It also
+carries **`person_terms`**: the **author** is registered as a `kind: person` term **at
+document level** (FR-053) — the doc stub is the natural home for "who wrote this."
+
+**Person terms ride on frontmatter, not a new entity (FR-053, ADR-011).** A term's `kind`
+is **derived, not stored separately**: `kind(term) = person` iff the term's name appears in
+any `person_terms` array in the bundle, else `topic` (the default). `person_terms` is a
+**sibling** of `concepts` — a *parallel* array — so `concepts` keeps its existing flat
+topic-name shape untouched, and a name's kind is a pure function of which array it appears
+in (a person name never enters `concepts`; a topic name never enters `person_terms`). It is
+a **new frontmatter key**, not a new entity and not a new content file: the write path's
+shallow-merge already preserves unknown keys verbatim (NFR-005, SC-005), so no writer change
+is needed to round-trip it, and `rebuildIndex` reads it from the chapters/doc-stubs it
+already walks — the **same** source of truth the topic `concepts` come from. (If a single
+name ever needed to be *both* a topic and a person, the index would store
+`kind: [topic, person]`; the parallel-array shape leaves that open, but v1 keeps one
+primary kind per name. See ADR-011.)
 
 ### 5.3 Concept index (`concept-index.md`) — format & derivation
 
@@ -865,10 +885,18 @@ terms:
           description: "RFC-7807 problem+json envelope with stable error codes.",
           status: stable, stale: false }
   - name: rollback
+    kind: topic
     covers:
       - { docId: deployment, docTitle: Deployment Checklist, chId: canary,
           chTitle: Canary & Rollback,
           description: "5% canary for 30m; auto-rollback on p99 / 5xx thresholds.",
+          status: stable, stale: false }
+  - name: Diego Córdoba
+    kind: person
+    covers:
+      - { docId: api-design, docTitle: API Design Rules, chId: endpoint-naming,
+          chTitle: Endpoint Naming Conventions,
+          description: "REST resource naming: plural nouns, no verbs, versioned paths.",
           status: stable, stale: false }
 updated: 2026-10-09T00:00:00.000Z
 ---
@@ -884,10 +912,13 @@ updated: 2026-10-09T00:00:00.000Z
 ```
 
 - **Regenerable (FR-009, NFR-004).** `core.rebuildIndex(bDir)` walks every
-  `concepts/**/chId.md`, reads its `concepts`/`summary`/`status`/`parent`/title frontmatter,
-  and rebuilds `terms[]` (term → set of (doc, ch, description)) and the body. It is
-  O(chapters). Nothing about search depends on the file being *current* — a read-through
-  cache validates it (below).
+  `concepts/**/chId.md` **and the `concepts/<docId>.md` document stubs**, reads their
+  `concepts`/`person_terms`/`summary`/`status`/`parent`/title frontmatter, and rebuilds
+  `terms[]` (term → `kind` + set of (doc, ch, description)) and the body. A term's
+  **`kind` is derived here**: `person` iff the term name appears in any `person_terms`
+  array, else `topic` (the default) — so the kind survives a rebuild by being *recomputed*
+  from the same frontmatter (FR-053, ADR-011). It is O(chapters). Nothing about search
+  depends on the file being *current* — a read-through cache validates it (below).
 - **O(V) (FR-011, SC-006).** `terms[]` is keyed by distinct term; a bundle with hundreds of
   articles but a few hundred real topics keeps a small table.
 - **Read-through cache.** `okf-core` keeps an in-memory `Map<bDir, {index, tocByDoc,
@@ -947,6 +978,33 @@ record's lifecycle is `queued → running → completed | cancelled | failed`; `
 a terminal state distinct from `failed` (FR-050); cancelling/deleting a job never mutates
 bundle *content* (chapters, index, TOC, `raw/`) — only the job record in `.jobs/`
 (FR-050/FR-051).
+
+### 5.7 Person terms — `kind: person` on a term, derived from `person_terms` frontmatter (FR-053/FR-054, ADR-011)
+
+A **person term** is a concept term carrying `kind: person` — a salient person (the
+**author**, registered at **document level** on the doc stub's `person_terms`, or a **named
+key figure**, registered at **chapter level** on the chapter's `person_terms`) whom ingest
+extracts at ingest (FR-053). It is:
+
+- **The same derived concept index** — a row in `concept-index.md` `terms[]` with `kind:
+  person`, alongside the topic terms. **Not** a new entity type, **not** a separate content
+  file, **not** a new `concepts/` path (FR-053).
+- **Found by name through the existing `okf_search`** — a query token matching the person's
+  name is an ordinary term-name hit over `terms[]` (the §6.1 algorithm is unchanged); no
+  separate search path (FR-053, SC-016). A person term's `covers` is the set of documents
+  they authored / chapters where they are the subject.
+- **A distinct graph node** — `type:"person"`, its own color (FR-054, §6.3).
+- **Kind-reported by `okf_list_concepts`** — the vocabulary lists `kind` per term (FR-054,
+  §8.2).
+
+**Where the `kind` lives (ADR-011):** the *source of truth* for a term's kind is the
+`person_terms` frontmatter array on the chapter/doc-stub that carries the person — the same
+frontmatter `concepts` rides on, already preserved verbatim by the write path (NFR-005).
+The *derived* index copies it through as a per-term `kind`; the *graph* and *tool responses*
+copy it through again. Nothing new is stored — the kind is recomputed from frontmatter on
+every rebuild, so it can never rot out of sync (NFR-004). The extraction decision (who is
+salient) is **LLM judgment** in the `okf-ingest` agent, governed by the `okf-bundle-schema`
+skill (§7.4); the service only stores and derives.
 
 ---
 
