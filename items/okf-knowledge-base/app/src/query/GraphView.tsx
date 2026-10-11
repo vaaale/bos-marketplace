@@ -1,9 +1,15 @@
 // GraphView.tsx — the force-directed knowledge graph (FR-042 / US9 AS1).
 //
 // Category-coloured circular nodes (document slate / chapter accent-blue /
-// concept-term violet) with typed, DIRECTED, LABELLED edges (contains /
-// covers / related), in the BOS dark palette — the mockup's graph-database
-// look, rendered from the service's derived `GET /bundles/<b>/graph`.
+// concept-term violet / PERSON teal) with typed, DIRECTED, LABELLED edges
+// (contains / covers / related), in the BOS dark palette — the mockup's
+// graph-database look, rendered from the service's derived
+// `GET /bundles/<b>/graph`.
+//
+// The 4th category (ADR-011) is a colour, not a mechanism: a person node is
+// sized, highlighted, dimmed, dragged and opened exactly like a concept-term
+// node, and its coverage edge is the same dashed `covers` edge. Only the
+// palette and the reader-pane label say "person".
 //
 // Two implementation notes that are requirements, not choices:
 //
@@ -23,6 +29,7 @@ import type { BundleGraph, GraphNode } from "../lib/types";
 import { buildSim, capGraph, edgeClass, settle, stepGraph, type Sim, type SimNode } from "./forceSim";
 
 export interface GraphSelection {
+  // a person node opens the SAME term view as a concept term
   kind: "doc" | "chap" | "concept";
   docId: string | null;
   chId: string | null;
@@ -280,6 +287,10 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
           <span className="lg-sw concept" />
           Concept term
         </span>
+        <span className="lg-item" data-testid="legend-person">
+          <span className="lg-sw person" />
+          Person
+        </span>
         <span className="lg-sep" />
         <span className="lg-item">
           <span className="lg-line contain" />
@@ -303,7 +314,8 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
         <Icon name="info" size={14} />
         <span>
           <b>Knowledge graph</b> — derived from stored content: <b>contains</b> (document → its chapters, via{" "}
-          <code>parent</code>), <b>covers</b> (chapter → the concept term it covers, via the concept index), and{" "}
+          <code>parent</code>), <b>covers</b> (chapter → the concept term it covers, and document/chapter → the{" "}
+          <span style={{ color: "var(--teal)" }}>person</span> it is by or about, via the concept index), and{" "}
           <b>related</b> (explicit <code>okf_add_link</code> edges). Force-directed — <b>drag</b> a node, <b>scroll</b>{" "}
           to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbours. Click any node to open it in the
           reader pane. Searching above highlights matching nodes and dims the rest.
@@ -400,7 +412,16 @@ function paintStructure(svg: SVGSVGElement, sim: Sim): void {
     const ring = document.createElementNS(NS, "circle");
     ring.setAttribute("class", "g-ring");
     ring.setAttribute("r", String(n.r + 5));
-    ring.setAttribute("stroke", n.type === "doc" ? "#5a6a82" : n.type === "concept" ? "var(--violet)" : "var(--accent)");
+    ring.setAttribute(
+      "stroke",
+      n.type === "doc"
+        ? "#5a6a82"
+        : n.type === "concept"
+          ? "var(--violet)"
+          : n.type === "person"
+            ? "var(--teal)"
+            : "var(--accent)",
+    );
     const circ = document.createElementNS(NS, "circle");
     circ.setAttribute("class", "g-circ");
     circ.setAttribute("r", String(n.r));

@@ -33,10 +33,17 @@ export interface CoverRow {
 
 export interface ConceptTerm {
   name: string;
+  /** `person` for a salient person (author / named key figure) the service
+   *  derived from `person_terms` frontmatter; `topic` otherwise. Optional on
+   *  the wire: a pre-person-kind index carries no `kind` (ADR-011 S4). */
+  kind?: TermKind;
   count: number;
   covers: CoverRow[];
   stale: boolean;
 }
+
+/** A concept term's kind (ADR-011). Absent on a legacy index = `topic`. */
+export type TermKind = "topic" | "person";
 
 export interface DocumentRow {
   id: string;
@@ -99,15 +106,21 @@ export interface SearchRow {
   chTitle: string;
   description: string;
   matchedConcept: string;
+  /** The kind of the term that matched — additive; the search ALGORITHM is
+   *  unchanged, a person's name is an ordinary term-name hit (SC-016). */
+  kind?: TermKind;
   status: string;
   stale: boolean;
 }
 
-export type GraphNodeType = "doc" | "chap" | "concept";
+export type GraphNodeType = "doc" | "chap" | "concept" | "person";
 export type GraphEdgeKind = "containment" | "coverage" | "link";
 
 export interface GraphNode {
   id: string;
+  /** `<type>:<id>` — stable across the two node types that can share an id
+   *  (a document whose id is also a concept term). */
+  key?: string;
   type: GraphNodeType;
   label: string;
   description?: string;

@@ -1,12 +1,12 @@
 # Feature Specification: OKF Knowledge Base — General-Purpose Agent Knowledge Base (Redesign)
 
-**Feature Branch**: `bos/okf-kb-redesign`
+**Feature Branch**: `bos/okf-auto-ingest`
 
 **Created**: 2026-10-09
 
 **Status**: Draft
 
-**App Target**: **`marketplace-item`.** This is a redesign of the already-installed `okf-knowledge-base` item: its **service facet** (OKF storage + the `okf_*` tool surface + a new derived two-level index + re-scoped ingest) and a **standalone companion app facet** — a master-detail app (Overview / Jobs / Query), dock-openable, not a settings config page — plus the item's bundled `okf-ingest` agent and bundle-schema skill. The prior `040` spec split the work as *mixed* (item + four `bos-core` prerequisites). Those prerequisites — the fixed `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`, the `ToolExecuteResult` attachment mechanism, `ffmpeg` in the Docker images, and marketplace-item agent/skill copy-install — remain **dependencies** (see Assumptions) and are *not re-scoped here*: this spec's deliverable is the item. If any prerequisite has not actually shipped, it is a separate BOS-source follow-up.
+**App Target**: **`marketplace-item`** (primary) **+ one small `bos-core` platform mechanism** (this session's scope-add). The item deliverable is unchanged in shape: the service facet (OKF storage + the `okf_*` tool surface + the derived two-level index + auto-triggered ingest) and the standalone companion app (Overview / Jobs / Query). The new **job cancellation** capability (FR-050/FR-052) is the first time this item depends on a small BOS-source change: a **generic** headless-run abort route (`POST /api/subagents/[runId]/abort`, the HTTP face of the existing in-process `abortHeadlessRun`). That route is platform-level (any headless run, by `runId`, serving future consumers), not OKF-specific — the item only consumes it over loopback. All four prior `bos-core` prerequisites (`web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes` + the `ToolExecuteResult` mechanism, `ffmpeg`, agent/skill copy-install) remain **assumed-shipped dependencies** (see Assumptions).
 
 **Input**: User description: Re-design the OKF Knowledge Base into a general-purpose knowledge base that agents use to *organize* knowledge and *retrieve* it efficiently. Stay grounded in Andrej Karpathy's "LLM Wiki" principles (raw sources / LLM-maintained wiki / index; ingest–query–lint) and the Open Knowledge Format (v0.2). No vector database, no SQL database, no embeddings — unless we conclude they give substantial value. Retrieval returns **full documents or full chapters, never snippet chunks**.
 
@@ -42,7 +42,7 @@ This maps exactly onto Karpathy's three layers: the asset bytes live in **raw** 
 
 ### What this is *not* (the "less is more" reduction)
 
-The prior installed surface had **31 tools**, many shaped for the old model (one setter per frontmatter field; graph power-tools; index/log readers; find/list duplicates). The redesigned surface is **18 tools**: **3 added** (concept-anchored `okf_search`, document-TOC `okf_read_toc`, `okf_merge_concepts`), **15 kept**, **16 removed**. Field-setters collapse into `okf_upsert_concept` (frontmatter, merge-on-fields); graph power-tools drop out because retrieval is index-based, not path-based; the log becomes internal. The full before/after table is in FR-037.
+The prior installed surface had **31 tools**, many shaped for the old model (one setter per frontmatter field; graph power-tools; index/log readers; find/list duplicates). The redesigned surface is **21 tools**: **7 added** (concept-anchored `okf_search`, document-TOC `okf_read_toc`, `okf_merge_concepts`, job-listing `okf_list_jobs`, job-cancelling `okf_cancel_job`, job-deleting `okf_delete_job`), **14 kept**, **10 removed**. Field-setters collapse into `okf_upsert_concept` (frontmatter, merge-on-fields); graph power-tools drop out because retrieval is index-based, not path-based; the log becomes internal. The full before/after table is in FR-037.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -161,9 +161,9 @@ The KB is a standalone master-detail app (not buried in settings). In its **Over
 
 ---
 
-### User Story 8 - I can watch ingest runs (jobs) and see if they finished or failed (Priority: P2)
+### User Story 8 - I can watch and control my ingest runs (jobs): see status, cancel a running one, delete a finished one (Priority: P2)
 
-An agent triggers ingestion of a document into a bundle. The user opens the app's **Jobs** tab to see the run and its live status — still running, completed (with a summary of what was written), or failed (with the error).
+An agent triggers ingestion of a document into a bundle. The user opens the app's **Jobs** tab to see the run and its live status — still running, completed (with a summary of what was written), cancelled (when they stopped it), or failed (with the error). The user can **cancel a running run** (stop it, distinct from a failure) and **delete a finished run** (clear the list), from the Jobs tab or via agent tools.
 
 **Why this priority**: Ingest is the way knowledge gets in; without a way to see whether a triggered ingest actually completed, the user can't trust the pipeline or debug it.
 
@@ -174,6 +174,9 @@ An agent triggers ingestion of a document into a bundle. The user opens the app'
 1. **Given** an in-flight ingest, **When** the user opens the Jobs tab, **Then** the run is listed with status running, its bundle, and its source.
 2. **Given** a completed ingest, **When** the user opens its run detail, **Then** it shows a summary (chapters written, concepts assigned, assets interpreted, references skipped/failed).
 3. **Given** a failed ingest, **When** the user opens its run detail, **Then** it shows the failure and the error.
+4. **Given** a running ingest, **When** the user clicks **Cancel** on it (or an agent calls `okf_cancel_job`), **Then** the underlying headless run is aborted and the job transitions to the distinct **cancelled** state (not failed); the job record and any bundle content already written are preserved; cancelling a job that is already terminal is a no-op.
+5. **Given** a finished (completed / cancelled / failed) ingest, **When** the user clicks **Delete** on it (or an agent calls `okf_delete_job`), **Then** the job record is removed and the bundle's content is left untouched.
+6. **Given** a running ingest, **When** a delete is attempted on it, **Then** the delete is rejected (cancel it first).
 
 ---
 
@@ -190,6 +193,22 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 1. **Given** the Query tab's Knowledge Graph sub-tab, **When** the user views it, **Then** it renders the bundle's nodes (documents, chapters, concept terms) and typed edges; clicking a node opens the corresponding chapter/document.
 2. **Given** the Query tab's Search sub-tab, **When** the user runs a natural-language query, **Then** it returns the same concept-anchored TOC rows the agent's `okf_search` returns.
 3. **Given** a selected search result or graph node, **When** the user opens it, **Then** the chapter renders in full in a mouse-resizable side pane, with a link to the original source document at the top of the pane.
+
+---
+
+### User Story 10 - I can find content by the person it's about or authored by (Priority: P2)
+
+The user asks for content by or about a person — *"what has Diego Córdoba covered?"* or just searches his name. Because ingest registered the salient person as a person-kind term, the name is in the vocabulary and the existing concept-anchored search returns the person's documents/chapters.
+
+**Why this priority**: Person-level retrieval is a high-frequency KB need (authors, key figures, the "who") and the single most common reason a name-based search misses today (names live in chapter bodies, not in the term vocabulary).
+
+**Independent Test**: Ingest an article with a named author and one or more named key figures; verify the author and the named figures appear as person-kind terms in the index; verify `okf_search` on the person's name returns their documents/chapters; verify `okf_list_concepts` reports their `kind: person`; verify the graph renders them as distinct nodes.
+
+**Acceptance Scenarios**:
+
+1. **Given** an ingested article with a named author, **When** the author is registered as a person-kind term, **Then** `okf_search` on the author's name returns the documents that author wrote (and the chapters where they are the subject).
+2. **Given** a person-kind term, **When** the user (or agent) calls `okf_list_concepts`, **Then** the term is reported with `kind: person`, distinguishable from topical terms.
+3. **Given** a person-kind term, **When** the user views the Query tab's Knowledge Graph, **Then** the person renders as a distinct node (its own category color/shape) with edges to the documents/chapters it covers.
 
 ### Edge Cases
 
@@ -227,10 +246,10 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 ### Functional Requirements — ingest (re-scoped: it builds the index and artifacts)
 
 - **FR-012**: `okf_ingest` MUST decompose a source into chapters from the source's structure/headings, each chapter becoming a concept file (OKF `type: section`) carrying frontmatter: its parent document, the concept terms it covers, and a one-line summary.
-- **FR-013**: `okf_ingest` MUST assign one or more concept terms to each chapter; the vocabulary grows organically (new terms are created as encountered).
+- **FR-013**: `okf_ingest` MUST assign one or more concept terms to each chapter; the vocabulary grows organically (new terms are created as encountered), **including person-kind terms** — the author and named key figures are registered as part of this vocabulary (FR-053).
 - **FR-014**: `okf_ingest` MUST write a one-line summary for each chapter, which feeds both the concept index and the document TOC.
 - **FR-015**: `okf_ingest` MUST create or update the document's TOC artifact and the bundle concept index as part of ingesting.
-- **FR-016**: `okf_ingest` MUST route semantic decomposition through the bundled least-privilege ingest agent (not performed by the service worker), which reads the raw source directly and writes chapters via the `okf_*` tools; at no point is the full source re-emitted by the orchestrating agent as output tokens.
+- **FR-016**: `okf_ingest` MUST perform the semantic decomposition (chapters, concepts, summaries, inline-asset interpretation, TOC + concept-index maintenance) by starting a **headless run of the bundled `okf-ingest` agent** (not performed by the service worker) — and MUST **start it automatically** (FR-046) rather than returning a plan for the caller to execute. At no point is the full source re-emitted by the caller as output tokens (the run pins `output_path` on its acquisition steps, FR-047).
 - **FR-017**: `okf_add_raw_source` MUST register source bytes — text or a non-HTML asset — into the bundle's `raw/` store immutably, accepting either inline `content` or a `sourcePath` already staged on disk (so the caller is never forced to pass large content inline).
 - **FR-018**: `okf_ingest` MUST deduplicate against the bundle's existing provenance — a re-ingested source updates the existing document rather than creating a duplicate.
 - **FR-019**: `okf_ingest` MAY follow references worth ingesting, bounded by a configurable crawl depth and fan-out, with dedup against already-ingested sources; followed and skipped references MUST be reported in the run summary.
@@ -268,11 +287,11 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 ### Functional Requirements — standalone app (UI)
 
 - **FR-035**: The item MUST provide a **standalone companion app** — a master-detail application, dock-openable, with a top-level tab bar: **Overview**, **Jobs**, and **Query** — rather than a settings-embedded config page. The **Overview** tab is the bundle-management surface: bundle list (with per-bundle health) and bundle detail (concept index, documents/TOC, health, create/import/export/delete).
-- **FR-036**: The app's data access is via the service's HTTP API, and the app's search performs the **identical concept-anchored matching as the `okf_search` tool** (FR-001/FR-002) — one capability, two surfaces. Adding app-side views (Overview, Jobs, Query) MUST NOT add to the 18-tool agent surface (FR-037). The Overview tab MUST render a bundle's concept index (term → documents/chapters, with descriptions), any document's stored TOC, and a bundle's status (document / chapter / concept-term counts, stale items) in a human-readable form.
+- **FR-036**: The app's data access is via the service's HTTP API, and the app's search performs the **identical concept-anchored matching as the `okf_search` tool** (FR-001/FR-002) — one capability, two surfaces. Adding app-side views (Overview, Jobs, Query) MUST NOT add to the 21-tool agent surface (FR-037). The Overview tab MUST render a bundle's concept index (term → documents/chapters, with descriptions), any document's stored TOC, and a bundle's status (document / chapter / concept-term counts, stale items) in a human-readable form.
 
 ### Functional Requirements — tool surface
 
-- **FR-037**: The service MUST declare exactly the following 18 `okf_*` tools, under the **Knowledge Base** tool group, via the 039 Service Tool Exposure contract, and no others:
+- **FR-037**: The service MUST declare exactly the following 21 `okf_*` tools, under the **Knowledge Base** tool group, via the 039 Service Tool Exposure contract, and no others:
 
   | Group | Tools |
   |---|---|
@@ -280,10 +299,11 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
   | Concepts | `okf_upsert_concept`, `okf_delete_concept`, `okf_merge_concepts` |
   | Bundles | `okf_list_bundles`, `okf_init_bundle`, `okf_import_bundle`, `okf_export_bundle`, `okf_delete_bundle` |
   | Ingest | `okf_ingest`, `okf_add_raw_source` |
+  | Jobs | `okf_list_jobs`, `okf_cancel_job`, `okf_delete_job` |
   | Organization | `okf_add_link`, `okf_backlinks` |
   | Health | `okf_lint`, `okf_stale_report` |
 
-  Compared to the prior 31-tool surface: **added** `okf_search`, `okf_read_toc`, `okf_merge_concepts`; **removed** `okf_bundle_status`, `okf_find_concepts`, `okf_read_index`, `okf_read_bundle_schema`, `okf_append_log`, `okf_get_as_of`, `okf_set_status`, `okf_set_trust`, `okf_add_source`, `okf_attest`, `okf_provenance`, `okf_remove_link`, `okf_list_links`, `okf_neighbors`, `okf_shortest_path`, `okf_export_graph` (field-setters collapsed into `okf_upsert_concept`; graph power-tools dropped as retrieval is index-based; log made internal).
+  Compared to the prior 31-tool surface: **added** `okf_search`, `okf_read_toc`, `okf_merge_concepts`, `okf_list_jobs`, `okf_cancel_job`, `okf_delete_job`; **removed** `okf_bundle_status`, `okf_find_concepts`, `okf_read_index`, `okf_read_bundle_schema`, `okf_append_log`, `okf_get_as_of`, `okf_set_status`, `okf_set_trust`, `okf_add_source`, `okf_attest`, `okf_provenance`, `okf_remove_link`, `okf_list_links`, `okf_neighbors`, `okf_shortest_path`, `okf_export_graph` (field-setters collapsed into `okf_upsert_concept`; graph power-tools dropped as retrieval is index-based; log made internal).
 - **FR-038**: Every declared tool MUST be validated against its JSON schema before dispatch and MUST respect the existing tool-gating/permission model exactly like built-in tools.
 
 ### Functional Requirements — bundled agent & skill
@@ -293,11 +313,29 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 
 ### Functional Requirements — standalone app: Jobs & Query (extends FR-035/FR-036)
 
-- **FR-041**: The app MUST provide a **Jobs** tab listing ingest runs, each showing its lifecycle status (queued / running / completed / failed), the bundle, the source, and either a per-run summary (chapters written, concepts assigned, assets interpreted, references skipped/failed) or the run's error. The app MUST reflect a run's status as it changes.
+- **FR-041**: The app MUST provide a **Jobs** tab listing ingest runs, each showing its lifecycle status (queued / running / completed / **cancelled** / failed), the bundle, the source, and either a per-run summary (chapters written, concepts assigned, assets interpreted, references skipped/failed) or the run's error. The app MUST reflect a run's status as it changes. The app MUST provide a **Cancel** control on running jobs (FR-050) and a **Delete** control on non-running jobs (FR-051).
 - **FR-042**: The app's **Query** tab MUST be a single unified view — a **shared search field** at the top and, beneath it, a **Graph / Table** toggle choosing how to render the bundle's knowledge graph. The **Graph** view MUST render the bundle's nodes (documents, chapters, concept terms) with typed, **directed, labeled** edges (containment document→chapter, concept-coverage chapter→concept term, explicit link) as a **force-directed layout of category-colored circular nodes** (a graph-database style, not a fixed columnar grid). The **Table** view MUST list the same nodes (type, name, description). Selecting a document or chapter — a graph node or a table row — opens it in the reader pane (document → its TOC, chapter → the full chapter); selecting a **concept-term** opens a term view in the pane listing the chapters that term covers.
 - **FR-043**: The Query tab's **shared search field** MUST run the same concept-anchored search the agent uses (FR-001/FR-002), and MUST reflect its results in the active view — in the **Table** (the matching rows) and in the **Graph** (the matching nodes highlighted, the rest dimmed) (FR-042). Selecting a search result (or a graph node) MUST open the corresponding chapter in a **mouse-resizable side pane** that renders the full document (markdown, including inline-asset links and interpretations) and shows a **link to the original source** at the top of the pane. The source link's target is the document's original ingested URL when one exists, otherwise the stored `raw/` path (the document's provenance) — i.e. the honest "where did this come from" target.
-- **FR-044**: The service MUST record each `okf_ingest` invocation as an observable run with a lifecycle (queued → running → completed | failed) and a summary, and MUST expose those runs to the app. Run-completion/failure detection is a design concern (see design.md); the mechanism MUST NOT require the calling agent to emit the full source, and MUST NOT add to the 18-tool agent surface.
+- **FR-044**: The service MUST record each `okf_ingest` invocation as an observable run with a lifecycle (queued → running → completed | **cancelled** | failed) and a summary, and MUST expose those runs to the app **and to agents via `okf_list_jobs`** (FR-048). Run-completion/failure detection is a design concern (see design.md); the mechanism MUST NOT require the calling agent to emit the full source, and the run-observation plumbing MUST NOT add tools beyond `okf_list_jobs`/`okf_cancel_job`/`okf_delete_job` to the 21-tool agent surface.
 - **FR-045**: The service MUST expose a bundle's knowledge graph — nodes and typed edges (containment via `parent` frontmatter, concept-coverage via the concept index, explicit links via stored edges) — derived from stored content, for the app's graph view.
+
+### Functional Requirements — automatic ingestion & job observation
+
+- **FR-046 (Automatic trigger)**: `okf_ingest` MUST, upon being called with a valid source, **automatically start the headless `okf-ingest` run** that performs the ingestion, and MUST **return immediately** with the minted `jobId` and the job's initial record — it MUST NOT return an instruction block ("run these acquisition steps", "now delegate to the okf-ingest agent") for the caller to act on. The caller (an agent, or the app's Ingest modal) is freed at return. The same automatic trigger applies to the app's Ingest action, which drives the same worker-side path via a `POST /jobs` route.
+- **FR-047 (End-to-end headless run)**: The headless `okf-ingest` run MUST be **self-sufficient** — it performs the acquisition steps itself (`web_fetch` for URL sources, `file_to_markdown` for PDF/DOCX, each pinning `output_path` so the source streams to disk and is never re-emitted as the caller's output tokens), registers the raw source via `okf_add_raw_source`, then does the FR-012–FR-015 semantic decomposition, FR-020–FR-023 inline-asset interpretation, and FR-019 bounded reference crawl (nested reference runs as their own jobs). It MUST require no caller-held tool or caller follow-up — the reason the agent carries the complete allowlist of FR-039.
+- **FR-048 (Job listing tool)**: The service MUST provide `okf_list_jobs` — a **read-only** (parallel-safe) tool returning the current ingest runs and their lifecycle status (`id`, `status`, `bundle`, `source`, `startedAt`, `duration`/`elapsed`, `summary`, `error`) — the same records the app's Jobs tab shows (FR-041) — so an agent can observe the runs it triggered (FR-046) without opening the app. It is part of the 21-tool agent surface (FR-037).
+- **FR-049 (Finalization & stale reaper)**: Each run MUST be finalized to a terminal state (completed | cancelled | failed) by the **launcher observing the headless run's terminal outcome** (its `endedReason`: `completed`, `error`, `max_steps`, or `cancelled`); the service MUST additionally **reaper-mark any run still non-terminal past a configured bound as failed (stale)**, so a crashed or abandoned headless run never leaves a job stuck in queued/running. Both the app's Jobs tab and `okf_list_jobs` reflect the final state (FR-044, US8, SC-011).
+
+### Functional Requirements — job control (cancel & delete)
+
+- **FR-050 (Job cancellation)**: A **running** ingest job MUST be cancellable. The service MUST provide `okf_cancel_job` (takes a `jobId`) and the app's Jobs tab MUST provide a **Cancel** control on running jobs, both driving the same cancel path: the worker tells the platform to **abort the headless `okf-ingest` run** (by the run's `runId`, captured from the run's `run_started` event — see FR-052), and the job transitions to a **distinct `cancelled` terminal state** (not `failed` — cancellation is an intentional stop, not an error). Cancelling a job that is already terminal MUST be a no-op (idempotent). Cancelling MUST NOT delete the job record or the bundle content the run already wrote.
+- **FR-051 (Job deletion)**: A **non-running** (terminal: completed / cancelled / failed, or a queued job whose run has not yet started) ingest job MUST be deletable. The service MUST provide `okf_delete_job` (takes a `jobId`) and the app's Jobs tab MUST provide a **Delete** control on non-running jobs. Deletion removes the job record only — it MUST NOT touch the bundle's content (chapters, index, TOC, `raw/`) that the run may have written. Deleting a **running** job MUST be rejected (cancel it first). Deleting a non-existent job MUST return a clean not-found result.
+- **FR-052 (Platform abort dependency)**: Because the headless run executes in the main Next.js process while the job is owned by the service worker, cancelling a run MUST go through a **generic, platform-level** mechanism in BOS source: a `POST /api/subagents/[runId]/abort` route that invokes the existing in-process `abortHeadlessRun(runId)` (which already registers every headless run's `AbortController` in a run-registry and cascades the abort to any nested runs it spawned). This route is NOT OKF-specific — it is the HTTP face of the existing run-registry, consumable by any future fire-and-forget headless consumer. The OKF item consumes it over loopback; it MUST NOT special-case OKF. (This is the one `src/` change the scope-add introduces.)
+
+### Functional Requirements — person extraction (kind-tagged terms)
+
+- **FR-053 (Person extraction & registration)**: Ingest MUST extract **salient persons** — the **author** and any **named key figures** (people who are *subjects* of the content, not every name that appears) — and register each as a **person-kind concept term**, attached at **document level** (the author) and at **chapter level** (a person a specific section is about). A person term is a concept term carrying `kind: person` (distinct from the default topical kind); it lives in the **same derived concept index** — it is **not** a new entity type and **not** a separate content file. It is **found by name through the existing `okf_search`** (a query token matching the person's name returns the documents/chapters that term covers); no separate search path is introduced.
+- **FR-054 (Person in graph & vocabulary)**: The knowledge graph MUST render person terms as **distinct nodes** (a category color/shape different from topic terms, chapters, and documents), and `okf_list_concepts` MUST report a term's kind so persons are distinguishable from topics.
 
 ### Non-Functional Requirements
 
@@ -309,7 +347,7 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 - **NFR-006 (Path safety)**: All writes scoped to the configured bundle root; atomic writes; `raw/` immutable (append-only).
 - **NFR-007 (Reliability)**: Tool errors/crashes are reported without crashing BOS; the service restarts on crash; tools are removed on stop/uninstall.
 - **NFR-008 (Single-user)**: No multi-user access control in v1.
-- **NFR-009 (Least-privilege ingest agent)**: The `okf-ingest` agent's tool allowlist stays narrow; it does not gain the top-level assistant's full tool surface.
+- **NFR-009 (Least-privilege ingest agent)**: The `okf-ingest` agent's allowlist is complete for end-to-end ingest (FR-039) but stays scoped to the KB domain — the full `okf_*` surface plus the named acquisition tools plus VFS reads; it does not gain non-`okf_*` tools, unrestricted `run_command`, `agent_delegate`, or the top-level assistant's full surface.
 - **NFR-010 (Karpathy fidelity)**: The design follows the LLM-Wiki pattern — immutable raw sources / LLM-maintained wiki / index, with the three operations ingest–query–lint — where the LLM does the reasoning and the service provides and maintains the structure.
 - **NFR-011 (Efficiency)**: Routing cost is bounded by the number of distinct concept terms, not by document or chapter count.
 
@@ -318,11 +356,12 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 - **KnowledgeBundle**: An OKF bundle at `/KnowledgeBase/<name>/`. Holds documents, chapters, the concept index, and raw sources.
 - **Document**: An ingested source (OKF `type: document`). Decomposed into chapters; has a stored table-of-contents artifact.
 - **Chapter / Concept**: One `.md` concept file (OKF `type: section`). The atomic full-text retrieval unit. Carries frontmatter: `parent` (document), `concepts` (terms it covers), `summary` (one line). May contain inline-asset links + interpretations.
-- **ConceptTerm**: A vocabulary term in the concept index — organic, mergeable, not a separate content-bearing file.
+- **ConceptTerm**: A vocabulary term in the concept index — organic, mergeable, not a separate content-bearing file. Carries a `kind` (default topical; `kind: person` for a salient person).
+- **PersonTerm**: A concept term of `kind: person` — a salient person (author or named key figure) registered at ingest (FR-053). It is a term in the **same** derived index (not a separate content file or entity type), found by name via `okf_search` (FR-053), and rendered as a distinct node in the knowledge graph (FR-054).
 - **ConceptIndex**: Bundle-level stored, derived artifact. Maps each concept term to `(document, chapter, one-line description)` pairs.
 - **DocumentTOC**: Per-document stored `.md`, derived artifact. Lists the document's chapters with one-line descriptions and covered concepts.
 - **InlineAsset**: A downloaded non-HTML source asset in `raw/` plus its interpretation written into the owning chapter's markdown.
-- **IngestRun**: One delegated invocation of the `okf-ingest` agent. Recorded as an observable run with a lifecycle (queued → running → completed | failed), a bundle, a source, timestamps, a summary (chapters written, concepts assigned, assets interpreted, references skipped/failed), and an error. Shown in the app's Jobs tab (FR-041/FR-044).
+- **IngestRun**: One headlessly-triggered run of the `okf-ingest` agent, started automatically by `okf_ingest` (FR-046). Recorded as an observable run with a lifecycle (queued → running → completed | **cancelled** | failed), a bundle, a source, timestamps, a summary (chapters written, concepts assigned, assets interpreted, references skipped/failed), and an error. Shown in the app's Jobs tab (FR-041) and listable by agents via `okf_list_jobs` (FR-048). Cancellable while running (FR-050); deletable when non-running (FR-051).
 - **GraphView**: The bundle's knowledge graph — nodes (documents, chapters, concept terms) and typed edges (containment, concept-coverage, explicit links) — derived from stored frontmatter / index / links, for the app's graph view (FR-042/FR-045).
 - **ServiceTool**: An `okf_*` tool declared per the 039 contract.
 - **BundleHealth**: Document / chapter / concept-term counts and stale/deprecated items, for the config-app.
@@ -337,19 +376,23 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 - **SC-004**: The concept index and every document TOC are plain `.md` files present in a bundle export; re-importing the export reproduces a fully queryable bundle.
 - **SC-005**: Unknown frontmatter keys survive 100% of write/read round-trips.
 - **SC-006**: For a bundle of N documents with V distinct concept terms, the concept index is O(V), not O(N) — verified by a corpus where V ≪ N.
-- **SC-007**: The declared `okf_*` tool surface is exactly 18 tools; none of the 16 removed tools remains declared.
+- **SC-007**: The declared `okf_*` tool surface is exactly 21 tools; none of the 16 removed tools remains declared; `okf_list_jobs`, `okf_cancel_job`, and `okf_delete_job` are present.
 - **SC-008**: Merging two concept terms updates the concept index, all affected document TOCs, and all chapter `concepts` frontmatter that referenced either term, leaving a single canonical entry.
-- **SC-009**: Stopping/uninstalling the service removes all 18 `okf_*` tools immediately.
+- **SC-009**: Stopping/uninstalling the service removes all 21 `okf_*` tools immediately.
 - **SC-010**: `okf_lint` detects broken inline-asset links and concept-index / document-TOC drift from the underlying content.
-- **SC-011**: In the app's Jobs tab, a triggered ingest run is observable through its real lifecycle: it shows as running, then completed (with its summary) or failed (with its error).
+- **SC-011**: In the app's Jobs tab, a triggered ingest run is observable through its real lifecycle: it shows as running, then completed (with its summary), cancelled (when the user stops it), or failed (with its error). A running job can be cancelled from the Jobs tab (FR-050) or via `okf_cancel_job`; a non-running job can be deleted (FR-051).
 - **SC-012**: In the app's Query tab, selecting a Knowledge-Graph node or a search result opens the full chapter in a resizable side pane with a working link to the original source document.
+- **SC-013**: Calling `okf_ingest` returns a `jobId` immediately, **without** the caller running acquisition or agent-delegation steps itself; the run then proceeds headlessly to completed (with its summary), cancelled (when stopped), or failed (with its error), observable in **both** the app's Jobs tab and `okf_list_jobs`; a run whose headless process dies is reaper-marked failed, not left running.
+- **SC-014**: Cancelling a running job from the Jobs tab or via `okf_cancel_job` aborts the underlying headless run and transitions the job to the distinct `cancelled` state; the job record and any content already written are preserved; cancelling a terminal job is a no-op.
+- **SC-015**: Deleting a non-running job removes its record (via `okf_delete_job` or the Jobs tab) without touching bundle content; deleting a running job is rejected; deleting a non-existent job returns a clean not-found.
+- **SC-016**: Searching a person's name (e.g. "Diego Córdoba") via `okf_search` returns the documents/chapters that person authored or is the subject of — because salient persons are registered as person-kind terms at ingest (FR-053); no separate search path is needed.
 
 ## Assumptions
 
 - **The item already exists and is installed** (spec 040/041 consolidated): a service facet (worker thread, `okf-core` storage, `/KnowledgeBase` VFS, 039 tool exposure) and a companion app (currently a settings config-app). This redesign reworks its retrieval model, index, ingest, tool surface, and turns the companion app into a **standalone master-detail app** (Overview / Jobs / Query); it does not re-derive the service-facet shape.
-- **The prior 040 `bos-core` prerequisites are present and unchanged**: the fixed `web_fetch` (clean markdown, links preserved, no silent truncation), `file_to_markdown` (markitdown), `view_image`, `video_keyframes`, the `ToolExecuteResult` mechanism (tool results can carry image/video content), `ffmpeg` in the Docker images, and marketplace-item agent/skill copy-install with provenance. If any has not actually shipped, it is a prerequisite BOS-source follow-up, not part of this item's deliverable.
+- **The prior 040 `bos-core` prerequisites are present and unchanged**: the fixed `web_fetch` (clean markdown, links preserved, no silent truncation; **binary assets stored verbatim** — the content type decides text-vs-bytes before the body is read, so a PNG is not UTF-8-mangled to U+FFFD), `file_to_markdown` (markitdown), `view_image` (**byte-sniffs its input** and refuses non-images in-band, so a corrupt asset is a recoverable tool error rather than a fatal provider 400), `video_keyframes`, the `ToolExecuteResult` mechanism (tool results can carry image/video content), `ffmpeg` in the Docker images, and marketplace-item agent/skill copy-install with provenance. If any has not actually shipped, it is a prerequisite BOS-source follow-up, not part of this item's deliverable.
 - **LLM-based retrieval over the derived index** (no embeddings / vector / SQL in v1), per the "substantial value" constraint (NFR-002).
-- **The bundled `okf-ingest` agent runs in-process** via the existing `agent_delegate` mechanism (the same one Build Studio → Developer uses); it is a new consumer, not new delegation infrastructure.
+- **The bundled `okf-ingest` agent runs headlessly** via the existing 034 event bus + the headless sub-agent run surface (`POST /api/subagents/delegate`, which runs the same `runSubAgent` the scheduler, workflows, and self-heal use); triggering a run requires no live conversation and occupies no caller's turn (FR-046). Cancelling a run goes through the platform's `POST /api/subagents/[runId]/abort` route (FR-052). It is a new consumer, not new delegation infrastructure.
 - **A chapter is a concept file** (OKF `type: section`); "concepts" in the retrieval sense are the *index vocabulary* (terms routing to chapters), not separate content-bearing files. This preserves OKF's "everything is a `.md`, only `type` required" invariant.
 - **Single-user**; no per-agent access assignment in v1.
 - **`raw/` sources are immutable** (append-only); the concept index and document TOCs are derived/regenerable and never the sole source of truth.
@@ -357,4 +400,4 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 ## UI Mockup Reference
 
 - **App**: the item's UI is a **standalone master-detail app** (Overview / Jobs / Query), not a settings config page. The visual language derives from the baseline `040-okf-knowledge-base.html` (bundle list/detail, create/import/export, delete).
-- **`mockup.html` (this item's spec directory)**: the complete, consolidated mockup — the **binding visual + interaction contract** for the whole app, which the app implements directly. It covers: the **app shell** (titlebar + Overview / Jobs / Query tab bar with a live Jobs badge, Populated/Empty mode toggle); **Overview** — bundle list → bundle detail (health stat cards; Concept Index / Documents / Health / Import·Export tabs) → concept index → document → stored TOC → full chapter, with inline-asset blocks (thumbnail + stored interpretation) and "View source (.md)"; **Jobs** — ingest-run list (queued/running/completed/failed dots, bundle, source, elapsed/duration) → expandable run detail (summary cells, written-chapter chips, error card, live progress bar); and **Query** — a **single unified view**: a **shared search field** at the top and a **Graph / Table** toggle beneath it. The **Graph** is a force-directed layout of category-colored circular nodes (documents / chapters / concept terms) with typed, directed, **labeled** edges (contains / covers / related), in the graph-database / Neo4J style using the BOS dark palette; the **Table** lists the same nodes. The search field's results are reflected in **both** views (Table filters rows; Graph highlights matching nodes and dims the rest). Selecting a node opens it in the **mouse-resizable reader pane** (document → its TOC, chapter → full chapter, concept-term → its covering chapters) with an **"Open source"** link at the top (the document's original ingested URL, or its stored `raw/` path when ingested from disk).
+- **`mockup.html` (this item's spec directory)**: the complete, consolidated mockup — the **binding visual + interaction contract** for the whole app, which the app implements directly. It covers: the **app shell** (titlebar + Overview / Jobs / Query tab bar with a live Jobs badge, Populated/Empty mode toggle); **Overview** — bundle list → bundle detail (health stat cards; Concept Index / Documents / Health / Import·Export tabs) → concept index → document → stored TOC → full chapter, with inline-asset blocks (thumbnail + stored interpretation) and "View source (.md)"; **Jobs** — ingest-run list (queued/running/completed/**cancelled**/failed dots, bundle, source, elapsed/duration) with a **Cancel** control on running jobs and a **Delete** control on non-running jobs → expandable run detail (summary cells, written-chapter chips, error card, live progress bar); and **Query** — a **single unified view**: a **shared search field** at the top and a **Graph / Table** toggle beneath it. The **Graph** is a force-directed layout of category-colored circular nodes (documents / chapters / concept terms) with typed, directed, **labeled** edges (contains / covers / related), in the graph-database / Neo4J style using the BOS dark palette; the **Table** lists the same nodes. The search field's results are reflected in **both** views (Table filters rows; Graph highlights matching nodes and dims the rest). Selecting a node opens it in the **mouse-resizable reader pane** (document → its TOC, chapter → full chapter, concept-term → its covering chapters) with an **"Open source"** link at the top (the document's original ingested URL, or its stored `raw/` path when ingested from disk).

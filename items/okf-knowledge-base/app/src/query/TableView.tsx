@@ -20,8 +20,21 @@ interface Props {
   onSelect: (node: GraphNode) => void;
 }
 
-const TYPE_LABEL: Record<string, string> = { doc: "Document", chap: "Chapter", concept: "Concept" };
-const TYPE_DOT: Record<string, string> = { doc: "dot-doc", chap: "dot-chap", concept: "dot-concept" };
+const TYPE_LABEL: Record<string, string> = { doc: "Document", chap: "Chapter", concept: "Concept", person: "Person" };
+const TYPE_DOT: Record<string, string> = {
+  doc: "dot-doc",
+  chap: "dot-chap",
+  concept: "dot-concept",
+  person: "dot-person",
+};
+
+/** The Kind column (ADR-011): a term row reports `topic`/`person`; a document
+ *  or chapter row has no term kind, so it reads "—". */
+function KindCell({ type }: { type: string }) {
+  if (type === "person") return <span className="t-key person">person</span>;
+  if (type === "concept") return <span className="t-key">topic</span>;
+  return <span style={{ color: "var(--muted)" }}>—</span>;
+}
 
 export default function TableView({ nodes, matches, query, selectedId, onSelect }: Props) {
   const rows = matches ? nodes.filter((n) => matches.has(n.id)) : nodes;
@@ -48,6 +61,7 @@ export default function TableView({ nodes, matches, query, selectedId, onSelect 
             <tr>
               <th style={{ width: 128 }}>Type</th>
               <th>Name</th>
+              <th style={{ width: 96 }}>Kind</th>
               <th>Description / Label</th>
             </tr>
           </thead>
@@ -74,6 +88,9 @@ export default function TableView({ nodes, matches, query, selectedId, onSelect 
                   <span className="name" style={{ fontWeight: n.type === "doc" ? 600 : 500 }}>
                     {n.label}
                   </span>
+                </td>
+                <td data-testid={`table-kind-${n.type}-${n.id}`}>
+                  <KindCell type={n.type} />
                 </td>
                 <td style={{ color: "var(--muted)" }}>{n.description || "—"}</td>
               </tr>

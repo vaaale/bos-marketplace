@@ -4,7 +4,10 @@
 //   • document     → its stored TOC (click a chapter to drill in)
 //   • chapter      → the FULL chapter: frontmatter, markdown body, inline
 //                    assets with their stored interpretations
-//   • concept term → the chapters that term covers (the routing view)
+//   • concept term → the chapters that term covers (the routing view). A
+//                    PERSON-kind term (ADR-011) opens this very same view —
+//                    only the header label and its colour differ, because a
+//                    person IS an ordinary term in the index.
 //
 // "Open source" at the top of the pane is the honest provenance target: the
 // document's ORIGINAL ingested URL when one exists, otherwise its stored
@@ -124,19 +127,23 @@ export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClo
 
   // ── concept-term view ──────────────────────────────────────────────────
   if (target.kind === "concept") {
-    const term = terms.find((t) => t.name === target.term) || null;
+    // a person node's id is the LOWERCASED name, the term's own `name` keeps
+    // the original case — so the lookup is case-insensitive
+    const wanted = String(target.term || "").toLowerCase();
+    const term = terms.find((t) => t.name.toLowerCase() === wanted) || null;
+    const isPerson = term?.kind === "person";
     return (
       <>
         <div className="q-pane-head">
-          <div className="q-pane-kind concept">
-            <Icon name="layers" size={14} /> Concept term
+          <div className={`q-pane-kind ${isPerson ? "person" : "concept"}`} data-testid="pane-term-kind">
+            <Icon name={isPerson ? "eye" : "layers"} size={14} /> {isPerson ? "Person" : "Concept term"}
           </div>
-          <div className="q-pane-term" data-testid="pane-term">
-            {target.term}
+          <div className={`q-pane-term${isPerson ? " person" : ""}`} data-testid="pane-term">
+            {term?.name ?? target.term}
           </div>
           <div className="q-pane-sub">
-            vocabulary term · covered by {term?.count ?? 0} chapter{(term?.count ?? 0) === 1 ? "" : "s"} · no single
-            source document
+            {isPerson ? "person-kind term · subject of " : "vocabulary term · covered by "}
+            {term?.count ?? 0} chapter{(term?.count ?? 0) === 1 ? "" : "s"} · no single source document
           </div>
           <button className="ibtn" onClick={onClose} title="Close reader" data-testid="pane-close">
             <Icon name="x" size={15} />
@@ -150,10 +157,17 @@ export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClo
           ) : (
             <>
               <div className="note" style={{ margin: "0 0 12px" }}>
-                <Icon name="layers" size={14} />
+                <Icon name={isPerson ? "eye" : "layers"} size={14} />
                 <span>
-                  <b>{term.name}</b> is a concept term in the bundle vocabulary (the O(V) routing table). It routes to
-                  the chapters below — concept-anchored. Click a chapter to open it in full.
+                  <b>{term.name}</b> is a{" "}
+                  {isPerson ? (
+                    <span style={{ color: "var(--teal)" }}>person-kind term</span>
+                  ) : (
+                    <span style={{ color: "var(--violet)" }}>concept term</span>
+                  )}{" "}
+                  in the bundle vocabulary (the O(V) routing table). It routes to the{" "}
+                  {isPerson ? "documents and chapters this person is the author or the subject of" : "chapters below — concept-anchored"}
+                  . Click one to open it in full.
                 </span>
               </div>
               <div className="toc">
@@ -164,7 +178,7 @@ export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClo
                     onClick={() => onOpenChapter(c.docId, c.chId)}
                     data-testid={`pane-cover-${c.docId}-${c.chId}`}
                   >
-                    <span className="toc-num" style={{ color: "var(--violet)" }}>
+                    <span className="toc-num" style={{ color: isPerson ? "var(--teal)" : "var(--violet)" }}>
                       ◆
                     </span>
                     <span className="toc-title">

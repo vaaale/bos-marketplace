@@ -65,7 +65,8 @@ const DECLARATIONS = [
     description:
       "START HERE to find knowledge in a bundle. Concept-anchored search: it matches your query against the bundle's concept vocabulary and the one-line descriptions in its index, and returns a ranked TABLE OF CONTENTS — one row per relevant chapter, each carrying the document, the chapter, a one-line description, and the concept term that matched.\n\n" +
       "Rows are pointers, not content. Follow up with okf_read_concept (the full chapter or document) or okf_read_toc (a document's chapter list). Retrieval is always full documents or full chapters — this tool never returns a snippet.\n\n" +
-      "The match is deterministic and concept-anchored, NOT full text: a query that paraphrases body text but misses both the vocabulary and the stored descriptions returns nothing. An empty result is a real answer — widen the query, or read the vocabulary with okf_list_concepts and route from there. Never invent a row.",
+      "The match is deterministic and concept-anchored, NOT full text: a query that paraphrases body text but misses both the vocabulary and the stored descriptions returns nothing. An empty result is a real answer — widen the query, or read the vocabulary with okf_list_concepts and route from there. Never invent a row.\n\n" +
+      "Each row also carries `kind`: `topic` for an ordinary concept term, `person` when the term that matched is a SALIENT PERSON (an author or a named key figure the content is about). Searching a person's name needs no special call — it is an ordinary term-name hit.",
     inputSchema: required(
       {
         bundle: STRING,
@@ -90,9 +91,15 @@ const DECLARATIONS = [
   readOnly({
     name: "okf_list_concepts",
     description:
-      "Read the bundle's concept VOCABULARY — every concept term with the number of chapters it covers and which (document, chapter) pairs those are, plus the document and chapter listings. Use this to route semantically when okf_search comes back empty, and ALWAYS before introducing a new term, so you extend an existing term instead of creating a near-duplicate.",
+      "Read the bundle's concept VOCABULARY — every concept term with its `kind` (`topic`, or `person` for a salient person the bundle registered at ingest), the number of chapters it covers and which (document, chapter) pairs those are, plus the document and chapter listings. Use this to route semantically when okf_search comes back empty, and ALWAYS before introducing a new term, so you extend an existing term instead of creating a near-duplicate.\n\n" +
+      "Pass `kind: \"person\"` to list only the people the bundle knows about (authors and named key figures), or `kind: \"topic\"` for only the subject vocabulary. The default is every term.",
     inputSchema: required(
-      { bundle: STRING, type: { type: "string", enum: ["document", "section"] }, status: STATUS_ENUM },
+      {
+        bundle: STRING,
+        type: { type: "string", enum: ["document", "section"] },
+        status: STATUS_ENUM,
+        kind: { type: "string", enum: ["topic", "person", "all"], description: "Filter the vocabulary by term kind. Default `all`." },
+      },
       ["bundle"],
     ),
   }),
@@ -273,6 +280,8 @@ function makeHandlers(core) {
   return {
     // ── Retrieval ────────────────────────────────────────────────────────
     okf_search: async (args, ctx) => {
+      // core.search() is untouched by the person-kind work (SC-016): the
+      // rows it returns simply carry an additive `kind` per row now.
       const rows = await core.search(ctx.bundleRoot, args.bundle, args.query, args.limit);
       return {
         bundle: args.bundle,
@@ -286,7 +295,10 @@ function makeHandlers(core) {
     },
     okf_read_toc: (args, ctx) => core.readToc(ctx.bundleRoot, args.bundle, args.docId),
     okf_read_concept: (args, ctx) => core.readConcept(ctx.bundleRoot, args.bundle, args.id),
-    okf_list_concepts: (args, ctx) => core.listConcepts(ctx.bundleRoot, args.bundle, { type: args.type, status: args.status }),
+    // `kind` is an additive, optional filter (ADR-011) — omitted means every
+    // term, and every term in the response now carries its own `kind`.
+    okf_list_concepts: (args, ctx) =>
+      core.listConcepts(ctx.bundleRoot, args.bundle, { type: args.type, status: args.status, kind: args.kind }),
 
     // ── Concepts ─────────────────────────────────────────────────────────
     okf_upsert_concept: (args, ctx) =>

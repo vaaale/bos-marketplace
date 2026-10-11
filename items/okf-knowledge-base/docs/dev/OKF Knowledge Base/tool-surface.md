@@ -12,14 +12,23 @@ Arguments are validated against each `inputSchema` in the 039 bridge **before** 
 
 | Tool | Input | Returns |
 |---|---|---|
-| `okf_search` *(readOnly)* | `{bundle, query, limit?}` | `{rows: [{docId, docTitle, chId, chTitle, description, matchedConcept, status, stale}], count}` |
+| `okf_search` *(readOnly)* | `{bundle, query, limit?}` | `{rows: [{docId, docTitle, chId, chTitle, description, matchedConcept, kind, status, stale}], count}` |
 | `okf_read_toc` *(readOnly)* | `{bundle, docId}` | `{docId, docTitle, chapters: [{id, title, summary, concepts, status}]}` |
 | `okf_read_concept` *(readOnly)* | `{bundle, id}` | `{id, type, frontmatter, body, links, assets, source}` — the **full** body |
-| `okf_list_concepts` *(readOnly)* | `{bundle, type?, status?}` | the vocabulary: `[{term, count, covers: [...]}]`, plus document and chapter listings |
+| `okf_list_concepts` *(readOnly)* | `{bundle, type?, status?, kind?}` | the vocabulary: `[{term, kind, count, covers: [...]}]`, plus document and chapter listings |
 
 `okf_search` is the entry point. Rows are **pointers, not content** — follow with `okf_read_concept` (whole chapter or document) or `okf_read_toc` (a document's chapter list). Retrieval is always whole documents or whole chapters; no tool here returns a snippet.
 
 The match is deterministic and concept-anchored, over term names and the index's one-line descriptions — **not full text**. A paraphrase that misses both returns nothing, and an empty result is a real answer: widen the query, or read the vocabulary with `okf_list_concepts` and route from there.
+
+### The additive `kind` (ADR-011)
+
+Every term the index holds carries a `kind` — `topic`, or `person` for a salient person the bundle registered at ingest (the author, a named key figure).
+
+- **`okf_search`** rows carry that `kind`, so a caller can tell a person hit from a topic hit. The matching **algorithm is unchanged**: a person's name is an ordinary term-name hit, there is no second search path, and a caller that ignores the field sees exactly what it saw before.
+- **`okf_list_concepts`** returns `kind` on every term and accepts an optional **`kind` filter** (`topic` | `person` | `all`, default `all`) — `{bundle, kind: "person"}` lists just the people the bundle knows about.
+
+Both changes are **additive and backward compatible**, and the surface count is **unchanged** — person extraction rides on the already-declared tools, and there is no `okf_*` tool specific to persons.
 
 `okf_read_concept` returns inline-asset blocks with their stored interpretations, so a diagram's knowledge arrives without re-running vision.
 

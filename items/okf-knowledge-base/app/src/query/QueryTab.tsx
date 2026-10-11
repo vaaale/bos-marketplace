@@ -28,7 +28,7 @@
 import React from "react";
 import { Icon } from "../lib/icons";
 import { fetchBundleDetail, fetchGraph, search as runSearch } from "../lib/serviceClient";
-import type { BundleDetail, BundleGraph, BundleHealth, GraphNode, SearchRow } from "../lib/types";
+import type { BundleDetail, BundleGraph, BundleHealth, GraphNode, SearchRow, TermKind } from "../lib/types";
 import GraphView from "./GraphView";
 import TableView from "./TableView";
 import ReaderPane, { type PaneTarget } from "./ReaderPane";
@@ -101,15 +101,22 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
       set.add(`${r.docId}/${r.chId}`);
       set.add(r.docId);
       set.add(r.matchedConcept);
+      // a PERSON term's node id is the lowercased name (its label keeps the
+      // original case), so match on both spellings — a person node then
+      // highlights/dims exactly like a concept node (ADR-011)
+      set.add(r.matchedConcept.toLowerCase());
     }
     for (const n of graph.nodes) if (n.label.toLowerCase().includes(q)) set.add(n.id);
     return set;
   }, [rows, graph, query]);
 
-  const matchedConcepts = React.useMemo(
-    () => Array.from(new Set((rows || []).map((r) => r.matchedConcept))),
-    [rows],
-  );
+  // the "matched …" strip: one entry per distinct term that routed a row,
+  // carrying the term's kind so a person reads as a person (ADR-011)
+  const matchedConcepts = React.useMemo(() => {
+    const byName = new Map<string, TermKind>();
+    for (const r of rows || []) if (!byName.has(r.matchedConcept)) byName.set(r.matchedConcept, r.kind || "topic");
+    return Array.from(byName, ([name, kind]) => ({ name, kind }));
+  }, [rows]);
 
   // ── the mouse-resizable divider ────────────────────────────────────────
   React.useEffect(() => {
@@ -156,6 +163,8 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
         ? { kind: "doc", docId: n.id, chId: null, term: null }
         : n.type === "chap"
           ? { kind: "chap", docId: n.docId || n.id.split("/")[0], chId: n.chId || n.id.split("/").slice(1).join("/"), term: null }
+          // a person node opens the SAME term view as a concept term — the
+          // pane labels it "Person" off the term's own kind (ADR-011)
           : { kind: "concept", docId: null, chId: null, term: n.id },
     );
   }, []);
@@ -240,12 +249,15 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
                   </span>
                   {matchedConcepts.map((t) => (
                     <span
-                      className="chip"
-                      key={t}
-                      onClick={() => setTarget({ kind: "concept", docId: null, chId: null, term: t })}
+                      className={`chip${t.kind === "person" ? " person" : ""}`}
+                      key={`${t.kind}:${t.name}`}
+                      title={t.kind === "person" ? "matched person" : "matched concept"}
+                      data-testid={`matched-${t.kind}-${t.name}`}
+                      onClick={() => setTarget({ kind: "concept", docId: null, chId: null, term: t.name })}
                     >
                       <span className="cdot" />
-                      {t}
+                      {t.kind === "person" ? <span className="t-key person">matched person</span> : null}
+                      {t.name}
                     </span>
                   ))}
                 </>
@@ -291,7 +303,11 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
           bundle={bundle || ""}
           target={target}
           terms={detail?.conceptIndex || []}
-          onOpenChapter={(docId, chId) => setTarget({ kind: "chap", docId, chId, term: null })}
+          onOpenChapter={(docId, chId) =>
+            // a person term can be covered at DOCUMENT level (the author):
+            // such a cover row carries an empty chId, and opens the document
+            setTarget(chId ? { kind: "chap", docId, chId, term: null } : { kind: "doc", docId, chId: null, term: null })
+          }
           onClose={() => setTarget(null)}
         />
       </div>

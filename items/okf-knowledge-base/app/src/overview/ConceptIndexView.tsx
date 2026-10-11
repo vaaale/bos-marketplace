@@ -3,6 +3,11 @@
 // (document, chapter) pairs it covers with their one-line descriptions —
 // precisely the rows `okf_search` returns to an agent.
 //
+// A row is either a topic term (violet `concept` pill) or a PERSON-kind term
+// (teal `person` pill) — the same table, one derived index, the kind read
+// straight off the service's `terms[].kind` (ADR-011). A legacy index with no
+// `kind` reads as `topic`.
+//
 // The filter here is a VIEW filter over the already-loaded index (it narrows
 // the term list the user is browsing). The concept-anchored SEARCH that
 // matches what an agent runs lives in the Query tab, which calls the
@@ -84,9 +89,11 @@ export default function ConceptIndexView({ bundle, terms, indexGeneratedAt, init
         <Icon name="info" size={14} />
         <span>
           <b>Concept index</b> — the bundle-level routing table. Each row is a{" "}
-          <span style={{ color: "var(--violet)" }}>concept term</span> (the searchable vocabulary); expand it to see the{" "}
-          <b>(document, chapter)</b> pairs it covers, each with a one-line description. This is O(V) — bounded by
-          distinct terms, not by documents. <b>Derived &amp; regenerable</b> from chapter frontmatter
+          <span style={{ color: "var(--violet)" }}>concept term</span> (the searchable vocabulary) or a{" "}
+          <span style={{ color: "var(--teal)" }}>person-kind term</span> (a salient person the bundle is by or about —
+          shown in teal); expand it to see the <b>(document, chapter)</b> pairs it covers, each with a one-line
+          description. This is O(V) — bounded by distinct terms, not by documents. <b>Derived &amp; regenerable</b>{" "}
+          from chapter frontmatter
           {indexGeneratedAt ? <> · last rebuilt {new Date(indexGeneratedAt).toLocaleString()}</> : null}.
         </span>
       </div>
@@ -107,8 +114,13 @@ export default function ConceptIndexView({ bundle, terms, indexGeneratedAt, init
           </div>
           {list.map((t) => {
             const open = expanded === t.name;
+            const person = t.kind === "person";
             return (
-              <div key={t.name} className={`term${open ? " open" : ""}`} data-testid={`term-${t.name}`}>
+              <div
+                key={t.name}
+                className={`term${open ? " open" : ""}${person ? " person" : ""}`}
+                data-testid={`term-${t.name}`}
+              >
                 <div
                   className="t-head"
                   onClick={() => setExpanded(open ? null : t.name)}
@@ -116,7 +128,9 @@ export default function ConceptIndexView({ bundle, terms, indexGeneratedAt, init
                 >
                   <Icon name="caret" size={15} className="caret" />
                   <span className="t-name">{t.name}</span>
-                  <span className="t-key">concept</span>
+                  <span className={`t-key${person ? " person" : ""}`} data-testid={`term-kind-${t.name}`}>
+                    {person ? "person" : "concept"}
+                  </span>
                   {t.stale ? <span className="pill stale">attention</span> : null}
                   <span className="t-cnt">
                     {t.count} chapter{t.count === 1 ? "" : "s"}

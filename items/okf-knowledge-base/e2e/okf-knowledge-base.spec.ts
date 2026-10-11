@@ -110,6 +110,7 @@ let api: APIRequestContext;
 let serviceBase: string;
 
 async function resolveServiceBase(shell: APIRequestContext): Promise<string> {
+  if (process.env.OKF_SERVICE_BASE) return process.env.OKF_SERVICE_BASE;
   for (let attempt = 0; attempt < 15; attempt++) {
     const res = await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`);
     if (res.ok()) {
@@ -131,6 +132,10 @@ const B = {
   legacy: "e2e-okf-legacy",
   copy: "e2e-okf-copy",
   merge: "e2e-okf-merge",
+  // the person-kind scope-add (ADR-011): one bundle WITH persons, one
+  // deliberately without — the backward-compat guard needs a clean one
+  person: "e2e-okf-person",
+  noPerson: "e2e-okf-no-person",
 };
 
 async function del(bundle: string): Promise<void> {
@@ -1227,4 +1232,313 @@ test("the app renders live service data, not a built-in fixture", async ({ page 
   await expect(app.getByTestId("service-error")).toHaveCount(0);
   await expect(app.getByTestId("bundle-row-engineering")).toHaveCount(0);
   await expect(app.getByTestId("bundle-row-employee-handbook")).toHaveCount(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════
+//  FR-053 / FR-054 / US10 / SC-016 — PERSON-KIND TERMS (ADR-011)
+// ════════════════════════════════════════════════════════════════════════
+//
+// A salient person (the author, a named key figure) is NOT a new entity: it
+// is an ordinary term in the SAME derived concept index, carrying
+// `kind: "person"`, derived from a `person_terms` frontmatter array that sits
+// parallel to `concepts`. So these tests assert exactly three things:
+//
+//   1. writing `person_terms` is all it takes — the rebuild derives the kind
+//      (O2), and the write path preserves the array verbatim (NFR-005);
+//   2. every surface copies that kind through — search rows, the vocabulary,
+//      the graph's 4th node type, the app (O1/O3);
+//   3. nothing that worked before changed — a bundle with no `person_terms`
+//      is all-`topic` with a 3-type graph, and the tool surface is untouched
+//      (O4/O5).
+//
+// The tool handlers themselves have no HTTP face (the 039 surface is reached
+// through the assistant, not over REST), so — as elsewhere in this file —
+// each tool-level claim is asserted as its DECLARATION plus the shared core
+// behind it, driven through the REST route that calls the very same
+// `core.*` function the tool does.
+
+/** A document stub carrying `person_terms` — the AUTHOR, at document level. */
+function personDocument(
+  docId: string,
+  title: string,
+  summary: string,
+  uri: string,
+  persons: string[],
+): { path: string; content: string } {
+  const fm = [
+    `id: ${docId}`,
+    "type: document",
+    `title: ${title}`,
+    `summary: ${JSON.stringify(summary)}`,
+    "person_terms:",
+    ...persons.map((p) => `  - ${p}`),
+    "sources:",
+    `  - id: ${docId}.md`,
+    `    uri: ${uri}`,
+    "created_at: 2026-08-01T00:00:00.000Z",
+    "updated_at: 2026-08-01T00:00:00.000Z",
+  ].join("\n");
+  return { path: `concepts/${docId}.md`, content: `---\n${fm}\n---\n\n# ${title}\n` };
+}
+
+/** The author "Diego Córdoba" on the document stub, the key figure
+ *  "María Quispe" on one chapter — the shape §7.4 of the skill prescribes. */
+async function seedPerson(): Promise<void> {
+  await del(B.person);
+  const files = [
+    { path: "index.md", content: "# E2E Person\n" },
+    personDocument(
+      "water-rights",
+      "Water Rights in the Andes",
+      "Andean water governance and its contested history.",
+      "https://example.org/water-rights",
+      ["Diego Córdoba"],
+    ),
+    chapter(
+      "water-rights",
+      "history",
+      "A Contested History",
+      "Colonial allocation, modern conflict, and who the water was taken from.",
+      ["water-rights", "andean-history"],
+      // a chapter-level key figure, written EXACTLY as the source spells it
+      { person_terms: "[María Quispe]" },
+    ),
+    chapter("water-rights", "law", "The Legal Frame", "The statutes that govern allocation today.", [
+      "water-rights",
+      "law",
+    ]),
+  ];
+  expect((await api.post(`bundles/${B.person}/import`, { data: { files } })).ok()).toBeTruthy();
+}
+
+test("O1/US10/SC-016: a person is found by the EXISTING okf_search — full name, first name, surname", async () => {
+  await seedPerson();
+
+  // the SAME /search route the okf_search tool's core.search() backs. No
+  // person branch anywhere in it: a name is an ordinary term-name hit.
+  for (const query of ["Diego Córdoba", "Diego", "Córdoba", "quispe"]) {
+    const res = await api.get(`bundles/${B.person}/search?query=${encodeURIComponent(query)}`);
+    expect(res.ok()).toBeTruthy();
+    const { rows } = await res.json();
+    expect(rows.length, `"${query}" returned no rows`).toBeGreaterThan(0);
+    const personRows = rows.filter((r: { kind: string }) => r.kind === "person");
+    expect(personRows.length, `"${query}" returned no kind:'person' row`).toBeGreaterThan(0);
+    // every row names the covering document, and a chapter when it has one
+    for (const r of personRows) expect(r.docId).toBe("water-rights");
+  }
+
+  // the author covers the DOCUMENT (an empty chId) and the chapter that also
+  // names them; the key figure covers only her chapter
+  const diego = await (await api.get(`bundles/${B.person}/search?query=${encodeURIComponent("Córdoba")}`)).json();
+  expect(diego.rows.some((r: { chId: string }) => r.chId === "")).toBe(true);
+  const quispe = await (await api.get(`bundles/${B.person}/search?query=Quispe`)).json();
+  expect(quispe.rows.map((r: { chId: string }) => r.chId)).toEqual(["history"]);
+
+  // a topic hit still reports kind:'topic' — the field is additive, not a mode
+  const topic = await (await api.get(`bundles/${B.person}/search?query=statutes`)).json();
+  expect(topic.rows.length).toBeGreaterThan(0);
+  expect(topic.rows.every((r: { kind: string }) => r.kind === "topic")).toBe(true);
+});
+
+test("O1/FR-054: the vocabulary reports a kind per term, and okf_list_concepts declares the kind filter", async () => {
+  const detail = await (await api.get(`bundles/${B.person}`)).json();
+  const terms: { name: string; kind: string; count: number; covers: { chId: string }[] }[] = detail.conceptIndex;
+
+  // every term carries a kind — never undefined, on any bundle
+  expect(terms.every((t) => t.kind === "topic" || t.kind === "person")).toBe(true);
+
+  const persons = terms.filter((t) => t.kind === "person").map((t) => t.name).sort();
+  expect(persons).toEqual(["Diego Córdoba", "María Quispe"]);
+  // S1: the DISPLAY name keeps the case the source wrote, while the match is
+  // case-insensitive (asserted by the search test above)
+  expect(persons).not.toContain("diego córdoba");
+  expect(terms.find((t) => t.name === "water-rights")!.kind).toBe("topic");
+  // the author's coverage is the DOCUMENT he wrote — one row, empty chId
+  expect(terms.find((t) => t.name === "Diego Córdoba")!.count).toBe(1);
+  expect(terms.find((t) => t.name === "Diego Córdoba")!.covers[0].chId).toBe("");
+  expect(terms.find((t) => t.name === "María Quispe")!.count).toBe(1);
+
+  // the tool-level filter: no HTTP face to invoke, so assert the DECLARATION
+  // (the handler forwards it straight to the same core.listConcepts() this
+  // route reads) — `kind` is optional, so `bundle` stays the only requirement
+  const { tools } = await (await api.get("tools")).json();
+  const list = tools.find((t: { name: string }) => t.name === "okf_list_concepts");
+  expect(list.inputSchema.properties.kind.enum.sort()).toEqual(["all", "person", "topic"]);
+  expect(list.inputSchema.required).toEqual(["bundle"]);
+
+  // what that filter filters is this, client-side-equivalent:
+  expect(terms.filter((t) => t.kind === "person")).toHaveLength(2);
+  expect(terms.filter((t) => t.kind === "topic").length).toBe(terms.length - 2);
+});
+
+test("O2/FR-053: writing person_terms is the whole mechanism — the rebuild derives kind:'person'", async () => {
+  // NFR-005 — the array the ingest agent writes with okf_upsert_concept
+  // round-trips VERBATIM through the shallow frontmatter merge: no writer
+  // change was needed for this scope-add, and that is what makes the
+  // derivation trustworthy.
+  const stub = await (await api.get(`bundles/${B.person}/concept/water-rights`)).json();
+  expect(stub.frontmatter.person_terms).toEqual(["Diego Córdoba"]);
+  const ch = await (await api.get(`bundles/${B.person}/concept/water-rights/history`)).json();
+  expect(ch.frontmatter.person_terms).toEqual(["María Quispe"]);
+  // and the name is NOT smuggled into `concepts` — parallel arrays
+  expect(ch.frontmatter.concepts).toEqual(["water-rights", "andean-history"]);
+  expect(ch.frontmatter.concepts).not.toContain("maría quispe");
+
+  // write ANOTHER chapter naming a new key figure; the index re-derives
+  const files = [
+    chapter(
+      "water-rights",
+      "today",
+      "The Dispute Today",
+      "The 2026 arbitration and the communities it affects.",
+      ["water-rights"],
+      { person_terms: "[María Quispe, Ana Flores]" },
+    ),
+  ];
+  expect((await api.post(`bundles/${B.person}/import`, { data: { files } })).ok()).toBeTruthy();
+
+  const after = await (await api.get(`bundles/${B.person}`)).json();
+  const byName = Object.fromEntries(after.conceptIndex.map((t: { name: string }) => [t.name, t]));
+  expect(byName["Ana Flores"].kind).toBe("person");
+  // the SAME person named by two chapters consolidates into ONE term
+  expect(byName["María Quispe"].kind).toBe("person");
+  expect(byName["María Quispe"].count).toBe(2);
+  expect(
+    byName["María Quispe"].covers.map((c: { chId: string }) => c.chId).sort(),
+  ).toEqual(["history", "today"]);
+});
+
+test("O3/FR-054: the derived graph gains a 4th node type — person", async () => {
+  const g = await (await api.get(`bundles/${B.person}/graph`)).json();
+
+  const types = new Set(g.nodes.map((n: { type: string }) => n.type));
+  expect(types).toEqual(new Set(["doc", "chap", "concept", "person"]));
+
+  // the node: lowercased id, ORIGINAL-CASE label, count-driven radius input
+  const diego = g.nodes.find((n: { type: string; label: string }) => n.type === "person" && n.label === "Diego Córdoba");
+  expect(diego).toBeTruthy();
+  expect(diego.id).toBe("diego córdoba");
+  expect(diego.key).toBe("person:diego córdoba");
+  expect(diego.count).toBe(1);
+
+  // coverage edges to a person are the SAME edge kind as topic coverage —
+  // the author's runs from the DOCUMENT, a key figure's from her chapter
+  const authored = g.edges.find((e: { to: string; from: string }) => e.to === "diego córdoba" && e.from === "water-rights");
+  expect(authored.kind).toBe("coverage");
+  expect(authored.label).toBe("covers");
+  const subject = g.edges.find((e: { to: string; from: string }) => e.to === "maría quispe" && e.from === "water-rights/history");
+  expect(subject.kind).toBe("coverage");
+
+  // no edge dangles, exactly as for the three original types
+  const ids = new Set(g.nodes.map((n: { id: string }) => n.id));
+  for (const e of g.edges) expect(ids.has(e.from) && ids.has(e.to)).toBe(true);
+});
+
+test("O4: the backward-compat guard — a bundle with NO person_terms is unchanged in every surface", async () => {
+  await del(B.noPerson);
+  const files = [
+    { path: "index.md", content: "# E2E No Person\n" },
+    document("api-design", "API Design Rules", "How we shape HTTP APIs.", "https://example.com/api-design"),
+    chapter("api-design", "endpoint-naming", "Endpoint Naming", "Plural nouns, no verbs, versioned paths.", [
+      "api-design",
+      "naming",
+    ]),
+  ];
+  expect((await api.post(`bundles/${B.noPerson}/import`, { data: { files } })).ok()).toBeTruthy();
+
+  // the vocabulary is all-topic: no 'person', and no undefined
+  const detail = await (await api.get(`bundles/${B.noPerson}`)).json();
+  expect(detail.conceptIndex.length).toBeGreaterThan(0);
+  expect(detail.conceptIndex.every((t: { kind: string }) => t.kind === "topic")).toBe(true);
+  expect(detail.conceptIndex.some((t: { kind: unknown }) => t.kind === undefined)).toBe(false);
+
+  // the graph is the ORIGINAL three node types — the 4th appears only when
+  // the bundle actually has a person
+  const g = await (await api.get(`bundles/${B.noPerson}/graph`)).json();
+  expect(new Set(g.nodes.map((n: { type: string }) => n.type))).toEqual(new Set(["doc", "chap", "concept"]));
+  expect(g.nodes.some((n: { type: string }) => n.type === "person")).toBe(false);
+  expect(g.nodes.every((n: { type: string }) => n.type !== undefined)).toBe(true);
+
+  // search still works, and reports kind:'topic' rather than nothing
+  const { rows } = await (await api.get(`bundles/${B.noPerson}/search?query=naming`)).json();
+  expect(rows.length).toBeGreaterThan(0);
+  expect(rows.every((r: { kind: string }) => r.kind === "topic")).toBe(true);
+
+  // export -> import round-trips, and the re-imported bundle is still
+  // all-topic (the kind is re-derived from content, never carried as state)
+  const exported = await (await api.get(`bundles/${B.noPerson}/export`)).json();
+  await del(B.copy);
+  expect(
+    (await api.post(`bundles/${B.copy}/import`, { data: { files: exported.files } })).ok(),
+  ).toBeTruthy();
+  const copy = await (await api.get(`bundles/${B.copy}`)).json();
+  expect(copy.conceptIndex.map((t: { name: string }) => t.name).sort()).toEqual(
+    detail.conceptIndex.map((t: { name: string }) => t.name).sort(),
+  );
+  expect(copy.conceptIndex.every((t: { kind: string }) => t.kind === "topic")).toBe(true);
+
+  // and the PERSON bundle survives the same round-trip with its kinds intact
+  const pExport = await (await api.get(`bundles/${B.person}/export`)).json();
+  await del(B.copy);
+  expect((await api.post(`bundles/${B.copy}/import`, { data: { files: pExport.files } })).ok()).toBeTruthy();
+  const pCopy = await (await api.get(`bundles/${B.copy}`)).json();
+  expect(
+    pCopy.conceptIndex.filter((t: { kind: string }) => t.kind === "person").map((t: { name: string }) => t.name).sort(),
+  ).toEqual(["Ana Flores", "Diego Córdoba", "María Quispe"]);
+  await del(B.copy);
+});
+
+test("O5/SC-007: the person scope-add declares NO new tool — the surface is untouched", async () => {
+  const { count, tools } = await (await api.get("tools")).json();
+  const names = tools.map((t: { name: string }) => t.name).sort();
+
+  // pinned against this file's own expectation list, which this scope-add
+  // does not touch: person extraction rides on the tools that already exist
+  expect(count).toBe(EXPECTED_TOOLS.length);
+  expect(names).toEqual(EXPECTED_TOOLS);
+  expect(names.some((n: string) => /person/i.test(n))).toBe(false);
+
+  // the two tools that gained a field still declare the same requirements
+  const search = tools.find((t: { name: string }) => t.name === "okf_search");
+  expect(search.inputSchema.required).toEqual(["bundle", "query"]);
+  expect(search.parallelSafe).toBe(true);
+});
+
+test("O3/N2–N5: the app paints the 4th category teal — graph, legend, table, pane", async ({ page }) => {
+  const app = await openApp(page);
+  await app.getByTestId("tab-query").click();
+  await app.getByTestId("query-bundle-select").selectOption(B.person);
+  await expect(app.getByTestId("graph-svg")).toBeVisible({ timeout: 15000 });
+
+  // the 4th legend entry and the teal node itself
+  await expect(app.getByTestId("legend-person")).toContainText("Person");
+  await expect(app.locator(".g-node.person").first()).toBeVisible();
+  expect(await app.locator(".g-node.person").count()).toBe(3);
+
+  // the shared search highlights a person node like any other node
+  await app.getByTestId("query-search").fill("Córdoba");
+  await expect(app.getByTestId("matched-concepts")).toContainText("Diego Córdoba", { timeout: 10000 });
+  await expect(app.getByTestId("matched-concepts")).toContainText("matched person");
+  await expect(app.locator(".g-node.person.match").first()).toBeVisible();
+  await app.getByTestId("query-clear").click();
+
+  // the Table's Kind column, and the Person row it labels
+  await app.getByTestId("view-table").click();
+  const row = app.getByTestId("table-row-person-diego córdoba");
+  await expect(row).toBeVisible();
+  await expect(row).toContainText("Person");
+  await expect(app.getByTestId("table-kind-person-diego córdoba")).toHaveText("person");
+
+  // opening a person opens the SAME term view, labeled "Person"
+  await row.click();
+  await expect(app.getByTestId("pane-concept")).toBeVisible();
+  await expect(app.getByTestId("pane-term")).toHaveText("Diego Córdoba");
+  await expect(app.getByTestId("pane-term-kind")).toContainText("Person");
+
+  // and the Overview concept index gives the term a teal `person` pill
+  await app.getByTestId("tab-overview").click();
+  await app.getByTestId(`bundle-row-${B.person}`).click();
+  await expect(app.getByTestId("concept-index")).toBeVisible();
+  await expect(app.getByTestId("term-kind-Diego Córdoba")).toHaveText("person");
+  await expect(app.getByTestId("term-kind-water-rights")).toHaveText("concept");
 });

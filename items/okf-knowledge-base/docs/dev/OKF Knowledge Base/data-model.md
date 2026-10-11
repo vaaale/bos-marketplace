@@ -52,6 +52,7 @@ type: section                         # section | document
 parent: api-design                    # the docId this chapter belongs to
 title: Endpoint Naming Conventions
 concepts: [api-design, naming]        # the concept TERMS this chapter covers
+person_terms: [Diego Córdoba]         # optional: salient PERSONS (ADR-011)
 summary: "REST resource naming: plural nouns, no verbs, versioned paths."
 status: stable                        # draft | stable | deprecated
 stale_after: 2026-12-01               # optional ISO date
@@ -75,7 +76,9 @@ updated_at: 2026-08-01T00:00:00.000Z
 
 A chapter written without those three is not an error — it is written, and silently unroutable. `okf_lint` flags it.
 
-**Document stub** (`concepts/<docId>.md`) is the same shape minus `parent`/`concepts`, with `type: document`, a `title`, a one-line `summary`, `sources` (the original URL and/or `raw/` path — this is the "Open source" target) and timestamps.
+**`person_terms` is the optional fourth** (ADR-011): an array of **salient person names** — a sibling of `concepts`, never merged into it, original case preserved. On a chapter it names the key figures the chapter is *about*; on a document stub it names the **author**. The index derives `kind: person` for every name that appears in any such array; everything else is `kind: topic`. Nothing writes it but ingest — the shallow frontmatter merge preserves it verbatim.
+
+**Document stub** (`concepts/<docId>.md`) is the same shape minus `parent`/`concepts`, with `type: document`, a `title`, a one-line `summary`, an optional `person_terms` (the author), `sources` (the original URL and/or `raw/` path — this is the "Open source" target) and timestamps.
 
 **Lifecycle, trust and provenance are ordinary frontmatter.** `status` / `stale_after` for lifecycle, `verified` for the trust ladder (`unverified` → `machine-confirmed` → `human-reviewed`; machine-extracted content starts `unverified` and only a human moves it to `human-reviewed`), `sources` for provenance. There are no setter tools — `okf_upsert_concept` merges on fields, so they're set in the same call that writes the chapter.
 
@@ -90,6 +93,7 @@ bundle: engineering
 index_generated_at: 2026-10-09T00:00:00.000Z
 terms:
   - name: api-design
+    kind: topic                       # topic | person (DERIVED — ADR-011)
     covers:
       - { docId: api-design, docTitle: API Design Rules, chId: endpoint-naming,
           chTitle: Endpoint Naming Conventions,
@@ -100,11 +104,19 @@ terms:
           description: "RFC-7807 problem+json envelope with stable error codes.",
           status: stable, stale: false }
   - name: rollback
+    kind: topic
     covers:
       - { docId: deployment, docTitle: Deployment Checklist, chId: canary,
           chTitle: Canary & Rollback,
           description: "5% canary for 30m; auto-rollback on p99 / 5xx thresholds.",
           status: stable, stale: false }
+  - name: Diego Córdoba                 # original case preserved for display
+    kind: person
+    covers:
+      # an empty chId is a DOCUMENT-level cover — this person authored it
+      - { docId: water-rights, docTitle: Water Rights in the Andes, chId: "",
+          chTitle: Water Rights in the Andes,
+          description: "Andean water governance.", status: stable, stale: false }
 ---
 # Concept Index — Engineering Rules & Guidelines
 
@@ -199,17 +211,21 @@ The on-disk shape, as written into a chapter body:
   "nodes": [
     { "id": "api-design", "type": "doc", "label": "API Design Rules" },
     { "id": "api-design/endpoint-naming", "type": "chap", "label": "Endpoint Naming Conventions" },
-    { "id": "concept:api-design", "type": "concept", "label": "api-design", "count": 2 }
+    { "id": "api-design", "key": "concept:api-design", "type": "concept", "label": "api-design", "count": 2 },
+    { "id": "diego córdoba", "key": "person:diego córdoba", "type": "person", "label": "Diego Córdoba", "count": 1 }
   ],
   "edges": [
     { "from": "api-design", "to": "api-design/endpoint-naming", "kind": "containment", "label": "contains" },
-    { "from": "api-design/endpoint-naming", "to": "concept:api-design", "kind": "coverage", "label": "covers" },
+    { "from": "api-design/endpoint-naming", "to": "api-design", "kind": "coverage", "label": "covers" },
+    { "from": "water-rights", "to": "diego córdoba", "kind": "coverage", "label": "covers" },
     { "from": "api-design/versioning", "to": "deployment/canary", "kind": "link", "label": "related" }
   ]
 }
 ```
 
 Nothing here is stored. `containment` comes from `parent`, `coverage` from the concept index, `link` from `links.json`.
+
+A node's `id` is what edges reference (a term's lowercased name); `key` is `"<type>:<id>"`, which disambiguates the one collision the id space allows — a document whose id is also a concept term. `person` is the 4th node type (ADR-011): same shape and same count-driven radius as `concept`, same `coverage` edge kind — a person's covering edge runs from the chapter they are the subject of, or from the **document** they authored.
 
 ## Job record
 

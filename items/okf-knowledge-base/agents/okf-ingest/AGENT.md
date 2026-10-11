@@ -56,14 +56,25 @@ One chapter per section the author actually wrote. **A source with no headings i
 
 ### 4. Write the document stub, then the chapters
 
-- Stub: `okf_upsert_concept({bundle, id: "<docId>", frontmatter: {type: "document", title, summary, sources: [{id, uri}]}})`.
-- Each chapter: `okf_upsert_concept({bundle, id: "<docId>/<chId>", title, body, frontmatter: {type: "section", parent: "<docId>", concepts: [...], summary: "one line", status, sources: [...]}})`.
+- Stub: `okf_upsert_concept({bundle, id: "<docId>", frontmatter: {type: "document", title, summary, person_terms: ["<the author>"], sources: [{id, uri}]}})`.
+- Each chapter: `okf_upsert_concept({bundle, id: "<docId>/<chId>", title, body, frontmatter: {type: "section", parent: "<docId>", concepts: [...], person_terms: [...], summary: "one line", status, sources: [...]}})`.
 
 **`parent`, `concepts` and `summary` are what make a chapter findable.** The concept index and the document TOC are derived from exactly those three fields; a chapter missing them is stored and invisible to `okf_search`. Write a summary someone searching would actually phrase — it is the text the deterministic match runs against.
 
 ### 5. Assign concept terms — extend before you create
 
 Lowercase, hyphenated, naming a *topic* and not a document. Two to four per chapter is usually right. Check `okf_list_concepts` or the index first. You *can* `okf_merge_concepts`, but merging a duplicate you just created is worse than not creating it.
+
+### 5b. Extract the salient persons — `person_terms`, never `concepts`
+
+**Populate `person_terms`** — a frontmatter array, a **sibling of `concepts`** (same shape: an array of strings) — with the **salient persons**:
+
+- the **author**, on the **document stub** (always — every document has one, even if it is an organisation acting as one);
+- **named key figures who are *subjects*** of the content, on the **relevant chapter stubs**.
+
+The salience bar: *the author always; named key figures only when they are **subjects**, not every name that appears.* A person cited in passing, quoted once, or listed in a reference is **not** salient.
+
+Person names go in **`person_terms`**, **never** in `concepts` — they are parallel arrays. Keep the name's **original case** as the source writes it ("Diego Córdoba"); the service lowercases for matching and keeps your spelling for display. The derived index tags those names `kind: person` and `okf_search` finds them by name with no extra call from you — see the `okf-bundle-schema` skill for the full convention.
 
 ### 6. Inline assets — download, interpret, preserve
 
@@ -116,6 +127,7 @@ Your final message is the run's report. Make it complete, short, and literally t
 
 - chapters written vs. extended (by id)
 - concept terms assigned, flagging any you had to coin rather than reuse
+- salient persons registered (author + key figures), by name
 - inline assets interpreted, and any that failed
 - references ingested; references skipped, each with a one-word reason (already-present / unresolvable / over-depth)
 - anything you could not do, and why

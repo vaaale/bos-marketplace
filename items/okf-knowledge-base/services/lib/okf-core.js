@@ -542,6 +542,30 @@ function assetBlockMarkdown({ assetPath, caption, interpretation }) {
 // ════════════════════════════════════════════════════════════════════════
 
 /**
+ * The `person_terms` frontmatter array (ADR-011) — a PARALLEL sibling of
+ * `concepts`, same shape (an array of strings), read from the very same
+ * chapter/document-stub files the concept terms are read from. Two
+ * differences from `concepts`:
+ *
+ *   • ORIGINAL CASE SURVIVES. A person's name is a display name ("Diego
+ *     Córdoba"); only the derivation key and the search match are
+ *     lowercased, so the index can show the name as the source wrote it.
+ *   • It is never written by this module. The shallow-merge write path
+ *     preserves it verbatim (NFR-005) — ingest authors it, `rebuildIndex`
+ *     derives `kind` from it, and nothing in between rewrites it (the one
+ *     exception is `mergeConcepts`, which canonicalizes names).
+ */
+function personTermList(fm) {
+  const byKey = new Map();
+  for (const raw of Array.isArray(fm.person_terms) ? fm.person_terms : []) {
+    const name = String(raw).trim();
+    if (!name) continue;
+    if (!byKey.has(name.toLowerCase())) byKey.set(name.toLowerCase(), name);
+  }
+  return Array.from(byKey.values());
+}
+
+/**
  * Walk every concept file once and classify it into documents + chapters.
  *
  * Redesigned bundles are unambiguous: `type: document` is a document stub,
@@ -582,6 +606,8 @@ async function classifyBundle(bDir) {
         summary: parsed.frontmatter.summary || firstProse(parsed.body),
         sources: Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [],
         updatedAt: parsed.frontmatter.updated_at || null,
+        // the AUTHOR rides here (ADR-011): a document-level person term
+        personTerms: personTermList(parsed.frontmatter),
         frontmatter: parsed.frontmatter,
         legacy: false,
       });
@@ -608,6 +634,7 @@ async function classifyBundle(bDir) {
           summary: fm.summary || fm.description || firstProse(parsed.body),
           sources: Array.isArray(fm.sources) ? fm.sources : [],
           updatedAt: fm.updated_at || null,
+          personTerms: personTermList(fm),
           frontmatter: fm,
           legacy: true,
         });
@@ -628,6 +655,9 @@ async function classifyBundle(bDir) {
       title: fm.title || id,
       summary,
       concepts: Array.from(new Set(terms)),
+      // named key figures the chapter is ABOUT (ADR-011) — parallel to
+      // `concepts`, never merged into it
+      personTerms: personTermList(fm),
       status: fm.status || "draft",
       stale: isStale(fm, now),
       updatedAt: fm.updated_at || null,
@@ -642,7 +672,7 @@ async function classifyBundle(bDir) {
     if (!documents.has(docId)) {
       documents.set(docId, {
         id: docId, title: docId, summary: "", sources: [], updatedAt: null,
-        frontmatter: {}, legacy: true, synthetic: true,
+        personTerms: [], frontmatter: {}, legacy: true, synthetic: true,
       });
     }
   }
@@ -651,29 +681,90 @@ async function classifyBundle(bDir) {
   return { documents, chapters, legacyChapters, needsRegeneration, ids };
 }
 
-/** Level 1 — the O(V) routing table, keyed by DISTINCT TERM (FR-011/SC-006). */
+/**
+ * Level 1 — the O(V) routing table, keyed by DISTINCT TERM (FR-011/SC-006).
+ *
+ * Every term carries a `kind` (ADR-011): `person` iff its lowercased name
+ * appears in ANY `person_terms` array in the bundle — a chapter stub's (a
+ * named key figure) or a document stub's (the author) — else `topic`. The
+ * kind is DERIVED here on every rebuild and nowhere else, so it cannot rot
+ * out of sync with the frontmatter it comes from (NFR-004). A person term is
+ * an ordinary term in every other respect: same row, same `covers`, same
+ * search path (SC-016 — `okf_search` has no person case at all).
+ */
 function buildConceptIndex(classified) {
-  const byTerm = new Map();
+  // lowercased key -> original-case display name. First spelling seen wins,
+  // so "Diego Córdoba" survives the rebuild as written (S1).
+  const personNames = new Map();
+  const registerPersons = (names) => {
+    for (const name of names || []) {
+      const key = name.toLowerCase();
+      if (!personNames.has(key)) personNames.set(key, name);
+    }
+  };
+  for (const doc of classified.documents.values()) registerPersons(doc.personTerms);
+  for (const ch of classified.chapters) registerPersons(ch.personTerms);
+
+  const byTerm = new Map(); // lowercased key -> covers[]
+  const seenCover = new Map(); // lowercased key -> Set("<docId>/<chId>")
+  const addCover = (rawTerm, cover) => {
+    const key = String(rawTerm).toLowerCase();
+    if (!byTerm.has(key)) {
+      byTerm.set(key, []);
+      seenCover.set(key, new Set());
+    }
+    const coverKey = `${cover.docId}/${cover.chId}`;
+    // a name listed in BOTH `concepts` and `person_terms` covers once
+    if (seenCover.get(key).has(coverKey)) return;
+    seenCover.get(key).add(coverKey);
+    byTerm.get(key).push(cover);
+  };
+
   for (const ch of classified.chapters) {
     const doc = classified.documents.get(ch.docId);
-    for (const term of ch.concepts) {
-      if (!byTerm.has(term)) byTerm.set(term, []);
-      byTerm.get(term).push({
-        docId: ch.docId,
-        docTitle: (doc && doc.title) || ch.docId,
-        chId: ch.chId,
-        chTitle: ch.title,
-        description: ch.summary || "",
-        status: ch.status,
-        stale: ch.stale,
+    const cover = {
+      docId: ch.docId,
+      docTitle: (doc && doc.title) || ch.docId,
+      chId: ch.chId,
+      chTitle: ch.title,
+      description: ch.summary || "",
+      status: ch.status,
+      stale: ch.stale,
+    };
+    for (const term of ch.concepts) addCover(term, cover);
+    // a chapter's key figures are covered EXACTLY like its topics
+    for (const person of ch.personTerms || []) addCover(person, cover);
+  }
+
+  // The author is registered on the DOCUMENT stub, so their coverage is the
+  // document itself — an empty `chId` marks a document-level row, which is
+  // what `core.graph` turns into the `doc -> person` coverage edge.
+  for (const doc of classified.documents.values()) {
+    for (const person of doc.personTerms || []) {
+      addCover(person, {
+        docId: doc.id,
+        docTitle: doc.title,
+        chId: "",
+        chTitle: doc.title,
+        description: doc.summary || "",
+        status: "stable",
+        stale: false,
       });
     }
   }
+
   return Array.from(byTerm.keys())
     .sort()
-    .map((name) => {
-      const covers = byTerm.get(name).sort((a, b) => (a.docId + a.chId).localeCompare(b.docId + b.chId));
-      return { name, count: covers.length, covers, stale: covers.some((c) => c.stale || c.status === "deprecated") };
+    .map((key) => {
+      const covers = byTerm.get(key).sort((a, b) => (a.docId + a.chId).localeCompare(b.docId + b.chId));
+      const person = personNames.has(key);
+      return {
+        name: person ? personNames.get(key) : key,
+        kind: person ? "person" : "topic",
+        count: covers.length,
+        covers,
+        stale: covers.some((c) => c.stale || c.status === "deprecated"),
+      };
     });
 }
 
@@ -832,7 +923,11 @@ async function getModel(bundleRoot, bundleName, { allowRebuild = true } = {}) {
           storedTerms.every((t) => t && typeof t.name === "string" && Array.isArray(t.covers));
         const model = {
           bundle: bundleName,
-          terms: usable ? storedTerms : buildConceptIndex(classified),
+          // A pre-person-kind index carries no `kind` on its terms. Default
+          // it to `topic` right here (ADR-011 S4) so a legacy bundle is
+          // served correctly off the fast path — no migration, no forced
+          // rebuild, and nothing downstream ever sees `kind: undefined`.
+          terms: usable ? storedTerms.map((t) => ({ ...t, kind: t.kind || "topic" })) : buildConceptIndex(classified),
           tocByDoc,
           classified,
           indexGeneratedAt: frontmatter.index_generated_at,
@@ -907,6 +1002,9 @@ function searchIndex(terms, query, limit = 25) {
         chTitle: cov.chTitle,
         description: cov.description || "",
         matchedConcept: term.name,
+        // additive (ADR-011): WHICH KIND of term matched. The algorithm
+        // above is untouched — a person's name is an ordinary term-name hit.
+        kind: term.kind || "topic",
         status: cov.status || "draft",
         stale: !!cov.stale,
         _tier: termHit ? 0 : 1, // a term-name match outranks a description-only match
@@ -991,15 +1089,21 @@ function documentSource(frontmatter) {
 }
 
 /** The concept VOCABULARY with per-term chapter counts (FR-006). */
-async function listConcepts(bundleRoot, bundleName, { type, status } = {}) {
+async function listConcepts(bundleRoot, bundleName, { type, status, kind } = {}) {
   const model = await getModel(bundleRoot, bundleName);
-  let terms = model.terms.map((t) => ({
-    term: t.name,
-    count: t.count,
-    covers: t.covers
-      .filter((c) => !status || c.status === status)
-      .map((c) => ({ docId: c.docId, chId: c.chId, title: c.chTitle, description: c.description, status: c.status })),
-  }));
+  // `kind` is an OPTIONAL filter (ADR-011): "topic" | "person" | "all"
+  // (anything else, including the default, means all).
+  const wantKind = kind === "topic" || kind === "person" ? kind : null;
+  let terms = model.terms
+    .filter((t) => !wantKind || (t.kind || "topic") === wantKind)
+    .map((t) => ({
+      term: t.name,
+      kind: t.kind || "topic",
+      count: t.count,
+      covers: t.covers
+        .filter((c) => !status || c.status === status)
+        .map((c) => ({ docId: c.docId, chId: c.chId, title: c.chTitle, description: c.description, status: c.status })),
+    }));
   if (status) terms = terms.map((t) => ({ ...t, count: t.covers.length })).filter((t) => t.count > 0);
 
   const documents = Array.from(model.classified.documents.values()).map((d) => ({
@@ -1052,19 +1156,36 @@ async function graph(bundleRoot, bundleName) {
   const present = new Set();
 
   for (const doc of model.classified.documents.values()) {
-    nodes.push({ id: doc.id, type: "doc", label: doc.title, description: doc.summary || "" });
+    nodes.push({ id: doc.id, key: `doc:${doc.id}`, type: "doc", label: doc.title, description: doc.summary || "" });
     present.add(doc.id);
   }
   for (const ch of model.classified.chapters) {
-    nodes.push({ id: ch.id, type: "chap", label: ch.title, description: ch.summary || "", docId: ch.docId, chId: ch.chId, status: ch.status });
+    nodes.push({ id: ch.id, key: `chap:${ch.id}`, type: "chap", label: ch.title, description: ch.summary || "", docId: ch.docId, chId: ch.chId, status: ch.status });
     present.add(ch.id);
     edges.push({ from: ch.docId, to: ch.id, kind: "containment", label: "contains" });
   }
   for (const term of model.terms) {
-    nodes.push({ id: term.name, type: "concept", label: term.name, count: term.count, description: `covers ${term.count} chapter${term.count === 1 ? "" : "s"}` });
-    present.add(term.name);
+    // The 4th node category (ADR-011/FR-054): a person-kind term is its own
+    // type so the renderer can colour it, but it is NOT a new shape — same
+    // count-driven radius, same `coverage` edge kind as a topic term. Its
+    // `id` is the lowercased name (the app's maps key on it); its `label`
+    // keeps the original case for display.
+    const person = term.kind === "person";
+    const type = person ? "person" : "concept";
+    const id = person ? String(term.name).toLowerCase() : term.name;
+    nodes.push({
+      id,
+      key: `${type}:${id}`,
+      type,
+      label: term.name,
+      count: term.count,
+      description: `${person ? "person · covers" : "covers"} ${term.count} chapter${term.count === 1 ? "" : "s"}`,
+    });
+    present.add(id);
     for (const cov of term.covers) {
-      edges.push({ from: `${cov.docId}/${cov.chId}`, to: term.name, kind: "coverage", label: "covers" });
+      // an empty `chId` is a DOCUMENT-level cover (the author) — the edge
+      // then runs doc -> person instead of chap -> person
+      edges.push({ from: cov.chId ? `${cov.docId}/${cov.chId}` : cov.docId, to: id, kind: "coverage", label: "covers" });
     }
   }
   for (const e of await readLinksSidecar(bDir)) {
@@ -1201,6 +1322,51 @@ async function exportBundle(bundleRoot, name) {
   return { name, files, assets, conformant: hasIndex, conceptIndexIncluded: hasIndex, tocsIncluded: tocCount };
 }
 
+/** The concept id a bundle-relative file path will be LISTED under, else null. */
+function conceptIdForRelPath(relPath) {
+  const rel = String(relPath || "").replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+  if (!rel.startsWith("concepts/") || !rel.endsWith(".md")) return null;
+  return rel.slice("concepts/".length, -3) || null;
+}
+
+// How long an import waits for its own writes to become listable. Ten tries
+// at 75ms is ~0.7s worst case on a bundle that never converges, and zero
+// extra wait on the normal path (attempt 1 already sees everything).
+const LISTING_SETTLE_ATTEMPTS = 10;
+const LISTING_SETTLE_DELAY_MS = 75;
+
+/**
+ * Wait until `concepts/` LISTS every concept file the caller just wrote.
+ *
+ * A bulk import writes N files through /api/fs and then classifies the
+ * bundle by LISTING that directory (classifyBundle -> listConceptIds). The
+ * write and the listing are two different operations over the VFS HTTP API,
+ * and immediately after a burst of writes the listing can still be missing
+ * just-written entries — so the rebuild classifies a SUBSET of the bundle
+ * and stores a concept-index.md that is permanently short of the document
+ * stubs it never saw (their `person_terms` with it).
+ *
+ * This is not a blind retry of a failed call and not a fixed sleep: it polls
+ * the SAME listing path classifyBundle uses until the listing is a superset
+ * of the known-written set, which is a verifiable snapshot-consistency
+ * condition. On the normal path it costs exactly one extra list; it exits the
+ * instant the listing agrees with the writes.
+ */
+async function settleConceptListing(bDir, expectedIds, {
+  attempts = LISTING_SETTLE_ATTEMPTS,
+  delayMs = LISTING_SETTLE_DELAY_MS,
+} = {}) {
+  if (!expectedIds || !expectedIds.size) return { settled: true, attempts: 0, missing: [] };
+  let missing = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const listed = new Set(await listConceptIds(bDir));
+    missing = Array.from(expectedIds).filter((id) => !listed.has(id));
+    if (!missing.length) return { settled: true, attempts: attempt, missing: [] };
+    if (attempt < attempts) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return { settled: false, attempts, missing };
+}
+
 /**
  * Import a bundle (FR-029). Two vectors, both of which the worker can
  * actually perform (design.md Risk #7 is resolved here):
@@ -1220,11 +1386,19 @@ async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = tru
   const bDir = bundleDir(bundleRoot, name);
   await vfs.mkdir(bDir);
   let imported = 0;
+  // every concept file this import writes, by the id `listConceptIds` will
+  // report it under — the settle condition below is checked against this
+  const expectedConceptIds = new Set();
+  const expectConcept = (relPath) => {
+    const id = conceptIdForRelPath(relPath);
+    if (id) expectedConceptIds.add(id);
+  };
 
   if (Array.isArray(files)) {
     for (const f of files) {
       if (!f || typeof f.path !== "string" || typeof f.content !== "string") continue;
       await vfs.writeText(safeJoin(bDir, f.path), f.content); // /api/fs write creates missing parents
+      expectConcept(f.path);
       imported++;
     }
   } else if (typeof sourcePath === "string" && sourcePath) {
@@ -1241,6 +1415,7 @@ async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = tru
           imported++;
         } else {
           await vfs.writeText(safeJoin(bDir, relPath), await vfs.readText(abs));
+          expectConcept(relPath);
           imported++;
         }
       }
@@ -1254,16 +1429,35 @@ async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = tru
   await vfs.mkdir(path.join(bDir, "raw"));
   await vfs.mkdir(path.join(bDir, "concepts"));
   markGraphDirty(bDir);
+  // The rebuild below runs ONCE and is authoritative, so it has to see the
+  // whole import. Make the directory listing agree with the writes first.
+  const settle = rebuild
+    ? await settleConceptListing(bDir, expectedConceptIds)
+    : { settled: true, attempts: 0, missing: [] };
   const model = rebuild ? await rebuildDerived(bundleRoot, name) : { terms: [], needsRegeneration: true, builtAt: null };
-  await appendLog(bundleRoot, name, { event: "bundle_import", message: `imported ${imported} file(s)` });
+  if (!settle.settled) {
+    // Best-effort: the index was built from a listing we KNOW was short, so
+    // drop the cached model and report it as needing regeneration rather
+    // than serving a partial index as if it were complete.
+    markGraphDirty(bDir);
+  }
+  const needsRegeneration = model.needsRegeneration || !settle.settled;
+  await appendLog(bundleRoot, name, {
+    event: "bundle_import",
+    message: settle.settled
+      ? `imported ${imported} file(s)`
+      : `imported ${imported} file(s); concepts/ listing never caught up (missing ${settle.missing.length} after ${settle.attempts} attempts: ${settle.missing.slice(0, 5).join(", ")})`,
+  });
   const health = await bundleHealth(bundleRoot, name, { allowRebuild: rebuild });
   return {
     ...health,
     imported,
-    indexNeedsRegeneration: model.needsRegeneration,
-    note: model.needsRegeneration
-      ? "Imported. The derived index was rebuilt BEST-EFFORT: some chapters lack `parent`/`concepts`/`summary` frontmatter, so routing for those is partial. Nothing was dropped or overwritten — re-ingest the sources, or upsert the missing frontmatter, to complete the index."
-      : "Imported. The two-level derived index was rebuilt in full from the imported chapter frontmatter.",
+    indexNeedsRegeneration: needsRegeneration,
+    note: !settle.settled
+      ? `Imported, but the bundle's concepts/ listing never caught up with the ${imported} file(s) written (still missing ${settle.missing.length} after ${settle.attempts} attempts). The derived index was rebuilt BEST-EFFORT from an incomplete view and is reported as needing regeneration — re-run the rebuild to complete it.`
+      : model.needsRegeneration
+        ? "Imported. The derived index was rebuilt BEST-EFFORT: some chapters lack `parent`/`concepts`/`summary` frontmatter, so routing for those is partial. Nothing was dropped or overwritten — re-ingest the sources, or upsert the missing frontmatter, to complete the index."
+        : "Imported. The two-level derived index was rebuilt in full from the imported chapter frontmatter.",
   };
 }
 
@@ -1372,15 +1566,33 @@ async function deleteConcept(bundleRoot, bundleName, id, { rewriteBacklinks = fa
   return { id, deleted: true, rewroteBacklinks: rewriteBacklinks, backlinksRewritten: linkers };
 }
 
+/** Replace `fromKey` (a lowercased name) with `toDisplay` in a person_terms
+ *  array, de-duplicating case-insensitively and preserving order. */
+function rewritePersonTerms(list, fromKey, toDisplay) {
+  const out = [];
+  const seen = new Set();
+  for (const p of list || []) {
+    const next = p.toLowerCase() === fromKey ? toDisplay : p;
+    const key = next.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(next);
+  }
+  return out;
+}
+
 /**
  * Merge concept term `from` into canonical term `to` (FR-026 / US6 / SC-008).
  *
  * A concept TERM is not a file — it's a key in the Level-1 index, derived
  * from chapter frontmatter. So the merge rewrites the one place terms are
- * actually authored: every chapter's `concepts` array. The concept index and
- * every affected document TOC then follow from the rebuild, which is the
- * whole point of them being derived. A query that previously matched either
- * term now routes through the single canonical term to the union of chapters.
+ * actually authored: every chapter's `concepts` array — and, since ADR-011,
+ * every chapter's and document stub's parallel `person_terms` array, because
+ * a person term is a term too and its kind is derived from that array. The
+ * concept index and every affected document TOC then follow from the rebuild,
+ * which is the whole point of them being derived. A query that previously
+ * matched either term now routes through the single canonical term to the
+ * union of chapters.
  */
 async function mergeConcepts(bundleRoot, bundleName, from, to) {
   const fromTerm = String(from || "").trim().toLowerCase();
@@ -1390,16 +1602,47 @@ async function mergeConcepts(bundleRoot, bundleName, from, to) {
 
   const bDir = bundleDir(bundleRoot, bundleName);
   const before = await getModel(bundleRoot, bundleName);
-  if (!before.terms.some((t) => t.name === fromTerm)) throw new Error(`concept term not found in ${bundleName}: ${fromTerm}`);
+  // a person term's stored name keeps its original case, so the lookup (and
+  // every comparison below) is on the lowercased key
+  if (!before.terms.some((t) => String(t.name).toLowerCase() === fromTerm)) {
+    throw new Error(`concept term not found in ${bundleName}: ${fromTerm}`);
+  }
+
+  // What to WRITE into a rewritten `person_terms`: the canonical term's own
+  // display name when it already exists as a person, else the caller's `to`
+  // spelling. (`concepts` stays lowercased, as it always was.)
+  const toExisting = before.terms.find((t) => String(t.name).toLowerCase() === toTerm);
+  const toDisplay = toExisting && toExisting.kind === "person" ? toExisting.name : String(to).trim();
 
   const rewritten = [];
   for (const ch of before.classified.chapters) {
-    if (!ch.concepts.includes(fromTerm)) continue;
-    const next = Array.from(new Set(ch.concepts.map((t) => (t === fromTerm ? toTerm : t))));
+    const hitsConcepts = ch.concepts.includes(fromTerm);
+    // ADR-011 S3: a person term IS a term, so canonicalizing has to clear the
+    // from-name out of the PARALLEL `person_terms` array as well — otherwise
+    // the next rebuild would re-derive `kind: person` for a name nothing
+    // routes to any more.
+    const hitsPersons = (ch.personTerms || []).some((p) => p.toLowerCase() === fromTerm);
+    if (!hitsConcepts && !hitsPersons) continue;
     const parsed = await readConceptRaw(bDir, ch.id);
-    const merged = { ...parsed.frontmatter, concepts: next, updated_at: nowIso() };
+    const merged = { ...parsed.frontmatter, updated_at: nowIso() };
+    if (hitsConcepts) merged.concepts = Array.from(new Set(ch.concepts.map((t) => (t === fromTerm ? toTerm : t))));
+    if (hitsPersons) merged.person_terms = rewritePersonTerms(ch.personTerms, fromTerm, toDisplay);
     await vfs.writeText(conceptFilePath(bDir, ch.id), stringifyDocument(merged, parsed.body));
     rewritten.push(ch.id);
+  }
+  // the author rides on the document stub, which carries `person_terms` too
+  for (const doc of before.classified.documents.values()) {
+    if (doc.synthetic) continue;
+    if (!(doc.personTerms || []).some((p) => p.toLowerCase() === fromTerm)) continue;
+    const parsed = await readConceptRaw(bDir, doc.id);
+    if (!parsed) continue;
+    const merged = {
+      ...parsed.frontmatter,
+      person_terms: rewritePersonTerms(doc.personTerms, fromTerm, toDisplay),
+      updated_at: nowIso(),
+    };
+    await vfs.writeText(conceptFilePath(bDir, doc.id), stringifyDocument(merged, parsed.body));
+    rewritten.push(doc.id);
   }
 
   markGraphDirty(bDir);
@@ -1408,14 +1651,14 @@ async function mergeConcepts(bundleRoot, bundleName, from, to) {
     event: "concepts_merge",
     message: `merged concept term "${fromTerm}" into "${toTerm}" across ${rewritten.length} chapter(s)`,
   });
-  const canonical = after.terms.find((t) => t.name === toTerm);
+  const canonical = after.terms.find((t) => String(t.name).toLowerCase() === toTerm);
   return {
     from: fromTerm,
     to: toTerm,
     chaptersRewritten: rewritten,
     tocsRebuilt: Array.from(new Set(rewritten.map((id) => id.split("/")[0]))),
-    canonicalTerm: canonical ? { name: canonical.name, count: canonical.count } : null,
-    fromTermRemaining: after.terms.some((t) => t.name === fromTerm),
+    canonicalTerm: canonical ? { name: canonical.name, kind: canonical.kind || "topic", count: canonical.count } : null,
+    fromTermRemaining: after.terms.some((t) => String(t.name).toLowerCase() === fromTerm),
   };
 }
 

@@ -63,6 +63,18 @@ Neither artifact is ever the sole source of truth — `concepts/**` and `raw/**`
 
 **No database, no embeddings.** The escalation threshold is documented and deliberate: a keyword/BM25 pre-filter over term names and descriptions becomes the first escalation only once one deterministic pass over the index exceeds roughly 50k tokens of index text or ~2s wall-clock at p95. Embeddings only after that is insufficient. Until then, the deterministic pass is the whole of search.
 
+## Person-kind terms (ADR-011)
+
+A bundle's vocabulary holds two kinds of term, in **one** index: `topic` (the default) and `person` — a salient person the content is by or about (the author, a named key figure).
+
+- **The source of truth is a frontmatter array.** `person_terms` sits on the chapter stub (key figures) and/or the document stub (the author), a **parallel sibling of `concepts`** — same shape, never merged into it. The write path's shallow frontmatter merge preserves it verbatim, so it round-trips with **no writer change** (NFR-005).
+- **`kind` is derived, never stored by hand.** `buildConceptIndex()` reads `person_terms` from the same files it already reads `concepts` from, and a term is `person` iff its **lowercased** name appears in any `person_terms` array in the bundle. The `kind` written into `concept-index.md` is a cached view of that derivation — it is recomputed on every rebuild, so it cannot rot (NFR-004). There is no per-person file and no new entity.
+- **Original case is preserved.** A person term's `name` is the spelling the source used ("Diego Córdoba"); derivation and matching lowercase it, so `Diego`, `Córdoba` and `diego córdoba` all hit the same term.
+- **Coverage is derived identically to a topic's.** A key figure's chapter is an ordinary cover row; the author's cover row is the *document* (an empty `chId`), which is what becomes the `doc → person` edge in the graph.
+- **The search algorithm is unchanged.** A person's name is an ordinary term-name hit over `index.terms` — there is no person branch in `core.search()` at all (SC-016). The only addition is an **additive `kind`** on each row.
+- **Backward compatible, no migration.** A bundle with no `person_terms` is all-`topic`. A *pre*-person-kind stored index (terms with no `kind`) is served off the trust path with `kind: t.kind || "topic"`, so a legacy bundle never shows `undefined` and never needs a forced rebuild.
+- **`okf_merge_concepts` canonicalizes both arrays.** Merging a person name rewrites every `person_terms` that referenced the from-name, on chapters *and* document stubs, alongside the existing `concepts` rewrite — otherwise the next rebuild would re-derive the old kind.
+
 ## Search
 
 `core.search()` is the one implementation. Tokenize the query; walk `index.terms`; a token hitting a **term name** outranks a token hitting a **description**; a chapter covering two matching terms is deduplicated to one row; rank by (term-hit tier, distinct tokens matched, then a deterministic `(docId, chId)` tiebreak); default limit 25; empty on no match.
@@ -73,8 +85,10 @@ No LLM is in the match. The model does *routing* (which query to issue) and *syn
 
 `core.graph()` computes `{nodes, edges}` **on read** — there is no stored graph.
 
-- Nodes: `doc` (one per document stub), `chap` (one per chapter), `concept` (one per index term, with a `count` that drives node radius).
-- Edges, typed and directed: `containment` (doc→chap, from each chapter's `parent`), `coverage` (chap→concept, from the concept index), `link` (from `links.json`, written by `okf_add_link` alongside the markdown link in the body).
+- Nodes: `doc` (one per document stub), `chap` (one per chapter), `concept` (one per **topic** term, with a `count` that drives node radius), and `person` (one per **person-kind** term — the 4th category, ADR-011, same count-driven radius; its `id` is the lowercased name, its `label` the original-case display name, and every node also carries `key = "<type>:<id>"`).
+- Edges, typed and directed: `containment` (doc→chap, from each chapter's `parent`), `coverage` (chap→concept and chap/doc→person, from the concept index — **the same edge kind** for both; the node colour is what distinguishes a person, teal, from a topic, violet), `link` (from `links.json`, written by `okf_add_link` alongside the markdown link in the body).
+
+A bundle with no person terms returns exactly the three original node types — the 4th appears only when the bundle has one.
 
 Storing the graph would reintroduce the second-thing-to-sync problem the derived layer exists to kill. Derivation walks the same frontmatter search already reads, so it is cheap and always consistent. The app's hover-to-trace-neighbours is computed client-side from the returned edge list; there are no `neighbors` / `shortest_path` tools.
 
@@ -161,5 +175,5 @@ The Query tab mounts only while visible: its force simulation sizes its viewBox 
 ## See also
 
 - [data-model.md](data-model.md) — bundle layout, frontmatter, index/TOC format, the job record.
-- [tool-surface.md](tool-surface.md) — the 19 tools.
+- [tool-surface.md](tool-surface.md) — the 19 tools (and the additive `kind` on two of them).
 - [extension.md](extension.md) — where to add a convention, and why the skill is the seam.
