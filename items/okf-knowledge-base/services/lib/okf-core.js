@@ -949,15 +949,7 @@ async function readToc(bundleRoot, bundleName, docId) {
   validateConceptId(docId);
   const model = await getModel(bundleRoot, bundleName);
   const toc = model.tocByDoc.get(docId);
-  // Non-fatal by design: an ingest run calls this to check whether the
-  // document already exists, and "it doesn't" is a normal answer. The message
-  // says so, so a run doesn't treat its own dedup check as a hard failure.
-  if (!toc)
-    throw new Error(
-      `document not found: ${bundleName}/${docId} — this bundle has no document with that id yet. ` +
-        `If you are ingesting it, that is the expected answer: create it fresh. ` +
-        `okf_list_concepts({bundle: "${bundleName}"}) lists the documents that do exist.`,
-    );
+  if (!toc) throw new Error(`document not found: ${bundleName}/${docId}`);
   return { ...toc, indexGeneratedAt: model.indexGeneratedAt, artifact: `toc/${docId}.md` };
 }
 
@@ -1813,81 +1805,281 @@ async function lintBundle(bundleRoot, bundleName) {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  JOBS (T007 / ADR-006) — global ingest-run records
+//  JOBS (ADR-006 / ADR-010) — global ingest-run records
 // ════════════════════════════════════════════════════════════════════════
 //
 // Jobs are SERVICE-LEVEL, not bundle-level (plan.md open item #2): the app's
 // Jobs tab is global, a single user runs one service, and a run's job must
-// survive the bundle it targets being deleted mid-flight. They live in one
-// `jobs.json` under the bundle root's `.jobs/` directory — operational state,
-// deliberately NOT part of the OKF content contract, so it is never included
-// in an export (design.md Risk #2, resolved: exclude).
+// survive the bundle it targets being deleted mid-flight. They live under the
+// bundle root's `.jobs/` directory, ONE FILE PER RUN — `<bundleRoot>/.jobs/
+// <id>.md` (design.md §5.1) — operational state, deliberately NOT part of the
+// OKF content contract, so it is never included in an export.
 //
-// The lifecycle crosses a thread boundary the service cannot see across. The
-// worker mints the job when `okf_ingest` is called; the okf-ingest sub-agent
-// runs in the MAIN Next.js process and reports back over this service's own
-// loopback HTTP bridge (start/complete/fail). The calling assistant's
-// safety-net closes the gap if the sub-agent dies without reporting.
+// ── Why one file per run, not one jobs.json ──────────────────────────────
+//
+// `deleteJob` (FR-051) removes ONE run's record and nothing else. With a
+// single shared `jobs.json` that is a read-modify-write of the whole history
+// — a delete racing a concurrent run's progress write silently resurrects or
+// drops records. With `<id>.md` the delete is a file delete, the write is a
+// write, and neither run's record can clobber another's. It is also what the
+// rest of the bundle already looks like: everything is a readable `.md`.
+// A legacy `jobs.json` from the previous layout is migrated on first load.
+//
+// ── The lifecycle ────────────────────────────────────────────────────────
+//
+//   queued ──▶ running ──▶ completed | cancelled | failed
+//
+// `cancelled` is a TERMINAL state DISTINCT from `failed` (FR-050): an
+// intentional stop, not an error, so its `error` stays null. The worker mints
+// the job when `okf_ingest` is called; the run itself executes in the MAIN
+// Next.js process, and `delegate-bridge` — which holds the run's stream —
+// captures its `runId` and writes the terminal state from the run's own
+// signal (ADR-006). Cancelling asks the platform to abort that `runId`
+// (ADR-010); deleting only ever removes the record.
 
 const JOBS_DIR = ".jobs";
-const JOBS_FILE = "jobs.json";
+/** The pre-`<id>.md` layout. Read once, migrated, then left alone. */
+const LEGACY_JOBS_FILE = "jobs.json";
 const JOB_HISTORY_LIMIT = 200;
 
 let jobsState = null; // { jobs: [...], seq: n } — hot map, mirrored to disk
 
-function jobsPath(bundleRoot) {
-  return safeJoin(bundleRoot, JOBS_DIR, JOBS_FILE);
+function jobsDir(bundleRoot) {
+  return safeJoin(bundleRoot, JOBS_DIR);
+}
+
+/** Job ids are minted here (`run-<n>`); this is still enforced, because an
+ *  id also names a file and an id from a restored store is just data. */
+function validateJobId(id) {
+  const value = String(id || "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value) || value.includes("..")) {
+    throw new Error(`invalid job id: ${id}`);
+  }
+  return value;
+}
+
+function jobFilePath(bundleRoot, id) {
+  return safeJoin(bundleRoot, JOBS_DIR, `${validateJobId(id)}.md`);
+}
+
+/**
+ * One run as a readable `.md`.
+ *
+ * The frontmatter carries the scalar lifecycle fields so the file is
+ * legible in the Files app and greppable on disk. The fenced `json` block in
+ * the body is the AUTHORITATIVE record: `summary.text` is the agent's own
+ * multi-line prose and `error` is an arbitrary message, and the bundle's
+ * YAML-lite serializer is a frontmatter serializer, not a general one. One
+ * authority, stated plainly, beats two that can disagree.
+ */
+function jobMarkdown(job) {
+  const frontmatter = {
+    type: "ingest-job",
+    id: job.id,
+    status: job.status,
+    bundle: job.bundleId,
+    source: job.source,
+    runId: job.runId || null,
+    queued_at: job.queuedAt || null,
+    started_at: job.startedAt || null,
+    ended_at: job.endedAt || null,
+    duration_ms: job.durationMs === null || job.durationMs === undefined ? null : job.durationMs,
+  };
+  const lines = [
+    `# Ingest run \`${job.id}\``,
+    "",
+    `- **Status:** ${job.status}`,
+    `- **Bundle:** ${job.bundleId}`,
+    `- **Source:** ${job.source}`,
+    `- **Run id:** ${job.runId || "—"}`,
+    `- **Queued:** ${job.queuedAt || "—"}`,
+    `- **Ended:** ${job.endedAt || "—"}`,
+    "",
+    "Operational state, not OKF content — this file is excluded from exports and is",
+    "safe to delete (that is exactly what `okf_delete_job` does). Deleting it removes",
+    "the run from the Jobs tab and touches no bundle content.",
+    "",
+    "<!-- okf:job — the authoritative record -->",
+    "```json",
+    JSON.stringify(job, null, 2),
+    "```",
+    "",
+  ];
+  return stringifyDocument(frontmatter, lines.join("\n"));
+}
+
+const JOB_JSON_BLOCK = /```json\s*\n([\s\S]*?)\n```/;
+
+/** Parse a `.jobs/<id>.md` back into a record. The JSON block wins; the
+ *  frontmatter is the fallback for a hand-edited or truncated file. */
+function parseJobMarkdown(raw) {
+  const match = JOB_JSON_BLOCK.exec(String(raw || ""));
+  if (match) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (parsed && typeof parsed === "object" && parsed.id) return normalizeJob(parsed);
+    } catch {
+      /* fall through to the frontmatter */
+    }
+  }
+  const { frontmatter } = parseFrontmatter(String(raw || ""));
+  if (!frontmatter || !frontmatter.id) return null;
+  return normalizeJob({
+    id: frontmatter.id,
+    status: frontmatter.status,
+    bundleId: frontmatter.bundle,
+    source: frontmatter.source || "",
+    runId: frontmatter.runId || null,
+    queuedAt: frontmatter.queued_at || null,
+    startedAt: frontmatter.started_at || null,
+    endedAt: frontmatter.ended_at || null,
+    durationMs: frontmatter.duration_ms ?? null,
+  });
+}
+
+/** Every record the rest of the module may touch has every field, so a
+ *  restored or hand-written one can't be the reason a reader crashes. */
+function normalizeJob(job) {
+  return {
+    id: String(job.id),
+    status: JOB_STATUSES.includes(job.status) ? job.status : "failed",
+    bundleId: job.bundleId || job.bundle || "",
+    source: job.source || "",
+    maxDepth: job.maxDepth ?? null,
+    maxWorkers: job.maxWorkers ?? null,
+    runId: job.runId || null,
+    queuedAt: job.queuedAt || null,
+    startedAt: job.startedAt || null,
+    endedAt: job.endedAt || null,
+    durationMs: job.durationMs ?? null,
+    progress: job.progress ?? null,
+    summary: job.summary ?? null,
+    error: job.error ?? null,
+  };
+}
+
+/** Newest first, the order both the Jobs tab and okf_list_jobs render. */
+function sortJobs(jobs) {
+  return jobs.sort((a, b) => {
+    const at = Date.parse(a.queuedAt || a.startedAt || "") || 0;
+    const bt = Date.parse(b.queuedAt || b.startedAt || "") || 0;
+    if (bt !== at) return bt - at;
+    return String(b.id).localeCompare(String(a.id), undefined, { numeric: true });
+  });
+}
+
+function seqFloor(jobs) {
+  let max = 1000;
+  for (const job of jobs) {
+    const m = /^run-(\d+)$/.exec(job.id);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return max;
+}
+
+/**
+ * Migrate a pre-`<id>.md` `jobs.json` into per-run files. Additive and
+ * one-way: each record is written as its own file (never clobbering one that
+ * already exists), then the legacy file is RENAMED, not deleted, so a failed
+ * migration loses nothing and a successful one never runs twice.
+ */
+async function migrateLegacyJobsFile(bundleRoot) {
+  const legacyPath = safeJoin(bundleRoot, JOBS_DIR, LEGACY_JOBS_FILE);
+  const raw = await vfs.readText(legacyPath).catch(() => null);
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return []; // corrupt: leave it in place for a human, start clean
+  }
+  if (!parsed || !Array.isArray(parsed.jobs)) return [];
+  const migrated = [];
+  for (const record of parsed.jobs) {
+    if (!record || !record.id) continue;
+    let job;
+    try {
+      job = normalizeJob(record);
+      const target = jobFilePath(bundleRoot, job.id);
+      if (!(await vfs.exists(target))) await vfs.writeText(target, jobMarkdown(job));
+    } catch {
+      continue; // a single unreadable record never blocks the rest
+    }
+    migrated.push(job);
+  }
+  await vfs
+    .writeText(`${legacyPath}.migrated`, raw)
+    .then(() => vfs.remove(legacyPath))
+    .catch(() => {
+      /* best effort: a legacy file we could not archive is re-read next boot,
+         and the per-job files it produces already exist, so this is a no-op */
+    });
+  return migrated;
 }
 
 async function loadJobs(bundleRoot) {
   if (jobsState) return jobsState;
-  const raw = await vfs.readText(jobsPath(bundleRoot)).catch(() => null);
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.jobs)) {
-        jobsState = { jobs: parsed.jobs, seq: Number(parsed.seq) || parsed.jobs.length };
-        return jobsState;
-      }
-    } catch {
-      /* corrupt file: start clean rather than refusing to run ingests */
-    }
+  const dir = jobsDir(bundleRoot);
+  const entries = await vfs.list(dir).catch(() => []);
+  const jobs = [];
+  for (const entry of entries) {
+    if (entry.type === "dir" || !entry.name.endsWith(".md")) continue;
+    const raw = await vfs.readText(path.join(dir, entry.name)).catch(() => null);
+    if (!raw) continue;
+    const job = parseJobMarkdown(raw);
+    if (job) jobs.push(job);
   }
-  jobsState = { jobs: [], seq: 1000 };
+  for (const job of await migrateLegacyJobsFile(bundleRoot)) {
+    if (!jobs.some((j) => j.id === job.id)) jobs.push(job);
+  }
+  sortJobs(jobs);
+  jobsState = { jobs, seq: seqFloor(jobs) };
   return jobsState;
 }
 
-async function persistJobs(bundleRoot) {
-  if (!jobsState) return;
-  if (jobsState.jobs.length > JOB_HISTORY_LIMIT) jobsState.jobs = jobsState.jobs.slice(0, JOB_HISTORY_LIMIT);
-  await vfs.writeText(jobsPath(bundleRoot), JSON.stringify(jobsState, null, 2) + "\n").catch(() => {
-    /* best effort — a job record must never fail the ingest it describes */
+/** Write ONE run's file. A job record must never fail the ingest it
+ *  describes, so a failed write is logged by its absence, not thrown. */
+async function persistJob(bundleRoot, job) {
+  await vfs.writeText(jobFilePath(bundleRoot, job.id), jobMarkdown(job)).catch(() => {
+    /* best effort — see above */
   });
+}
+
+/** Drop the oldest records past the history cap, file and all. */
+async function trimJobHistory(bundleRoot) {
+  if (!jobsState || jobsState.jobs.length <= JOB_HISTORY_LIMIT) return;
+  const dropped = jobsState.jobs.slice(JOB_HISTORY_LIMIT);
+  jobsState.jobs = jobsState.jobs.slice(0, JOB_HISTORY_LIMIT);
+  for (const job of dropped) {
+    await vfs.remove(jobFilePath(bundleRoot, job.id)).catch(() => {});
+  }
 }
 
 async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers }) {
   const state = await loadJobs(bundleRoot);
   state.seq++;
-  const job = {
+  const job = normalizeJob({
     id: `run-${state.seq}`,
     status: "queued",
     bundleId,
     source,
     maxDepth: maxDepth ?? null,
     maxWorkers: maxWorkers ?? null,
+    runId: null,
     queuedAt: nowIso(),
-    startedAt: null,
-    endedAt: null,
-    durationMs: null,
-    progress: null,
-    summary: null,
-    error: null,
-  };
+  });
   state.jobs.unshift(job);
-  await persistJobs(bundleRoot);
+  await persistJob(bundleRoot, job);
+  await trimJobHistory(bundleRoot);
   return job;
 }
 
+/**
+ * The ONE job listing (FR-048). Backs `okf_list_jobs` AND `GET /jobs`, so
+ * what an agent sees and what the Jobs tab shows cannot disagree — including
+ * `cancelled` runs, which are listed like any other terminal state, and the
+ * `runId` of a run that got as far as starting.
+ */
 async function listJobs(bundleRoot, { bundleId, status, limit } = {}) {
   const state = await loadJobs(bundleRoot);
   let jobs = state.jobs;
@@ -1901,19 +2093,26 @@ async function getJob(bundleRoot, id) {
   return state.jobs.find((j) => j.id === id) || null;
 }
 
-const TERMINAL = new Set(["completed", "failed"]);
-const JOB_STATUSES = ["queued", "running", "completed", "failed"];
+/** `cancelled` joins the terminal set: an intentional stop is still an end. */
+const TERMINAL = new Set(["completed", "cancelled", "failed"]);
+const JOB_STATUSES = ["queued", "running", "completed", "cancelled", "failed"];
+
+function notFoundJob(id) {
+  const err = new Error(`job not found: ${id}`);
+  err.status = 404;
+  return err;
+}
 
 /**
- * Apply a lifecycle transition. Terminal states are FINAL: a late callback
- * (the sub-agent reporting after the assistant's safety-net already failed
- * the run, or vice-versa) is recorded as a no-op rather than resurrecting a
- * finished run — which is what makes it safe for BOTH paths to report.
+ * Apply a lifecycle transition. Terminal states are FINAL: a late signal
+ * (the run's own terminal line arriving after a cancel already recorded the
+ * stop, or the reaper and the launcher racing) is recorded as a no-op rather
+ * than resurrecting or relabelling a finished run.
  */
 async function updateJob(bundleRoot, id, patch = {}) {
   const state = await loadJobs(bundleRoot);
   const job = state.jobs.find((j) => j.id === id);
-  if (!job) throw new Error(`job not found: ${id}`);
+  if (!job) throw notFoundJob(id);
 
   if (patch.status !== undefined && !JOB_STATUSES.includes(patch.status)) {
     throw new Error(`invalid job status: ${patch.status} (expected ${JOB_STATUSES.join(" | ")})`);
@@ -1925,6 +2124,10 @@ async function updateJob(bundleRoot, id, patch = {}) {
   if (patch.progress !== undefined) job.progress = patch.progress;
   if (patch.summary !== undefined) job.summary = patch.summary;
   if (patch.error !== undefined) job.error = patch.error;
+  // The run's own id, captured from its first `run_started` line (FR-052).
+  // It is what `cancelJob` has to hand the platform's abort route, so it is
+  // persisted with the record rather than kept only in the bridge's memory.
+  if (patch.runId !== undefined) job.runId = patch.runId || null;
 
   if (patch.status === "running" && job.status !== "running") {
     job.status = "running";
@@ -1940,8 +2143,106 @@ async function updateJob(bundleRoot, id, patch = {}) {
     job.status = patch.status;
   }
 
-  await persistJobs(bundleRoot);
+  await persistJob(bundleRoot, job);
   return job;
+}
+
+/**
+ * CANCEL a run (FR-050 / ADR-010 / SC-014).
+ *
+ * Three outcomes, and only three:
+ *   • unknown id          → not-found (404), in band like every other error
+ *   • already terminal    → `{cancelled:false, reason:"already terminal"}` — a
+ *                           NO-OP. Nothing is re-ended, nothing is relabelled.
+ *   • queued or running   → the job becomes `cancelled` (terminal, `error`
+ *                           null — a stop is not a failure) and the underlying
+ *                           headless run is aborted through the platform's
+ *                           per-run abort route, which `delegate-bridge` owns.
+ *
+ * The record and any bundle content the run already wrote are PRESERVED:
+ * cancelling is a stop, not a rollback. The derived index rebuilds from
+ * whatever landed, so a cancelled run leaves a smaller bundle, not a broken
+ * one.
+ *
+ * The status is written BEFORE the abort resolves, so the Jobs tab reflects
+ * the stop immediately; the run's own terminal line then arrives and is
+ * correctly ignored as a late transition against a terminal job.
+ */
+async function cancelJob(bundleRoot, jobId) {
+  const job = await getJob(bundleRoot, jobId);
+  if (!job) throw notFoundJob(jobId);
+
+  if (TERMINAL.has(job.status)) {
+    return { cancelled: false, reason: "already terminal", jobId: job.id, status: job.status, job };
+  }
+
+  const updated = await updateJob(bundleRoot, jobId, { status: "cancelled", error: null });
+
+  // Signal the bridge, which holds this run's stream and knows its runId.
+  // A queued job whose run has not announced itself yet is remembered there
+  // and aborted the instant `run_started` lands (ADR-010/S4) — the caller is
+  // never told to come back later.
+  let abort = { aborted: false, reason: "no live run was registered for this job" };
+  try {
+    const delegate = require("./delegate-bridge");
+    abort = await delegate.cancelRun(jobId, updated.runId);
+  } catch (err) {
+    abort = { aborted: false, error: err.message };
+  }
+
+  return {
+    cancelled: true,
+    status: "cancelled",
+    jobId: job.id,
+    runId: updated.runId || null,
+    abort,
+    job: updated,
+    note:
+      "The run was stopped. Anything it had already written to the bundle is kept — cancelling is a stop, not a " +
+      "rollback — and the derived index reflects what landed. The job record is still here; remove it with " +
+      "okf_delete_job if you don't want it in the list.",
+  };
+}
+
+/**
+ * DELETE a run's record (FR-051 / SC-015).
+ *
+ * Removes the record from the hot map and deletes its `.jobs/<id>.md`, and
+ * NOTHING else: chapters, the concept index, every TOC and `raw/` are
+ * untouched. A run's record is bookkeeping about a run, not the knowledge the
+ * run produced.
+ *
+ *   • running job  → rejected, 409 — cancel it first. Deleting the record of
+ *                    a live run would leave the run writing into a bundle
+ *                    with nothing watching it.
+ *   • unknown id   → clean 404.
+ *   • anything else (completed / cancelled / failed / queued) → deleted.
+ */
+async function deleteJob(bundleRoot, jobId) {
+  const state = await loadJobs(bundleRoot);
+  const index = state.jobs.findIndex((j) => j.id === jobId);
+  if (index === -1) throw notFoundJob(jobId);
+  const job = state.jobs[index];
+
+  if (job.status === "running") {
+    const err = new Error(
+      `job ${jobId} is still running — cancel it first (okf_cancel_job / POST /jobs/${jobId}/cancel), then delete it.`,
+    );
+    err.status = 409;
+    throw err;
+  }
+
+  state.jobs.splice(index, 1);
+  await vfs.remove(jobFilePath(bundleRoot, jobId)).catch(() => {
+    /* already gone — the record is what the caller asked to remove */
+  });
+
+  return {
+    deleted: true,
+    jobId,
+    status: job.status,
+    note: "The run record is gone. No bundle content was touched — chapters, the concept index, the TOCs and raw/ are unchanged.",
+  };
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1991,23 +2292,8 @@ async function updateJob(bundleRoot, id, patch = {}) {
 
 const CONVERTIBLE = /\.(pdf|docx|pptx|xlsx|doc|ppt|xls)$/i;
 
-/**
- * The id a source is known by INSIDE the bundle: its last meaningful path
- * segment, lowercased, with the document extension, an append-only `.vN`
- * version suffix and a publisher's opaque trailing hash (Medium's
- * `-e267537e5b2f`) stripped.
- *
- * This is the ONE place a source's identity is derived, and it derives from
- * the SOURCE — never from the scratch file the acquisition step happens to
- * stage it through. `acquisitionFirstSteps` pins the result as `filename` on
- * the `okf_add_raw_source` call and `addRawSource` takes the docId from that
- * filename's base, so the id `buildIngestTask` writes into the task text
- * BEFORE the run starts is exactly the id the tool assigns DURING it. Letting
- * the staged name fall through instead is what produced document ids like
- * `okf-staged-your-12gb-gpu-…-e`: an acquisition detail, truncated mid-word,
- * promoted to a permanent id nobody could predict or re-derive.
- */
-function docIdForSource(source) {
+/** Filesystem-safe slug for the staged copy's filename. */
+function stagedName(source) {
   const base =
     String(source)
       .replace(/[?#].*$/, "")
@@ -2015,22 +2301,8 @@ function docIdForSource(source) {
       .split("/")
       .filter(Boolean)
       .pop() || "source";
-  let slug = base
-    .replace(CONVERTIBLE, "")
-    .replace(/\.(md|markdown|txt|html?)$/i, "")
-    .replace(/\.v\d+$/i, "") // raw/ is versioned; the document it holds is not
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-(?=[0-9a-f]*[a-f])[0-9a-f]{8,}$/, "") // …-e267537e5b2f
-    .replace(/^[-._]+|[-._]+$/g, "");
-  // Trim long slugs at a word boundary rather than mid-token.
-  if (slug.length > 72) slug = slug.slice(0, 72).replace(/-[^-]*$/, "");
-  return slug.replace(/^[-._]+|[-._]+$/g, "") || "source";
-}
-
-/** Filesystem-safe name for the scratch copy the acquisition step stages. */
-function stagedName(source) {
-  return `okf-staged-${docIdForSource(source)}.md`;
+  const slug = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "source";
+  return slug.replace(CONVERTIBLE, "") + ".md";
 }
 
 /**
@@ -2047,7 +2319,7 @@ function acquisitionFirstSteps(bundle, source) {
   const isAbsPath = source.startsWith("/");
   if (!isUrl && !isAbsPath) return []; // a raw/ path — already in the bundle
 
-  const staged = `/workspace/${stagedName(source)}`;
+  const staged = `/workspace/okf-staged-${stagedName(source)}`;
   const steps = [];
   if (isUrl) {
     steps.push({ tool: "web_fetch", args: { url: source, output_path: staged } });
@@ -2055,13 +2327,9 @@ function acquisitionFirstSteps(bundle, source) {
     steps.push({ tool: "file_to_markdown", args: { path: source, output_path: staged } });
   }
   const sourcePath = steps.length ? staged : source;
-  // `filename` is PINNED, not left to default from sourcePath's basename.
-  // Without it the staged scratch name (`okf-staged-…`) becomes both the raw
-  // file name and the docId — see docIdForSource.
-  const filename = `${docIdForSource(source)}${steps.length ? ".md" : path.extname(sourcePath) || ".md"}`;
   steps.push({
     tool: "okf_add_raw_source",
-    args: { bundle, sourcePath, filename, ...(isUrl ? { originUrl: source } : {}) },
+    args: { bundle, sourcePath, ...(isUrl ? { originUrl: source } : {}) },
   });
   return steps;
 }
@@ -2073,10 +2341,6 @@ function renderSteps(steps) {
 /** The sub-agent task for one ingest run. Embeds jobId / bundle / source. */
 function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
   const steps = acquisitionFirstSteps(bundle, source);
-  // The SAME derivation acquisitionFirstSteps pins as `filename` and
-  // addRawSource turns into the docId. Naming it here is the whole fix: the
-  // agent is told the id instead of inferring one from the staged path.
-  const docId = docIdForSource(source);
   const acquisition = steps.length
     ? `## Step 0 — acquire the source (do this FIRST, exactly as written)\n\n${renderSteps(steps)}\n\n` +
       `Run those calls verbatim. \`output_path\` is pinned on purpose: with it the source streams to disk and the tool ` +
@@ -2086,34 +2350,18 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
     : `## Step 0 — the source is already in the bundle\n\nIt is at \`${source}\`. Read it from there with \`file_read\`; ` +
       `do not expect it inline and do not re-fetch it.\n\n`;
 
-  // The id, stated once, up front. Everything below uses it literally.
-  const identity =
-    `## The document id for this run\n\n` +
-    `This document's id is **\`${docId}\`**. Use it verbatim wherever an id is called for below — it is already ` +
-    `written into the paths and calls, so you never have to pick one.\n\n` +
-    `It is the same id \`okf_add_raw_source\` hands back in its \`docId\` field: the call above pins \`filename\`, and ` +
-    `the service derives both from the source itself. Do NOT coin your own, and do NOT take an id from the staged ` +
-    `\`/workspace/okf-staged-…\` scratch path — that filename is an acquisition detail, not an identity. In the ` +
-    `unlikely event the tool's returned \`docId\` differs from the one above, the value the tool returned wins.\n\n`;
-
   return (
     `Ingest \`${source}\` into the OKF bundle "${bundle}" as organized chapters.\n\n` +
     `jobId: ${jobId}\nbundle: ${bundle}\nsource: ${source}\nmaxDepth: ${maxDepth}\nmaxWorkers: ${maxWorkers}\n\n` +
     acquisition +
-    identity +
     `## Then do the whole job\n\n` +
-    `Start with \`okf_read_toc({bundle: "${bundle}", docId: "${docId}"})\` to see whether the bundle already covers ` +
-    `this document. **\`document not found\` is the expected answer for a new one** — it means nothing is there yet, ` +
-    `so write it fresh. That is a successful dedup check, not a failure, and there is nothing to retry, rename or ` +
-    `work around. If a TOC does come back, extend those chapters instead of duplicating them.\n\n` +
-    `Decompose the source at its natural heading structure into chapters (\`concepts/${docId}/<chId>.md\`, ` +
-    `\`type: section\`), each carrying \`parent: ${docId}\`, the \`concepts\` terms it covers and a one-line ` +
-    `\`summary\` — those three fields are what the concept index and the document TOC are derived from. Upsert the ` +
-    `document stub (\`concepts/${docId}.md\`, \`type: document\`) with the original URL in \`sources[].uri\` so the ` +
-    `app's "Open source" link has a target. Check \`okf_list_concepts\` before coining a term: extend before you ` +
-    `create.\n\n` +
+    `Decompose the source at its natural heading structure into chapters (\`concepts/<docId>/<chId>.md\`, ` +
+    `\`type: section\`), each carrying \`parent\`, the \`concepts\` terms it covers and a one-line \`summary\` — those ` +
+    `three fields are what the concept index and the document TOC are derived from. Upsert the document stub ` +
+    `(\`concepts/<docId>.md\`, \`type: document\`) with the original URL in \`sources[].uri\` so the app's "Open source" ` +
+    `link has a target. Check \`okf_list_concepts\` before coining a term: extend before you create.\n\n` +
     `For every NON-HTML asset in a chapter's scope: \`web_fetch\` it with \`output_path\` into ` +
-    `\`raw/assets/${docId}/\`, register it with \`okf_add_raw_source({asset: true, docId: "${docId}", sourcePath})\`, interpret it ` +
+    `\`raw/assets/<docId>/\`, register it with \`okf_add_raw_source({asset:true, docId, sourcePath})\`, interpret it ` +
     `with \`view_image\` or \`video_keyframes\`, and write the stored link plus a ` +
     `\`> **Interpretation (LLM, at ingest):** …\` blockquote directly beneath it in the chapter body. Ordinary HTML ` +
     `hyperlinks stay remote references — do not download them. A failed asset is marked unavailable and does not fail ` +
@@ -2199,9 +2447,30 @@ async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers,
     job,
     note:
       `Run ${job.id} started. It is running now in the bundled okf-ingest agent — there is nothing for you to run. ` +
-      `Check on it with okf_list_jobs({}) (or the app's Jobs tab); it ends as completed with a summary, or failed with ` +
-      `an error.`,
+      `Check on it with okf_list_jobs({}) (or the app's Jobs tab); it ends as completed with a summary, cancelled if ` +
+      `it is stopped, or failed with an error. Stop it with okf_cancel_job({jobId: "${job.id}"}).`,
   };
+}
+
+/**
+ * The run's terminal `endedReason` → the job's terminal status (ADR-006 +
+ * ADR-010). The run's own signal is the authority; this is the whole map.
+ *
+ *   completed  → completed   the only success
+ *   cancelled  → cancelled   an intentional stop (ADR-010) — DISTINCT from
+ *                            failed, and its `error` stays null, because
+ *                            "the user stopped it" is not an error about the
+ *                            run and showing it in red would be a lie
+ *   error      → failed      with the run's own error
+ *   max_steps  → failed      the agent ran out of budget mid-document; the
+ *                            bundle may hold a half-decomposed document, and
+ *                            calling that a success would be the job store
+ *                            lying about its own data
+ */
+function statusForEndedReason(endedReason) {
+  if (endedReason === "completed") return "completed";
+  if (endedReason === "cancelled") return "cancelled";
+  return "failed";
 }
 
 /**
@@ -2221,6 +2490,13 @@ async function driveRun(bundleRoot, jobId, task) {
   try {
     const run = await delegate.runIngestAgent({
       task,
+      jobId,
+      // The run's own id, off the FIRST `run_started` line (FR-052). It is
+      // stored on the record so cancel has something to abort and so both
+      // job surfaces can show which run a job actually is.
+      onRunStarted: ({ runId }) => {
+        void updateJob(bundleRoot, jobId, { runId }).catch(() => {});
+      },
       onTool: ({ tool, index }) => {
         void updateJob(bundleRoot, jobId, { progress: progressFor(tool, index) }).catch(() => {});
       },
@@ -2232,9 +2508,12 @@ async function driveRun(bundleRoot, jobId, task) {
         summary: summaryFromOutput(run.output, run.toolCalls),
       });
     } else {
+      const status = statusForEndedReason(run.endedReason);
       await updateJob(bundleRoot, jobId, {
-        status: "failed",
-        error: run.error || `the run ended as "${run.endedReason || "unknown"}"`,
+        status,
+        // A cancelled run has no error to report: it did exactly what it was
+        // told to do, which was stop.
+        error: status === "cancelled" ? null : run.error || `the run ended as "${run.endedReason || "unknown"}"`,
       });
     }
   } catch (err) {
@@ -2284,13 +2563,16 @@ function summaryFromOutput(output, toolCalls) {
  * and a Jobs tab with a permanently-spinning row is worse than one that says
  * plainly that the run was lost.
  *
- * So: any job still non-terminal and older than `staleJobMs` is marked
- * `failed` with an honest "stale" reason. Run on a timer AND as a sweep on
- * (re)start, because a restart is exactly the event that orphans jobs and
- * waiting a full interval to admit it is the wrong default.
+ * So: any job still non-terminal and older than `jobFinalizeTimeoutMs` is
+ * marked `failed` with an honest "stale" reason. Run on a timer AND as a
+ * sweep on (re)start, because a restart is exactly the event that orphans
+ * jobs and waiting a full interval to admit it is the wrong default.
+ *
+ * Only `queued`/`running` jobs are candidates, so a `cancelled` run — which
+ * is terminal — is never re-labelled `failed` by the reaper (ADR-010).
  */
-async function reapStaleJobs(bundleRoot, staleJobMs) {
-  const cutoffMs = Number.isFinite(staleJobMs) && staleJobMs > 0 ? staleJobMs : 30 * 60 * 1000;
+async function reapStaleJobs(bundleRoot, jobFinalizeTimeoutMs) {
+  const cutoffMs = Number.isFinite(jobFinalizeTimeoutMs) && jobFinalizeTimeoutMs > 0 ? jobFinalizeTimeoutMs : 30 * 60 * 1000;
   const state = await loadJobs(bundleRoot);
   const now = Date.now();
   const reaped = [];
@@ -2359,12 +2641,14 @@ module.exports = {
   listJobs,
   getJob,
   updateJob,
+  cancelJob,
+  deleteJob,
   reapStaleJobs,
+  statusForEndedReason,
   // the auto-trigger (THE single ingest path)
   triggerIngest,
   acquisitionFirstSteps,
   buildIngestTask,
-  docIdForSource,
   // internals exposed for the bridge, the tools layer and tests
   appendLog,
   extractLinks,

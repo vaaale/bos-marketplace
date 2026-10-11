@@ -5,13 +5,13 @@
 // ── Why this exists at all (ADR-003) ─────────────────────────────────────
 //
 // The app is a sandboxed browser iframe. It is NOT an agent and cannot call
-// the 19 okf_* tools: those are an agent surface, IPC-dispatched and
+// the 21 okf_* tools: those are an agent surface, IPC-dispatched and
 // JSON-schema-gated. So the app gets its own HTTP data layer here, reusing
 // the SAME okf-core functions the tools call. One capability, two surfaces —
 // `okf_search` and `GET/POST /bundles/<b>/search` run the identical
 // `core.search()`, so the UI can never drift from what the agent sees.
 //
-// Critically: adding app views adds NOTHING to the 19-tool agent surface
+// Critically: adding app views adds NOTHING to the 21-tool agent surface
 // (FR-036/SC-007). These routes are internal plumbing, not tool_declare'd.
 //
 // ── Routes (design.md §8.3) ──────────────────────────────────────────────
@@ -35,10 +35,23 @@
 //   POST   /jobs  {bundle, source, maxDepth?, maxWorkers?}
 //                                               -> core.triggerIngest: starts
 //                                                  the run, returns {jobId}
-//   GET    /jobs[?bundleId=&status=&limit=]     -> [ job, ... ]
+//   GET    /jobs[?bundleId=&status=&limit=]     -> [ job, ... ] (incl. cancelled)
 //   GET    /jobs/<id>                           -> one job record
 //   POST   /jobs/<id>  {progress}               -> OPTIONAL progress
 //                                                  enrichment only
+//   POST   /jobs/<id>/cancel                    -> core.cancelJob: abort the
+//                                                  run, job -> cancelled
+//   DELETE /jobs/<id>                           -> core.deleteJob: the record
+//                                                  only; 409 if running
+//
+// ── Job control is the same capability the tools expose (ADR-003) ────────
+//
+// `POST /jobs/<id>/cancel` and `DELETE /jobs/<id>` call the SAME
+// `core.cancelJob` / `core.deleteJob` that back `okf_cancel_job` and
+// `okf_delete_job`. The Jobs tab's Cancel and Delete controls and an agent
+// issuing the tools are two faces of one operation — so a run the user stops
+// from the app and a run an agent stops are the same stop, recorded the same
+// way, and neither surface can grow a behaviour the other lacks.
 //
 // ── What happened to POST /bundles/<b>/ingest ────────────────────────────
 //
@@ -114,7 +127,11 @@ function readJsonBody(req) {
   });
 }
 
+// An error that KNOWS its own status says so (core.deleteJob's 409 on a
+// running run, the job store's 404s); the message sniffing below is the
+// fallback for everything that doesn't.
 function statusForError(err) {
+  if (Number.isFinite(err.status) && err.status >= 400 && err.status < 600) return err.status;
   if (/not found/i.test(err.message)) return 404;
   if (/already exists/i.test(err.message)) return 409;
   return 400;
@@ -160,7 +177,7 @@ function createRequestHandler(ctx) {
 
       // GET /tools — the declared okf_* surface, so the app's titlebar badge
       // states the REAL count rather than a hardcoded string, and so the e2e
-      // suite can assert the 19-tool contract (SC-007) against what the
+      // suite can assert the 21-tool contract (SC-007) against what the
       // service actually declares. Read-only; this is not itself a tool.
       if (req.method === "GET" && parts.length === 1 && parts[0] === "tools") {
         const tools = ctx.declarations || [];
@@ -219,6 +236,21 @@ function createRequestHandler(ctx) {
         // watched the actual run. Accepting `status` here would reintroduce
         // exactly the failure mode the rework removed — a run that reports
         // success and then dies, or never reports at all.
+        // POST /jobs/<id>/cancel — the Jobs tab's Cancel control (FR-050).
+        // Runs core.cancelJob: a terminal job is an explicit, successful
+        // NO-OP (200 with {cancelled:false}), not an error, because "stop
+        // something that already stopped" is a reasonable thing for a user
+        // to click on a list that refreshes every few seconds.
+        if (jobId && req.method === "POST" && parts.length === 3 && parts[2] === "cancel") {
+          return sendJson(res, 200, await core.cancelJob(bundleRoot, jobId));
+        }
+        // DELETE /jobs/<id> — the Jobs tab's Delete control (FR-051). The
+        // record and its .jobs/<id>.md, never bundle content. A running run
+        // comes back 409 ("cancel it first") and a missing one 404, both
+        // raised by core.deleteJob and mapped by statusForError above.
+        if (jobId && req.method === "DELETE" && parts.length === 2) {
+          return sendJson(res, 200, await core.deleteJob(bundleRoot, jobId));
+        }
         if (jobId && req.method === "POST" && parts.length === 2) {
           const body = await readJsonBody(req);
           if (body.status !== undefined) {

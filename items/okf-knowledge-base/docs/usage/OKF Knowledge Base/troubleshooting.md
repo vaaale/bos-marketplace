@@ -37,7 +37,26 @@ If it really is stuck — the usual cause is BOS or the service restarting while
 
 A reaped run is not destructive. Every write is atomic and the derived index rebuilds from content, so a half-finished run leaves a smaller bundle, not a broken one. Re-run the ingest to finish the job.
 
-You can change the limit (`staleJobMs`) in the service's settings. Raise it if you routinely ingest very large documents; don't lower it below a realistic run time or healthy runs will be killed off as stale.
+You can change the limit (`jobFinalizeTimeoutMs`) in the service's settings. Raise it if you routinely ingest very large documents; don't lower it below a realistic run time or healthy runs will be killed off as stale.
+
+If you'd rather not wait for the reaper, press **Cancel** on the row. That stops the run for real and records it as **cancelled** — which also tells you something the reaper's "stale" never would: that you stopped it, rather than that it was lost.
+
+## "cancelled" vs "failed"
+
+They are different states on purpose.
+
+- **cancelled** — you pressed Cancel (or an assistant called `okf_cancel_job`). The run was stopped deliberately. Its `error` is empty, and everything it had already written is still in the bundle.
+- **failed** — the run couldn't finish: a bad source, a step budget, a lost service. The detail card says which.
+
+Neither leaves a broken bundle: writes are atomic and the two derived index levels rebuild from content, so an interrupted run leaves a *smaller* knowledge base, not a corrupt one. Re-run the ingest when you want the rest.
+
+## I deleted a run — did I lose the documents?
+
+No. **Delete on a Jobs row removes the record of the run, and only that.** Chapters, the concept index, the document TOCs and the raw sources are all still there; Overview will show them. The run simply stops appearing in the list.
+
+To remove what an ingest *added*, delete the concepts or the bundle from Overview instead.
+
+A run that is still **running** cannot be deleted (the app offers no Delete button for it, and the service refuses with "cancel it first"). Cancel it, then delete.
 
 ## A run failed — now what?
 
@@ -60,7 +79,7 @@ The app retries for about fifteen seconds while the service is binding its port,
 
 ## The tools aren't there
 
-The 19 `okf_*` tools are declared by the service at startup and removed when it stops. If the assistant says it has no such tool, the service isn't running — Settings → Plugins.
+The 21 `okf_*` tools are declared by the service at startup and removed when it stops. If the assistant says it has no such tool, the service isn't running — Settings → Plugins.
 
 If the service is running but tools are missing, check its log in Settings → Plugins: a declaration rejected at startup reports its reason there.
 

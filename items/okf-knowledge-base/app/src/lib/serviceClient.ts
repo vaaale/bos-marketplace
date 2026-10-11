@@ -19,9 +19,11 @@
 // services.md §14). That requires the app's `services:read` capability —
 // granted in app.json and documented as a one-time Settings step.
 //
-// The app only ever reads knowledge: writes stay agent/tool-driven. The four
-// mutating calls here (bundle create / import / export / delete) are the
-// bundle-management actions the mockup gates behind confirmation dialogs.
+// The app only ever reads knowledge: writes stay agent/tool-driven. The
+// mutating calls here are bundle management (create / import / export /
+// delete, gated behind the mockup's confirmation dialogs) and JOB CONTROL
+// (cancel / delete a run) — operational actions on the service's own
+// bookkeeping, not edits to knowledge.
 
 import type {
   BundleDetail,
@@ -271,6 +273,39 @@ export function fetchJobs(): Promise<{ jobs: Job[]; total: number; active: numbe
 
 export function fetchJob(id: string): Promise<Job> {
   return request(`jobs/${encodeURIComponent(id)}`);
+}
+
+/**
+ * Stop a running (or just-queued) run — the Jobs tab's Cancel control.
+ *
+ * `POST /jobs/<id>/cancel` drives the same `core.cancelJob` the
+ * `okf_cancel_job` tool drives (ADR-003): the service aborts the underlying
+ * headless run and the job moves to the distinct `cancelled` terminal state.
+ * Cancelling an already-finished run is an explicit, successful no-op —
+ * `{cancelled:false, reason:"already terminal"}` — not an error, because the
+ * list polls every few seconds and a run can finish between a render and a
+ * click.
+ */
+export function cancelJob(id: string): Promise<{
+  cancelled: boolean;
+  status?: string;
+  reason?: string;
+  jobId: string;
+  runId?: string | null;
+}> {
+  return send(`jobs/${encodeURIComponent(id)}/cancel`, "POST");
+}
+
+/**
+ * Remove one run's RECORD — the Jobs tab's Delete control.
+ *
+ * `DELETE /jobs/<id>` drives the same `core.deleteJob` the `okf_delete_job`
+ * tool drives. It removes bookkeeping about a run and never the knowledge the
+ * run produced: chapters, the concept index, the TOCs and raw/ are untouched.
+ * A running run is refused (409) — cancel it first.
+ */
+export function deleteJob(id: string): Promise<{ deleted: boolean; jobId: string; status: string }> {
+  return send(`jobs/${encodeURIComponent(id)}`, "DELETE");
 }
 
 /**

@@ -60,23 +60,28 @@ export default function App() {
   // The badge is live on EVERY tab (FR-041: "the app must reflect a run's
   // status as it changes") — not only while the Jobs tab is open, or a run
   // started from Overview would look like nothing happened.
+  const reloadJobs = React.useCallback(async () => {
+    try {
+      const data = await fetchJobs();
+      setJobs(data.jobs);
+    } catch {
+      /* a transient bridge hiccup must not blank the UI */
+    }
+  }, []);
+
   React.useEffect(() => {
-    let cancelled = false;
+    let stopped = false;
     const tick = async () => {
-      try {
-        const data = await fetchJobs();
-        if (!cancelled) setJobs(data.jobs);
-      } catch {
-        /* a transient bridge hiccup must not blank the UI */
-      }
+      if (stopped) return;
+      await reloadJobs();
     };
     void tick();
     const timer = setInterval(tick, JOBS_POLL_MS);
     return () => {
-      cancelled = true;
+      stopped = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [reloadJobs]);
 
   const activeJobs = jobs.filter((j) => j.status === "running" || j.status === "queued").length;
 
@@ -119,6 +124,8 @@ export default function App() {
           >
             <Icon name={t.icon} size={15} />
             {t.label}
+            {/* every run on record, cancelled ones included — the badge is
+                "how many runs are listed", not "how many went well". */}
             {t.id === "jobs" && jobs.length > 0 ? (
               <span className="app-tab-cnt" data-testid="jobs-badge">
                 {jobs.length}
@@ -151,7 +158,10 @@ export default function App() {
         </section>
 
         <section className={`app-view${tab === "jobs" ? "" : " hidden"}`} data-testid="view-jobs">
-          <JobsTab jobs={jobs} activeJobs={activeJobs} />
+          {/* onJobsChanged re-polls immediately after a Cancel or a Delete,
+              so the row reflects the service's answer at once instead of
+              lagging up to a whole poll interval behind the click. */}
+          <JobsTab jobs={jobs} activeJobs={activeJobs} onJobsChanged={() => void reloadJobs()} />
         </section>
 
         {/* The Query tab mounts only while visible: its force simulation sizes

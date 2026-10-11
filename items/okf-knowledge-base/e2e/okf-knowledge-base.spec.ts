@@ -35,14 +35,29 @@
 // they are: the lifecycle test performs a REAL headless agent run (on a tiny
 // source), and the reaper test RESTARTS the service (re-resolving the base
 // afterwards, because the port is OS-assigned and can move).
+//
+// THE MOCK-DELEGATE SEAM. Job control (cancel/delete) is only meaningful
+// against a LIVE run, and a real okf-ingest run is minutes of a real
+// provider. `delegate-bridge.js` reads `OKF_DELEGATE_URL`; when it is set,
+// runs start there and the per-run abort follows the same origin, so this
+// suite binds a mock on exactly that URL that emits `run_started` and then
+// holds the stream open for as long as a test needs. Set it on the BOS
+// process (worker threads inherit it) and on this suite:
+//
+//   OKF_DELEGATE_URL=http://127.0.0.1:8099/api/subagents/delegate
+//
+// Without it every assertion below still runs, against real runs — except
+// the two that need to observe the abort itself, which skip with that
+// reason rather than pretending to cover it.
 
+import http from "node:http";
 import { expect, request, test, type APIRequestContext, type FrameLocator, type Page } from "@playwright/test";
 
 // Default to the Supervisor, not a Next port — see the note above.
 const BASE = process.env.BOS_PREVIEW_URL || "http://localhost:8090";
 const SERVICE_ID = "okf-knowledge-base";
 
-/** The 19 declared tools (spec FR-037 / SC-007 + okf_list_jobs). */
+/** The 21 declared tools (spec FR-037 / SC-007, incl. job control). */
 const EXPECTED_TOOLS = [
   "okf_search",
   "okf_read_toc",
@@ -59,6 +74,8 @@ const EXPECTED_TOOLS = [
   "okf_ingest",
   "okf_add_raw_source",
   "okf_list_jobs",
+  "okf_cancel_job",
+  "okf_delete_job",
   "okf_add_link",
   "okf_backlinks",
   "okf_lint",
@@ -67,11 +84,11 @@ const EXPECTED_TOOLS = [
 
 /** The 16 removed BY NAME (FR-037). None may still be declared.
  *
- *  The net change is 31 -> 19, i.e. 12 fewer, because four were added
- *  (okf_search, okf_read_toc, okf_merge_concepts, okf_list_jobs) alongside
- *  these sixteen removals. Asserting all sixteen names are gone is the
- *  stronger check, and the one that catches a tool quietly surviving the
- *  rework. */
+ *  The net change is 31 -> 21, i.e. 10 fewer, because six were added
+ *  (okf_search, okf_read_toc, okf_merge_concepts, okf_list_jobs, and the
+ *  job-control pair okf_cancel_job / okf_delete_job) alongside these sixteen
+ *  removals. Asserting all sixteen names are gone is the stronger check, and
+ *  the one that catches a tool quietly surviving the rework. */
 const REMOVED_TOOLS = [
   "okf_bundle_status",
   "okf_find_concepts",
@@ -103,6 +120,196 @@ const READ_ONLY_TOOLS = [
   "okf_lint",
   "okf_stale_report",
 ];
+
+// ── the mock-delegate seam ───────────────────────────────────────────────
+//
+// `delegate-bridge.js` reads `OKF_DELEGATE_URL` and, when it is set, starts
+// every headless run there instead of at BOS's own `/api/subagents/delegate`
+// — and sends the per-run abort to the SAME origin, so a mock implements the
+// platform's two endpoints verbatim:
+//
+//   POST <the delegate path>          -> NDJSON: {type:"run_started", runId}
+//   POST /api/subagents/<runId>/abort -> {aborted: boolean, runId}
+//
+// Why bother: cancel is only meaningful against a LIVE run, and a real
+// okf-ingest run is minutes of a real provider. The mock makes a run instant
+// and, more importantly, CONTROLLABLE — it can emit `run_started` and then
+// stay open for as long as a test needs, or delay `run_started` to open the
+// queued window on purpose. Nothing about the service is stubbed; only the
+// thing on the far side of the HTTP call it already makes.
+//
+// The env var is read by the BOS process (worker threads inherit it) AND by
+// this suite, which binds the mock on exactly that URL. When it is unset the
+// suite runs against real runs: every assertion below still holds, except the
+// two that need a run whose abort this process can observe, which say so.
+
+const MOCK_DELEGATE_URL = process.env.OKF_DELEGATE_URL || "";
+const MOCK_ON = Boolean(MOCK_DELEGATE_URL);
+
+interface MockRun {
+  runId: string;
+  res: http.ServerResponse;
+  ended: boolean;
+}
+
+const mockRuns = new Map<string, MockRun>();
+let mockServer: http.Server | null = null;
+let mockSeq = 0;
+
+// Both knobs are LATCHES consumed by the next run that arrives, not flags a
+// test toggles around an `await`. `POST /jobs` returns before the service's
+// detached `driveRun` has even opened the delegate stream, so a flag reset
+// after that POST would race the request it was meant to configure.
+/** Hold this many upcoming runs open after `run_started`, instead of completing them. */
+let mockHoldNext = 0;
+/** Delay the next run's `run_started` by this long — the queued window, made observable. */
+let mockDelayNextMs = 0;
+/** Resolved when the mock receives the next run, so a test can stop racing it. */
+let mockRunArrived: (() => void) | null = null;
+
+function mockLine(res: http.ServerResponse, obj: unknown): void {
+  if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`);
+}
+
+function endMockRun(run: MockRun, endedReason: string, text = ""): void {
+  if (run.ended) return;
+  run.ended = true;
+  mockLine(run.res, { type: "done", result: { endedReason, aborted: endedReason === "cancelled", output: text }, text });
+  if (!run.res.writableEnded) run.res.end();
+}
+
+function handleMock(req: http.IncomingMessage, res: http.ServerResponse, delegatePath: string): void {
+  const url = new URL(req.url || "/", "http://mock");
+  const abort = /^\/api\/subagents\/(.+)\/abort$/.exec(url.pathname);
+
+  if (req.method === "POST" && abort) {
+    const runId = decodeURIComponent(abort[1]);
+    const run = mockRuns.get(runId);
+    const aborted = Boolean(run && !run.ended);
+    // Exactly the platform route's contract: abort a live run and say so;
+    // say `aborted:false` (not an error) for one that is already gone.
+    if (run && !run.ended) endMockRun(run, "cancelled");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ aborted, runId }));
+    return;
+  }
+
+  // A test hook, not part of the platform contract: finish a held-open run
+  // normally, so a suite can mint a terminal job without waiting for one.
+  const finish = /^\/__mock\/finish\/(.+)$/.exec(url.pathname);
+  if (req.method === "POST" && finish) {
+    const run = mockRuns.get(decodeURIComponent(finish[1]));
+    if (run) endMockRun(run, "completed", "Wrote 1 chapter, 1 concept, 0 assets, 0 references skipped, 0 references failed.");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ finished: Boolean(run) }));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === delegatePath) {
+    req.resume(); // drain the task body; the mock does not act on it
+    const runId = `mock-run-${++mockSeq}`;
+    res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
+    const run: MockRun = { runId, res, ended: false };
+    mockRuns.set(runId, run);
+    const hold = mockHoldNext > 0;
+    if (hold) mockHoldNext--;
+    const delay = mockDelayNextMs;
+    mockDelayNextMs = 0;
+    if (mockRunArrived) {
+      const resolve = mockRunArrived;
+      mockRunArrived = null;
+      resolve();
+    }
+    const start = () => {
+      // The FIRST line of a run, exactly as runner.ts emits it.
+      mockLine(res, { type: "run_started", runId });
+      if (hold) return; // the test will abort it, or finish it explicitly
+      mockLine(res, { type: "tool", tool: "okf_upsert_concept" });
+      // A run that completes INSTANTLY is as unlike a real one as a run that
+      // takes ten minutes: the lifecycle assertions watch a job pass through
+      // `running`, and a 50ms run is `completed` before the first poll. Three
+      // seconds is long enough to be observed and short enough to be free.
+      setTimeout(
+        () => endMockRun(run, "completed", "Wrote 1 chapter, 1 concept, 0 assets, 0 references skipped, 0 references failed."),
+        3000,
+      );
+    };
+    if (delay > 0) setTimeout(start, delay);
+    else start();
+    return;
+  }
+
+  res.writeHead(404, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: `mock delegate has no route for ${req.method} ${url.pathname}` }));
+}
+
+async function startMockDelegate(): Promise<void> {
+  if (!MOCK_ON) return;
+  const url = new URL(MOCK_DELEGATE_URL);
+  mockServer = http.createServer((req, res) => handleMock(req, res, url.pathname));
+  await new Promise<void>((resolve, reject) => {
+    mockServer!.once("error", reject);
+    mockServer!.listen(Number(url.port || 80), url.hostname, () => resolve());
+  });
+}
+
+async function stopMockDelegate(): Promise<void> {
+  mockHoldNext = 0;
+  mockDelayNextMs = 0;
+  for (const run of mockRuns.values()) endMockRun(run, "error");
+  mockRuns.clear();
+  if (!mockServer) return;
+  await new Promise<void>((resolve) => mockServer!.close(() => resolve()));
+  mockServer = null;
+}
+
+/**
+ * Start a run that is still LIVE when this resolves, and hand back its job id.
+ *
+ * With the mock seam on, that is exact: the mock emits `run_started` and then
+ * holds the stream open until something aborts it. Without it, this starts a
+ * real okf-ingest run against a one-line source — genuinely live for the tens
+ * of seconds a real run takes — so the cancel/delete contracts are still
+ * exercised end to end, just without the mock's control over the far side.
+ */
+async function startLiveRun(source: string, content = "# live probe\n\nbody\n"): Promise<string> {
+  await api.post(`bundles/${B.main}/import`, { data: { files: [{ path: source, content }] } });
+  let arrived: Promise<void> | null = null;
+  if (MOCK_ON) {
+    mockHoldNext++;
+    arrived = new Promise<void>((resolve) => {
+      mockRunArrived = resolve;
+    });
+  }
+  const started = await (await api.post("jobs", { data: { bundle: B.main, source } })).json();
+  expect(started.jobId, "the trigger must mint a job").toBeTruthy();
+  // Wait for the mock to actually hold the stream, so the caller is not
+  // racing the service's detached driveRun.
+  if (arrived) await arrived;
+  return started.jobId as string;
+}
+
+/** Poll a job record until `predicate` holds, and return it. */
+async function jobUntil(
+  id: string,
+  predicate: (job: Record<string, unknown>) => boolean,
+  message: string,
+  timeout = 30_000,
+): Promise<Record<string, unknown>> {
+  let job: Record<string, unknown> = {};
+  await expect
+    .poll(
+      async () => {
+        const res = await api.get(`jobs/${id}`);
+        if (!res.ok()) return false;
+        job = await res.json();
+        return predicate(job);
+      },
+      { message, timeout, intervals: [250, 500, 1000] },
+    )
+    .toBe(true);
+  return job;
+}
 
 // ── service reachability (never a hardcoded port) ────────────────────────
 
@@ -213,6 +420,31 @@ async function seedRules(): Promise<void> {
 
 // ── app helpers ──────────────────────────────────────────────────────────
 
+/**
+ * One `.jobs/<id>.md` record, in the shape the service writes and reads: a
+ * legible frontmatter header plus the authoritative fenced `json` block.
+ * Used to seed a job the service could not have produced itself (an orphan
+ * from before a restart).
+ */
+function jobFileContent(job: Record<string, unknown>): string {
+  const fm = [
+    "---",
+    "type: ingest-job",
+    `id: ${job.id}`,
+    `status: ${job.status}`,
+    `bundle: ${job.bundleId}`,
+    `source: ${JSON.stringify(job.source)}`,
+    `runId: ${job.runId ? JSON.stringify(job.runId) : "null"}`,
+    `queued_at: ${JSON.stringify(job.queuedAt)}`,
+    `started_at: ${job.startedAt ? JSON.stringify(job.startedAt) : "null"}`,
+    "ended_at: null",
+    "duration_ms: null",
+    "---",
+    "",
+  ].join("\n");
+  return `${fm}# Ingest run \`${job.id}\`\n\n<!-- okf:job — the authoritative record -->\n\`\`\`json\n${JSON.stringify(job, null, 2)}\n\`\`\`\n`;
+}
+
 async function openApp(page: Page): Promise<FrameLocator> {
   await page.goto(BASE);
   // Launch from the DOCK, not the desktop icon. `getByText(name).first()`
@@ -232,6 +464,7 @@ async function openApp(page: Page): Promise<FrameLocator> {
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async () => {
+  await startMockDelegate();
   const shell = await request.newContext();
   serviceBase = await resolveServiceBase(shell);
   await shell.dispose();
@@ -244,25 +477,44 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   for (const b of Object.values(B)) await del(b);
   await api.dispose();
+  await stopMockDelegate();
 });
 
 // ════════════════════════════════════════════════════════════════════════
-//  SC-007 / FR-037 / FR-038 — the tool surface is exactly 19
+//  SC-007 / FR-037 / FR-038 — the tool surface is exactly 21
 // ════════════════════════════════════════════════════════════════════════
 
-test("SC-007: the service declares exactly the 19 okf_* tools and none of the 16 removed", async () => {
+test("SC-007: the service declares exactly the 21 okf_* tools and none of the 16 removed", async () => {
   const res = await api.get("tools");
   expect(res.ok()).toBeTruthy();
   const { count, tools } = await res.json();
 
   // The badge in the app and this assertion both read the service's OWN
   // declaration list — neither hardcodes the number anywhere but here.
-  expect(count).toBe(19);
-  expect(tools.length).toBe(19);
+  expect(count).toBe(21);
+  expect(tools.length).toBe(21);
   expect(tools.map((t: { name: string }) => t.name).sort()).toEqual(EXPECTED_TOOLS);
 
   const names = new Set(tools.map((t: { name: string }) => t.name));
   for (const removed of REMOVED_TOOLS) expect(names.has(removed), `${removed} must no longer be declared`).toBe(false);
+});
+
+test("FR-050/FR-051: the two job-control tools are declared, and declared as WRITES", async () => {
+  const { tools } = await (await api.get("tools")).json();
+  const byName = new Map(tools.map((t: { name: string }) => [t.name, t]));
+
+  for (const name of ["okf_cancel_job", "okf_delete_job"]) {
+    const tool = byName.get(name) as { inputSchema: { properties: Record<string, unknown>; required?: string[] }; parallelSafe: boolean } | undefined;
+    expect(tool, `${name} must be declared`).toBeTruthy();
+    expect(tool!.inputSchema.properties.jobId, `${name} takes a jobId`).toBeTruthy();
+    expect(tool!.inputSchema.required).toEqual(["jobId"]);
+    // One stops a live run, the other removes a record. Neither is something
+    // to run concurrently with itself, so neither opts into parallelSafe.
+    expect(tool!.parallelSafe, `${name} is a write, not a read`).toBe(false);
+  }
+
+  // the reader of the same records stays read-only
+  expect((byName.get("okf_list_jobs") as { parallelSafe: boolean }).parallelSafe).toBe(true);
 });
 
 test("FR-038: every declared tool carries a validatable JSON schema; read-only tools are parallelSafe", async () => {
@@ -833,29 +1085,34 @@ test("FR-049: a run orphaned by a restart is reaper-marked failed(stale), not le
   const shell = await request.newContext();
   const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
   const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
-  const jobsFile = `${bundleRoot}/.jobs/jobs.json`;
 
-  const existing = await shell.get(`${BASE}/api/fs?op=read&path=${encodeURIComponent(jobsFile)}`);
-  const store = existing.ok() ? JSON.parse((await existing.json()).content) : { jobs: [], seq: 1000 };
-
+  // The store is ONE FILE PER RUN (`.jobs/<id>.md`), so seeding is writing
+  // one file — no read-modify-write of a shared history, and no chance of
+  // clobbering a record a live run is updating while this test runs.
   const staleId = `run-e2e-stale-${Date.now()}`;
   const longAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-  store.jobs.unshift({
-    id: staleId,
-    status: "running",
-    bundleId: B.main,
-    source: "raw/e2e-orphaned.md",
-    maxDepth: 1,
-    maxWorkers: 3,
-    queuedAt: longAgo,
-    startedAt: longAgo,
-    endedAt: null,
-    durationMs: null,
-    progress: "writing 2 of 9 chapters",
-    summary: null,
-    error: null,
+  const wrote = await shell.post(`${BASE}/api/fs`, {
+    data: {
+      op: "write",
+      path: `${bundleRoot}/.jobs/${staleId}.md`,
+      content: jobFileContent({
+        id: staleId,
+        status: "running",
+        bundleId: B.main,
+        source: "raw/e2e-orphaned.md",
+        maxDepth: 1,
+        maxWorkers: 3,
+        runId: null,
+        queuedAt: longAgo,
+        startedAt: longAgo,
+        endedAt: null,
+        durationMs: null,
+        progress: "writing 2 of 9 chapters",
+        summary: null,
+        error: null,
+      }),
+    },
   });
-  const wrote = await shell.post(`${BASE}/api/fs`, { data: { op: "write", path: jobsFile, content: JSON.stringify(store, null, 2) + "\n" } });
   expect(wrote.ok(), "could not seed the job store").toBeTruthy();
 
   const restarted = await shell.post(`${BASE}/api/services/${SERVICE_ID}`, { data: { action: "restart", reason: "e2e reaper check" } });
@@ -917,6 +1174,227 @@ test("POST /jobs validates its input rather than starting a run it cannot descri
   expect((await api.post("jobs", { data: { source: "raw/x.md" } })).status()).toBe(400);
   expect((await api.post("jobs", { data: { bundle: B.main } })).status()).toBe(400);
   expect((await api.post("jobs", { data: { bundle: "e2e-okf-does-not-exist", source: "raw/x.md" } })).status()).toBeGreaterThanOrEqual(400);
+});
+
+
+// ════════════════════════════════════════════════════════════════════════
+//  FR-048/050/051/052 · SC-014/015 · ADR-010 — job control
+// ════════════════════════════════════════════════════════════════════════
+//
+// Cancel and delete are ONE capability on TWO surfaces (ADR-003): the
+// `okf_cancel_job` / `okf_delete_job` tools and the app's `POST
+// /jobs/<id>/cancel` / `DELETE /jobs/<id>` routes call the identical
+// `core.cancelJob` / `core.deleteJob`. A 039 tool is dispatched over worker
+// IPC and has no HTTP face, so this suite drives the behaviour through the
+// routes and pins the tools' half of the contract where it IS observable —
+// the declared surface (above: both present, both writes, both `{jobId}`).
+// The two cannot drift apart without one of them growing its own copy of the
+// operation, which is exactly what sharing `core` prevents.
+
+test("FR-048: the job list carries cancelled runs AND each run's runId — the records okf_list_jobs reads", async () => {
+  const jobId = await startLiveRun("raw/e2e-list-shape.md");
+
+  // a run that started reports the run it is (FR-052)
+  if (MOCK_ON) {
+    const started = await jobUntil(jobId, (j) => Boolean(j.runId), "the bridge never captured the run's runId");
+    expect(String(started.runId)).toMatch(/^mock-run-\d+$/);
+  }
+
+  const cancelled = await (await api.post(`jobs/${jobId}/cancel`)).json();
+  expect(cancelled.cancelled).toBe(true);
+
+  // GET /jobs is what both the Jobs tab and okf_list_jobs render
+  const { jobs } = await (await api.get("jobs")).json();
+  const listed = jobs.find((j: { id: string }) => j.id === jobId);
+  expect(listed, "a cancelled run stays in the list — cancel is not delete").toBeTruthy();
+  expect(listed.status).toBe("cancelled");
+  expect(listed).toHaveProperty("runId");
+
+  // the status filter knows the state exists at all
+  const filtered = await (await api.get("jobs?status=cancelled")).json();
+  expect(filtered.jobs.some((j: { id: string }) => j.id === jobId)).toBe(true);
+
+  // and the single-record route agrees with the list, field for field
+  const single = await (await api.get(`jobs/${jobId}`)).json();
+  expect(single).toEqual(listed);
+});
+
+test("SC-014/US8-4: cancelling a running run lands it CANCELLED — not failed — with its bundle content intact", async () => {
+  // what the bundle already holds, before anything is cancelled
+  const before = await (await api.get(`bundles/${B.main}/concept/api-design/endpoint-naming`)).json();
+  const chaptersBefore = (await (await api.get(`bundles/${B.main}`)).json()).health.chapters;
+
+  const jobId = await startLiveRun("raw/e2e-cancel-running.md");
+  const live = await jobUntil(jobId, (j) => j.status === "running" || j.status === "queued", "the run never became live");
+  expect(["running", "queued"]).toContain(live.status);
+
+  const res = await api.post(`jobs/${jobId}/cancel`);
+  expect(res.status()).toBe(200);
+  const body = await res.json();
+  expect(body.cancelled).toBe(true);
+  expect(body.status).toBe("cancelled");
+
+  const job = await jobUntil(jobId, (j) => j.status === "cancelled", "the job never reached the cancelled state");
+  // THE distinction this whole feature exists for
+  expect(job.status).toBe("cancelled");
+  expect(job.status).not.toBe("failed");
+  expect(job.error, "a cancelled run is a stop, not an error — its error is null").toBeNull();
+  expect(job.endedAt, "cancelled is terminal, so it has an end").toBeTruthy();
+  expect(job.progress, "a terminal transition clears progress").toBeNull();
+
+  // the record is preserved (cancel is not delete) …
+  const { jobs } = await (await api.get("jobs")).json();
+  expect(jobs.some((j: { id: string }) => j.id === jobId)).toBe(true);
+  // … and so is every byte the bundle already held (cancel is not rollback)
+  const after = await (await api.get(`bundles/${B.main}/concept/api-design/endpoint-naming`)).json();
+  expect(after.body).toBe(before.body);
+  expect(after.frontmatter).toEqual(before.frontmatter);
+  expect((await (await api.get(`bundles/${B.main}`)).json()).health.chapters).toBeGreaterThanOrEqual(chaptersBefore);
+
+  // SC-014: cancelling it AGAIN is an explicit no-op, not an error and not a
+  // second ending — a user can click Cancel on a row that just finished.
+  const again = await api.post(`jobs/${jobId}/cancel`);
+  expect(again.status()).toBe(200);
+  const noop = await again.json();
+  expect(noop.cancelled).toBe(false);
+  expect(noop.reason).toBe("already terminal");
+  expect((await (await api.get(`jobs/${jobId}`)).json()).endedAt).toBe(job.endedAt);
+});
+
+test("SC-014: cancelling a run that already COMPLETED is a no-op, and cancelling an unknown job is a clean 404", async () => {
+  const { jobs } = await (await api.get("jobs")).json();
+  const terminal = jobs.find((j: { status: string }) => j.status === "completed" || j.status === "failed");
+  expect(terminal, "earlier tests left a terminal run on record").toBeTruthy();
+
+  const res = await api.post(`jobs/${terminal.id}/cancel`);
+  expect(res.status()).toBe(200);
+  const body = await res.json();
+  expect(body.cancelled).toBe(false);
+  expect(body.reason).toBe("already terminal");
+  // the run's own outcome is untouched — a no-op does not relabel history
+  expect((await (await api.get(`jobs/${terminal.id}`)).json()).status).toBe(terminal.status);
+
+  expect((await api.post("jobs/run-does-not-exist/cancel")).status()).toBe(404);
+});
+
+test("FR-052: the per-run abort endpoint stops a live run and is idempotent about one that already ended", async () => {
+  test.skip(!MOCK_ON, "needs a run whose abort this process can observe — set OKF_DELEGATE_URL to the mock-delegate seam");
+
+  const jobId = await startLiveRun("raw/e2e-abort-direct.md");
+  const job = await jobUntil(jobId, (j) => Boolean(j.runId), "the bridge never captured the run's runId");
+  const runId = String(job.runId);
+
+  const shell = await request.newContext();
+  const base = new URL(MOCK_DELEGATE_URL).origin;
+
+  // a LIVE run: aborted, and it says so
+  const first = await shell.post(`${base}/api/subagents/${encodeURIComponent(runId)}/abort`);
+  expect(first.status()).toBe(200);
+  expect(await first.json()).toMatchObject({ aborted: true, runId });
+
+  // the run ends `cancelled`, and the launcher writes that from the run's
+  // own terminal line — nothing else wrote the status
+  const ended = await jobUntil(jobId, (j) => j.status === "cancelled", "the aborted run did not finalize as cancelled");
+  expect(ended.error).toBeNull();
+
+  // the SAME call again: idempotent, `aborted:false`, not an error
+  const second = await shell.post(`${base}/api/subagents/${encodeURIComponent(runId)}/abort`);
+  expect(second.status()).toBe(200);
+  expect(await second.json()).toMatchObject({ aborted: false, runId });
+
+  // an unknown runId is the same idempotent answer, never a 500
+  const unknown = await shell.post(`${base}/api/subagents/run-that-never-existed/abort`);
+  expect(unknown.status()).toBe(200);
+  expect((await unknown.json()).aborted).toBe(false);
+
+  // no runId at all is a 404 — there is nothing being addressed
+  expect((await shell.post(`${base}/api/subagents//abort`)).status()).toBe(404);
+
+  await shell.dispose();
+});
+
+test("ADR-010/S4: a cancel in the QUEUED window fires the moment run_started lands", async () => {
+  test.skip(!MOCK_ON, "needs control over when run_started is emitted — set OKF_DELEGATE_URL to the mock-delegate seam");
+
+  // Hold run_started back, so the cancel genuinely arrives while the run has
+  // no id to abort yet. This is the window a naive implementation drops the
+  // cancel in, or waits out the whole run for.
+  mockDelayNextMs = 2500;
+  const jobId = await startLiveRun("raw/e2e-cancel-queued.md");
+
+  const early = await (await api.get(`jobs/${jobId}`)).json();
+  expect(early.runId, "the run has not announced itself yet — that is the window").toBeNull();
+
+  const res = await api.post(`jobs/${jobId}/cancel`);
+  expect(res.status()).toBe(200);
+  expect((await res.json()).cancelled).toBe(true);
+
+  // The abort must fire on run_started, not at the run's natural end: the
+  // mock would otherwise hold the stream open indefinitely, so reaching a
+  // captured runId AND a cancelled job here is the assertion.
+  const job = await jobUntil(jobId, (j) => Boolean(j.runId), "the deferred run never reported its runId", 20_000);
+  expect(job.status).toBe("cancelled");
+
+  const runId = String(job.runId);
+  const shell = await request.newContext();
+  const probe = await shell.post(`${new URL(MOCK_DELEGATE_URL).origin}/api/subagents/${encodeURIComponent(runId)}/abort`);
+  // already aborted by the queued-window path — nothing left to stop
+  expect((await probe.json()).aborted, "the run should already have been aborted on run_started").toBe(false);
+  await shell.dispose();
+});
+
+test("SC-015/US8-5: deleting a non-running run removes the record and NOTHING else", async () => {
+  const before = await (await api.get(`bundles/${B.main}/concept/api-design/endpoint-naming`)).json();
+  const docsBefore = await (await api.get(`bundles/${B.main}`)).json();
+
+  const jobId = await startLiveRun("raw/e2e-delete-target.md");
+  await (await api.post(`jobs/${jobId}/cancel`)).json();
+  await jobUntil(jobId, (j) => j.status === "cancelled", "the run did not reach a terminal state to delete from");
+
+  const res = await api.delete(`jobs/${jobId}`);
+  expect(res.status()).toBe(200);
+  expect((await res.json()).deleted).toBe(true);
+
+  // gone from both job surfaces
+  expect((await api.get(`jobs/${jobId}`)).status()).toBe(404);
+  const { jobs } = await (await api.get("jobs")).json();
+  expect(jobs.some((j: { id: string }) => j.id === jobId)).toBe(false);
+
+  // and the knowledge the run was about is untouched — a job record is
+  // bookkeeping ABOUT a run, not the knowledge it produced
+  const after = await (await api.get(`bundles/${B.main}/concept/api-design/endpoint-naming`)).json();
+  expect(after.body).toBe(before.body);
+  expect(after.frontmatter).toEqual(before.frontmatter);
+  const docsAfter = await (await api.get(`bundles/${B.main}`)).json();
+  expect(docsAfter.health.chapters).toBeGreaterThanOrEqual(docsBefore.health.chapters);
+  expect(docsAfter.conceptIndex.length).toBeGreaterThanOrEqual(docsBefore.conceptIndex.length);
+
+  // deleting it twice is a clean 404, not a 500
+  expect((await api.delete(`jobs/${jobId}`)).status()).toBe(404);
+});
+
+test("SC-015/US8-6: deleting a RUNNING run is refused with 409 — cancel it first", async () => {
+  const jobId = await startLiveRun("raw/e2e-delete-running.md");
+  await jobUntil(jobId, (j) => j.status === "running" || j.status === "queued", "the run never became live");
+
+  const refused = await api.delete(`jobs/${jobId}`);
+  expect(refused.status()).toBe(409);
+  expect(JSON.stringify(await refused.json())).toMatch(/cancel it first/i);
+
+  // the record survived the refusal
+  expect((await api.get(`jobs/${jobId}`)).status()).toBe(200);
+
+  // and the documented order works: cancel, then delete
+  await api.post(`jobs/${jobId}/cancel`);
+  await jobUntil(jobId, (j) => j.status === "cancelled", "the run did not cancel");
+  expect((await api.delete(`jobs/${jobId}`)).status()).toBe(200);
+  expect((await api.get(`jobs/${jobId}`)).status()).toBe(404);
+});
+
+test("deleting a job that never existed is a clean 404, not a 500", async () => {
+  const res = await api.delete("jobs/run-never-existed");
+  expect(res.status()).toBe(404);
+  expect(JSON.stringify(await res.json())).toMatch(/not found/i);
 });
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1004,7 +1482,7 @@ test("US8/SC-011: the Jobs tab lists runs with their lifecycle status and expand
   expect(await rows.count()).toBeGreaterThan(0);
   const first = rows.first();
   const id = (await first.getAttribute("data-testid"))!.replace("job-row-", "");
-  await expect(app.getByTestId(`job-status-${id}`)).toHaveText(/queued|running|completed|failed/);
+  await expect(app.getByTestId(`job-status-${id}`)).toHaveText(/queued|running|completed|cancelled|failed/);
 
   await first.click();
   await expect(app.getByTestId(`job-detail-${id}`)).toBeVisible();
@@ -1019,9 +1497,10 @@ test("US8/SC-011: the Jobs tab lists runs with their lifecycle status and expand
   const panel = {
     completed: app.getByTestId(`job-summary-${id}`).or(app.getByTestId(`job-detail-${id}`)),
     failed: app.getByTestId(`job-error-${id}`),
+    cancelled: app.getByTestId(`job-cancelled-${id}`),
     running: app.getByTestId(`job-progress-${id}`),
     queued: app.getByTestId(`job-queued-${id}`),
-  }[status as "completed" | "failed" | "running" | "queued"];
+  }[status as "completed" | "failed" | "cancelled" | "running" | "queued"];
   expect(panel, `unexpected job status rendered: ${status}`).toBeDefined();
   await expect(panel).toBeVisible();
 });
@@ -1044,6 +1523,79 @@ test("FR-041: the Jobs tab shows exactly the records core.listJobs returns — t
     await expect(app.getByTestId(`job-status-${job.id}`)).toHaveText(job.status);
   }
   await expect(app.getByTestId("jobs-count")).toContainText(`${jobs.length} run`);
+});
+
+test("FR-041/mockup: the Jobs tab renders the cancelled dot and the state-dependent Cancel / Delete controls", async ({ page }) => {
+  // one terminal (cancelled) run and one that is still live, so both halves
+  // of the control matrix are on screen at the same time
+  const cancelledId = await startLiveRun("raw/e2e-app-cancelled.md");
+  await api.post(`jobs/${cancelledId}/cancel`);
+  await jobUntil(cancelledId, (j) => j.status === "cancelled", "the fixture run did not cancel");
+
+  const runningId = await startLiveRun("raw/e2e-app-running.md");
+  await jobUntil(runningId, (j) => j.status === "running" || j.status === "queued", "the fixture run never became live");
+
+  const app = await openApp(page);
+  await app.getByTestId("tab-jobs").click();
+  await expect(app.getByTestId("jobs-list")).toBeVisible({ timeout: 15000 });
+
+  // the cancelled run reads as STOPPED, not as an error: its own dot class
+  // and its own status label, distinct from failed's
+  await expect(app.getByTestId(`job-status-${cancelledId}`)).toHaveText("cancelled", { timeout: 15000 });
+  await expect(app.getByTestId(`job-dot-${cancelledId}`)).toHaveClass(/\bcancelled\b/);
+  await expect(app.getByTestId(`job-dot-${cancelledId}`)).not.toHaveClass(/\bred\b/);
+
+  // a terminal row offers Delete and NOT Cancel …
+  await expect(app.getByTestId(`job-delete-${cancelledId}`)).toBeVisible();
+  await expect(app.getByTestId(`job-cancel-${cancelledId}`)).toHaveCount(0);
+
+  // … and a running row offers Cancel and NOT Delete, because deleting the
+  // record of a live run is the one thing the service refuses outright
+  await expect(app.getByTestId(`job-cancel-${runningId}`)).toBeVisible({ timeout: 15000 });
+  await expect(app.getByTestId(`job-delete-${runningId}`)).toHaveCount(0);
+
+  // the detail of a cancelled run is its own card, not the error card
+  await app.getByTestId(`job-row-${cancelledId}`).click();
+  await expect(app.getByTestId(`job-cancelled-${cancelledId}`)).toBeVisible();
+  await expect(app.getByTestId(`job-error-${cancelledId}`)).toHaveCount(0);
+  await app.getByTestId(`job-row-${cancelledId}`).click();
+});
+
+test("US8-4/US8-6: clicking Cancel stops the run, and clicking Delete removes the row — through the real routes", async ({ page }) => {
+  const runningId = await startLiveRun("raw/e2e-app-cancel-click.md");
+  await jobUntil(runningId, (j) => j.status === "running" || j.status === "queued", "the fixture run never became live");
+
+  const app = await openApp(page);
+  await app.getByTestId("tab-jobs").click();
+  await expect(app.getByTestId(`job-cancel-${runningId}`)).toBeVisible({ timeout: 15000 });
+
+  // CANCEL: the button drives POST /jobs/<id>/cancel, and the row follows
+  await app.getByTestId(`job-cancel-${runningId}`).click();
+  await expect(app.getByTestId(`job-status-${runningId}`)).toHaveText("cancelled", { timeout: 15000 });
+  const stopped = await (await api.get(`jobs/${runningId}`)).json();
+  expect(stopped.status, "the click must drive the service, not just the UI").toBe("cancelled");
+  expect(stopped.error).toBeNull();
+
+  // the control matrix flips with the state: Cancel is gone, Delete appears
+  await expect(app.getByTestId(`job-cancel-${runningId}`)).toHaveCount(0);
+  await expect(app.getByTestId(`job-delete-${runningId}`)).toBeVisible();
+
+  // DELETE: the button drives DELETE /jobs/<id>, the row disappears, and the
+  // record is really gone — not merely hidden
+  await app.getByTestId(`job-delete-${runningId}`).click();
+  await expect(app.getByTestId(`job-${runningId}`)).toHaveCount(0, { timeout: 15000 });
+  expect((await api.get(`jobs/${runningId}`)).status()).toBe(404);
+
+  // and the badge counts what is actually on record, cancelled runs included
+  const { jobs } = await (await api.get("jobs")).json();
+  if (jobs.length) await expect(app.getByTestId("jobs-badge")).toHaveText(String(jobs.length), { timeout: 15000 });
+});
+
+test("the app's tool badge reads the service's real 21-tool surface", async ({ page }) => {
+  const { count } = await (await api.get("tools")).json();
+  expect(count).toBe(21);
+  const app = await openApp(page);
+  await expect(app.getByTestId("tool-badge")).toContainText(`${count} okf_* tools`, { timeout: 15000 });
 });
 
 test("FR-016: the app's Ingest modal starts a real run and it appears in the Jobs tab", async ({ page }) => {

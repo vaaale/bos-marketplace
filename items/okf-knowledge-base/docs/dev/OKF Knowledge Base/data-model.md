@@ -7,7 +7,8 @@ Everything is a Markdown file with YAML frontmatter in the BOS VFS. No database,
 ```
 <bundleRoot>/                       # default /KnowledgeBase
 ├── .jobs/
-│   └── jobs.json                   # service-level job store (NOT exported)
+│   └── <id>.md                     # service-level job store, ONE FILE PER RUN
+│                                   #   (NOT exported)
 └── <bundle>/
     ├── index.md                    # curated entry point + derived "concepts covered"
     ├── log.md                      # append-only event log (init/ingest/lint/merge/delete)
@@ -213,14 +214,15 @@ Nothing here is stored. `containment` comes from `parent`, `coverage` from the c
 
 ## Job record
 
-In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json`. Service-level, newest first, capped at 200.
+In-memory hot map, mirrored to `<bundleRoot>/.jobs/<id>.md` — one readable file per run, so deleting one run's record is a file delete and never a rewrite of the whole history. Service-level, newest first, capped at 200. Each file carries the scalar lifecycle fields in its frontmatter (legible in the Files app) and the full record as a fenced `json` block, which is the authority. A legacy single-file `jobs.json` store is migrated to per-run files on first load and archived, not deleted.
 
 ```jsonc
 {
   "id": "run-1042",
-  "status": "queued | running | completed | failed",
+  "status": "queued | running | completed | cancelled | failed",
   "bundleId": "engineering",
   "source": "https://example.com/performance-budgets",
+  "runId": "headless-okf-ingest-1760…",
   "maxDepth": 1,
   "maxWorkers": 3,
   "queuedAt": "2026-10-09T11:58:00.000Z",
@@ -240,8 +242,11 @@ In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json`. Service-level, ne
 
 - `progress` is advanced by the launcher from the run's `{type:"tool"}` stream lines, and may be enriched by the agent via `POST /jobs/<id> {progress}`. It is cleared on a terminal transition.
 - `summary` exists on `completed`. The counts are read out of the agent's prose where it states them plainly; `text` keeps the report verbatim, and is the authority when a count reads 0 because the agent phrased it differently.
-- `error` exists on `failed`, including the reaper's "stale" reason.
-- **Terminal states are final.** A late transition against a terminal job is a recorded no-op, never a resurrection.
+- `error` exists on `failed`, including the reaper's "stale" reason. It is **null on `cancelled`**: a deliberate stop is not an error, and colouring it like one would make every Jobs list misreport its own history.
+- `runId` is the underlying headless run, captured from the first `run_started` line of the run's stream. It is `null` until the run announces itself, and it is what `okf_cancel_job` hands the platform's per-run abort route.
+- **`cancelled` is terminal and distinct from `failed`.** Cancelling is a stop, not a rollback: the record and everything the run already wrote are preserved.
+- **Deleting a job record never touches bundle content.** `concepts/**`, `concept-index.md`, `toc/**` and `raw/**` are untouched; a running job's record cannot be deleted at all (409 — cancel it first).
+- **Terminal states are final.** A late transition against a terminal job is a recorded no-op, never a resurrection — which is what lets a cancel write `cancelled` immediately and the run's own terminal line arrive afterwards without a conflict.
 - `.jobs/` is operational state, not OKF content: it is excluded from `okf_export_bundle`.
 
 ## Export shape

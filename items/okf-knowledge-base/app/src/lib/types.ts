@@ -131,7 +131,9 @@ export interface BundleGraph {
   indexGeneratedAt: string | null;
 }
 
-export type JobStatus = "queued" | "running" | "completed" | "failed";
+/** `cancelled` is a TERMINAL state distinct from `failed` — an intentional
+ *  stop, not an error, so a cancelled run's `error` is null (FR-050). */
+export type JobStatus = "queued" | "running" | "completed" | "cancelled" | "failed";
 
 export interface JobSummary {
   chapters: number;
@@ -154,6 +156,9 @@ export interface Job {
   status: JobStatus;
   bundleId: string;
   source: string;
+  /** The underlying headless run, once it has started (FR-052). It is what
+   *  Cancel aborts; null for a run that never got that far. */
+  runId: string | null;
   queuedAt: string;
   startedAt: string | null;
   endedAt: string | null;

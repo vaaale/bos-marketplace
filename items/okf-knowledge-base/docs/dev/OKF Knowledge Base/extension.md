@@ -43,7 +43,7 @@ If the vocabulary genuinely outgrows a single deterministic pass — roughly 50k
 
 ### A new tool
 
-19 is a contract, not an accident: `service.json`'s description, `GET /tools`, the app badge and the e2e suite all reflect the real declared list, so adding one is a deliberate, visible act.
+21 is a contract, not an accident: `service.json`'s description, `GET /tools`, the app badge and the e2e suite all reflect the real declared list, so adding one is a deliberate, visible act.
 
 Before adding, check the two folds this surface already made:
 
@@ -70,11 +70,11 @@ Three different places, depending on what you mean:
 | What the agent is *told* about this specific run | `buildIngestTask()` in `okf-core.js` — the task text, including the acquisition first steps |
 | How a run is *launched and watched* | `triggerIngest` / `driveRun` in `okf-core.js`, and `lib/delegate-bridge.js` |
 
-Three invariants when touching the last two rows:
+Two invariants when touching the last row:
 
-- **A document's id comes from `docIdForSource()`, never from the staged path.** That one function is used twice: `acquisitionFirstSteps()` pins its result as `filename` on the `okf_add_raw_source` call, and `buildIngestTask()` writes the same value into the task text. `addRawSource` derives the docId from that filename's base, so the id the task names before the run and the id the tool assigns during it are the same string. Let `filename` default instead and the `/workspace/okf-staged-….md` scratch name becomes the permanent, user-visible document id.
 - **Every acquisition step pins `output_path`.** It is what keeps the source off the token bill. A step without it silently reintroduces the cost this whole pipeline exists to remove.
-- **The launcher owns terminal state.** `driveRun` derives `completed` / `failed` from the run's own `endedReason`, and `POST /jobs/<id>` rejects a `status` field. Do not add a path by which a run declares itself finished — that is the failure mode the rework removed.
+- **The launcher owns terminal state.** `driveRun` derives `completed` / `cancelled` / `failed` from the run's own `endedReason`, and `POST /jobs/<id>` rejects a `status` field. Do not add a path by which a run declares itself finished — that is the failure mode the rework removed. `okf_cancel_job` is not such a path: it writes `cancelled` *and* stops the run, so the job and the run still agree.
+- **Stopping a run goes through the platform's abort route.** `POST /api/subagents/<runId>/abort` — never by aborting the worker's own `fetch` on the delegate stream, which closes the client side and leaves the run executing unwatched. The `runId` comes from the stream's first `run_started` line.
 
 ### A new source type
 
@@ -82,9 +82,14 @@ Three invariants when touching the last two rows:
 
 ## Changing the agent's allowlist
 
-`agents/okf-ingest/AGENT.md`'s `tools:` frontmatter. The agent is deliberately **self-sufficient but narrow**: the full 19-tool `okf_*` surface plus `web_search`, `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`, `file_read`, `file_list`.
+`agents/okf-ingest/AGENT.md`'s `tools:` frontmatter. The agent is deliberately **self-sufficient but narrow**: eight `okf_*` tools — `okf_ingest`, `okf_add_raw_source`, `okf_list_concepts`, `okf_read_concept`, `okf_read_toc`, `okf_search`, `okf_upsert_concept`, `okf_add_link` — plus `web_search`, `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`, `file_read`, `file_list`.
 
 Self-sufficient, because an ingest that has to stop and ask for a capability doesn't finish. Narrow, because it never needs unrestricted `run_command` or `agent_delegate`, and granting either would widen a background agent's reach well past its job. Add to this list only what a run genuinely cannot complete without.
+
+Two exclusions are load-bearing rather than incidental:
+
+- **The job-control tools stay out.** `okf_ingest` is granted so a followed reference becomes its own independent nested job — that is the run's *only* job-lifecycle tool. `okf_list_jobs`, `okf_cancel_job` and `okf_delete_job` are top-level-assistant and app concerns: the run *is* a job, and one that could cancel or delete job records could erase the record of its own behaviour.
+- **Destructive and curation tools stay out.** `okf_delete_concept`, `okf_delete_bundle` and `okf_merge_concepts` are deliberate, explicit actions, not side effects of an ingest.
 
 ## Testing a change
 
@@ -94,6 +99,8 @@ Self-sufficient, because an ingest that has to stop and ask for a capability doe
 BOS_PREVIEW_URL=<preview> npx playwright test e2e/okf-knowledge-base.spec.ts
 ```
 
-It asserts the tool-surface count against `GET /tools` (not a literal), search determinism across both surfaces, the auto-trigger contract (a `jobId` with no instruction block; the reaper marking an overrun run `failed(stale)`), the inline-asset block shape, graph derivation, import/export conformance, and the app's three tabs.
+It asserts the tool-surface count against `GET /tools` (not a literal), search determinism across both surfaces, the auto-trigger contract (a `jobId` with no instruction block; the reaper marking an overrun run `failed(stale)`), the job-control contract (cancel → `cancelled` not `failed`, with bundle content preserved; delete → record only, 409 while running, 404 when missing — asserted on BOTH the tool and the route surface), the inline-asset block shape, graph derivation, import/export conformance, and the app's three tabs.
+
+Run-dependent tests use the **mock-delegate seam**: `OKF_DELEGATE_URL` points `delegate-bridge` at a mock that emits `run_started` and then stays open, so a run is instant and a cancel is deterministic instead of waiting out a real multi-minute agent. The abort follows the same origin, so the mock implements the platform's `POST /api/subagents/<runId>/abort` contract verbatim.
 
 If you change the tool count, the search ranking, the job record shape or the route list, that file is where it shows up first.

@@ -3,7 +3,7 @@
 // Retained unchanged in shape from the pre-redesign item (spec Assumptions):
 // the bind-then-handshake-first ordering, the loopback VFS bridge, and the
 // 039 tool_declare loop. What changed around it: DECLARATIONS is now the
-// 19-tool surface, createRequestHandler serves the standalone app's REST
+// 21-tool surface, createRequestHandler serves the standalone app's REST
 // routes (bundles/toc/concept/search/graph/jobs) instead of the old
 // settings config-app's, and this file now also runs the JOB STALE REAPER
 // (see startReaper below).
@@ -28,10 +28,11 @@ const DEFAULT_BUNDLE_ROOT = "/KnowledgeBase";
 // Bundle-level ingest crawl limits (per-call overridable on okf_ingest).
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_WORKERS = 3;
-// How long a job may sit non-terminal before the reaper calls it lost.
-// 30 minutes: comfortably longer than a real ingest run (minutes), short
-// enough that a run orphaned by a restart does not spin for a whole day.
-const DEFAULT_STALE_JOB_MS = 30 * 60 * 1000;
+// How long a job may sit non-terminal before the reaper calls it lost
+// (config: jobFinalizeTimeoutMs). 30 minutes: comfortably longer than a real
+// ingest run (minutes), short enough that a run orphaned by a restart does
+// not spin for a whole day.
+const DEFAULT_JOB_FINALIZE_TIMEOUT_MS = 30 * 60 * 1000;
 // How often the reaper sweeps. A fifth of the default staleness window, so
 // a lost run is admitted to within a few minutes of actually being lost.
 const REAPER_INTERVAL_MS = 5 * 60 * 1000;
@@ -60,7 +61,7 @@ if (parentPort) {
   let bundleRoot = DEFAULT_BUNDLE_ROOT;
   let ingestDefaults = { maxDepth: DEFAULT_MAX_DEPTH, maxWorkers: DEFAULT_MAX_WORKERS };
   let serviceId = "okf-knowledge-base";
-  let staleJobMs = DEFAULT_STALE_JOB_MS;
+  let jobFinalizeTimeoutMs = DEFAULT_JOB_FINALIZE_TIMEOUT_MS;
   let reaperTimer = null;
 
   function log(level, message) {
@@ -106,7 +107,7 @@ if (parentPort) {
   // any of them — is admit they are lost.
   async function reapOnce(reason) {
     try {
-      const { count, reaped } = await core.reapStaleJobs(bundleRoot, staleJobMs);
+      const { count, reaped } = await core.reapStaleJobs(bundleRoot, jobFinalizeTimeoutMs);
       if (count) {
         log("info", `job reaper (${reason}): marked ${count} stale run(s) failed — ${reaped.join(", ")}`);
       }
@@ -193,7 +194,13 @@ if (parentPort) {
           maxDepth: Number.isFinite(userConfig.maxDepth) ? userConfig.maxDepth : DEFAULT_MAX_DEPTH,
           maxWorkers: Number.isFinite(userConfig.maxWorkers) ? userConfig.maxWorkers : DEFAULT_MAX_WORKERS,
         };
-        staleJobMs = Number.isFinite(userConfig.staleJobMs) && userConfig.staleJobMs > 0 ? userConfig.staleJobMs : DEFAULT_STALE_JOB_MS;
+        // `staleJobMs` was this setting's name before the job-control
+        // scope-add; an installed config still carrying it keeps working.
+        const configuredTimeout = Number.isFinite(userConfig.jobFinalizeTimeoutMs)
+          ? userConfig.jobFinalizeTimeoutMs
+          : userConfig.staleJobMs;
+        jobFinalizeTimeoutMs =
+          Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : DEFAULT_JOB_FINALIZE_TIMEOUT_MS;
         const port = typeof userConfig.port === "number" ? userConfig.port : 0;
 
         // Bind + send initialized/bound/tool_declare FIRST, before touching the
@@ -258,9 +265,11 @@ if (parentPort) {
             }
 
             // Warm the global job store from disk. Ingest runs are
-            // service-level operational state (okf-core's `.jobs/jobs.json`
-            // under the bundle root), so the Jobs tab still shows yesterday's
-            // completed and failed runs after a service restart. Non-fatal:
+            // service-level operational state (okf-core's `.jobs/<id>.md`
+            // files under the bundle root), so the Jobs tab still shows
+            // yesterday's completed, cancelled and failed runs after a
+            // service restart. This is also where a legacy single-file
+            // `.jobs/jobs.json` store is migrated. Non-fatal:
             // an unreadable store just starts empty rather than blocking the
             // tool surface that was already declared above.
             try {
@@ -290,7 +299,7 @@ if (parentPort) {
           return;
         }
         try {
-          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, staleJobMs, getRuntime, serviceId });
+          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, jobFinalizeTimeoutMs, getRuntime, serviceId });
           parentPort.postMessage({ type: "tool_result", payload: { callId, result } });
         } catch (err) {
           parentPort.postMessage({

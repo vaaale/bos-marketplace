@@ -43,7 +43,7 @@ Buttons here also create a new bundle, delete one, and **start an ingest**.
 
 ## Jobs — watch ingest runs
 
-Every ingest is a **run** with a record: queued → running → completed or failed. The Jobs tab lists them with a live elapsed clock, and each row expands into its detail: the summary cells (chapters, concepts, assets, references skipped, references failed), the agent's own report, or the error that stopped it.
+Every ingest is a **run** with a record: queued → running → completed, cancelled or failed. The Jobs tab lists them with a live elapsed clock, and each row expands into its detail: the summary cells (chapters, concepts, assets, references skipped, references failed), the agent's own report, or the error that stopped it. You can **cancel** a run that's still going and **delete** a finished one's record — see [ingest.md](ingest.md).
 
 See [Ingesting documents](ingest.md).
 
@@ -62,6 +62,6 @@ Drag the divider to resize the reader pane.
 
 The app talks to its own background service over a loopback port. For that it needs the **`services:read`** capability — the item declares it, and you grant it once in **Settings → Apps**. Without it the app shows "Service unreachable".
 
-If the service itself isn't running, start it in **Settings → Plugins**. The assistant's 19 `okf_*` tools disappear when the service stops and come back when it starts; that is expected.
+If the service itself isn't running, start it in **Settings → Plugins**. The assistant's 21 `okf_*` tools disappear when the service stops and come back when it starts; that is expected.
 
 Defaults you can change in the service's settings: the storage root (`/KnowledgeBase`), the ingest reference-crawl depth and concurrency, and how long a run may hang before it is declared lost.

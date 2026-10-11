@@ -11,6 +11,7 @@ The OKF Knowledge Base ships as one marketplace item with four facets: a **servi
 │                                                           └─────┬─────┘ │
 │  /api/fs            ◀── loopback ────────────────────────────────┤      │
 │  /api/fs/raw        ◀── loopback ────────────────────────────────┤      │
+│  /api/subagents/<runId>/abort ◀── loopback (stop a run) ─────────┤      │
 │  /api/subagents/delegate ◀── loopback (NDJSON) ──────────────────┘      │
 │         │                                                               │
 │         └─▶ okf-ingest sub-agent (narrow allowlist, in-process)         │
@@ -34,9 +35,9 @@ The OKF Knowledge Base ships as one marketplace item with four facets: a **servi
 |---|---|
 | `lib/okf-core.js` | Everything about storage and derivation: frontmatter parse/serialize, path safety, atomic writes, the two-level derived index, `search`, `graph`, lint, the job store, and `triggerIngest`. |
 | `lib/vfs-bridge.js` | The loopback client for `/api/fs` (text) and `/api/fs/raw` (binary). The only way this service touches storage. |
-| `lib/delegate-bridge.js` | The loopback client for `/api/subagents/delegate`. How the service starts an agent run. |
+| `lib/delegate-bridge.js` | The loopback client for the headless-run endpoint and the per-run abort route. How the service starts an agent run, captures its `runId`, and stops it. |
 | `lib/http-bridge.js` | The app-facing REST surface, loopback-guarded. |
-| `lib/tools.js` | The 19 `okf_*` declarations + handlers. |
+| `lib/tools.js` | The 21 `okf_*` declarations + handlers. |
 
 `okf-core` never touches the host filesystem. Every path it handles is a BOS **VFS** path, and every read/write goes through `vfs-bridge` into `/api/fs`. (An earlier version remapped `bundleRoot` onto a host path derived from the service's config directory; every bundle landed inside BOS's internal `system/` directory, invisible to the Files app and to everything else that reads `/KnowledgeBase` — while the service and its app, which only ever talked to each other, looked fine. The one-time migration for that is still in `index.js`.)
 
@@ -96,7 +97,8 @@ okf_ingest({bundle, source})
 `driveRun` builds the task (embedding `jobId`, bundle, source, and the per-source acquisition first steps, **each pinning `output_path`**), POSTs it to the delegate endpoint, and consumes the NDJSON stream:
 
 - `{type:"tool"}` lines advance `job.progress`.
-- `{type:"done"}` carries `result.endedReason`: `"completed"` → `updateJob(completed)` with a summary parsed from `result.output`; `"error"` or `"max_steps"` → `updateJob(failed)` with `result.error`.
+- `{type:"run_started"}` — the **first** line of every run — carries the run's own `runId`, which is stored on the job record. Everything about stopping a run hangs off it (see below).
+- `{type:"done"}` carries `result.endedReason`, and that map is the whole of terminal state: `"completed"` → `updateJob(completed)` with a summary parsed from `result.output`; `"cancelled"` → `updateJob(cancelled)` with `error: null`; `"error"` or `"max_steps"` → `updateJob(failed)` with `result.error`.
 - `{type:"error"}` → failed.
 - Stream ends with no terminal line → failed. We don't know it succeeded, so it didn't.
 
@@ -108,15 +110,66 @@ okf_ingest({bundle, source})
 
 `driveRun` writes a terminal state on every path it controls. It cannot cover the process dying under it — a service restart, a BOS reload, a killed Next.js. Those orphan a job in `queued`/`running` with nobody watching.
 
-`core.reapStaleJobs(bundleRoot, staleJobMs)` marks any non-terminal job older than `staleJobMs` (default 30 min) as `failed` with a "stale" reason that says what probably happened. It runs **on a timer** (every 5 minutes, `unref`'d so it never holds the worker open) **and as a sweep on every (re)start**.
+`core.reapStaleJobs(bundleRoot, jobFinalizeTimeoutMs)` marks any non-terminal job older than `jobFinalizeTimeoutMs` (config, default 30 min) as `failed` with a "stale" reason that says what probably happened. It runs **on a timer** (every 5 minutes, `unref`'d so it never holds the worker open) **and as a sweep on every (re)start**.
+
+Only `queued`/`running` jobs are candidates, so the reaper can never relabel a `cancelled` run as `failed`: a deliberate stop is terminal, and terminal states are final.
 
 The startup sweep is the important half: a restart is precisely the event that orphans jobs, and the first thing a service should do about jobs it finds `running` — when it knows for a fact it is running none of them — is admit they are lost.
 
 ## The job store
 
-In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json` so the Jobs tab survives a restart. Service-level, not bundle-level: the tab is global, and a run must outlive the bundle it targeted being deleted mid-flight. History is capped at 200. `.jobs/` is operational state, not OKF content, and is **excluded from export**.
+In-memory hot map, mirrored to `<bundleRoot>/.jobs/<id>.md` — **one readable file per run** — so the Jobs tab survives a restart. Service-level, not bundle-level: the tab is global, and a run must outlive the bundle it targeted being deleted mid-flight. History is capped at 200. `.jobs/` is operational state, not OKF content, and is **excluded from export**.
 
-Terminal states are **final**: a late transition against an already-terminal job is recorded as a no-op rather than resurrecting a finished run.
+One file per run rather than one shared `jobs.json` is what makes `okf_delete_job` a file delete instead of a read-modify-write of the whole history — a delete racing a concurrent run's progress write can't silently resurrect or drop another run's record. A legacy single-file store is migrated to per-run files on first load (and archived, not deleted).
+
+The lifecycle is `queued → running → completed | cancelled | failed`. Terminal states are **final**: a late transition against an already-terminal job is recorded as a no-op rather than resurrecting or relabelling a finished run. That is also what makes cancel safe to write eagerly — see below.
+
+## Cancel and delete (job control)
+
+### Cancel: stop the run through the platform, record the stop locally
+
+The hard constraint: the run executes in the **main Next.js process**, the job is owned by the **worker**. The worker cannot reach the run's `AbortController`, and it must not abort its own `fetch` on the delegate stream to stop it — the delegate route never wires the request's signal into the run, so aborting the client side closes the stream while the server-side run keeps going, writing chapters with nothing watching it. The run and the job would disagree.
+
+So the worker asks the process that owns the run, over the same loopback channel it already uses for `/api/fs` and the headless-run endpoint:
+
+```
+okf_cancel_job({jobId})  |  POST /jobs/<id>/cancel
+  └─ core.cancelJob()
+       ├─ already terminal?  →  {cancelled:false, reason:"already terminal"}   NO-OP
+       ├─ updateJob(status: "cancelled", error: null)      ← written NOW, so the
+       │                                                      Jobs tab reflects it
+       │                                                      on the next poll
+       └─ delegate.cancelRun(jobId, runId)
+            └─ POST /api/subagents/<runId>/abort      (platform-owned, generic)
+                 → {aborted:true}   the run's AbortController fires
+                 → the held stream delivers done{endedReason:"cancelled"}
+                 → driveRun's terminal write is a no-op (the job is already
+                   cancelled) — one state, written once, from one place
+```
+
+Three properties worth naming:
+
+- **`cancelled` is terminal and distinct from `failed`**, with `error: null`. A stop the user asked for is not a run that went wrong.
+- **Per-run abort, not family cascade.** A followed reference is an independent top-level run with its own job and its own `runId` (the delegate endpoint does not forward a `parentRunId`), so each is cancelled by its own job. The abort route's `aborted` boolean is per-run.
+- **`aborted:false` is not an error.** It means "no such live run" — already finished, or never started in this process — which makes the call idempotent.
+
+### The queued window
+
+A cancel can arrive before the run has announced its `runId`. There is nothing to abort yet, and waiting out a whole run the user has already stopped would be absurd. So `delegate-bridge` remembers the cancel against the job and fires the abort **the instant `run_started` lands and the id is captured**. A queued-window cancel then behaves exactly like a running one.
+
+### Delete: the record, and only the record
+
+```
+okf_delete_job({jobId})  |  DELETE /jobs/<id>
+  └─ core.deleteJob()
+       ├─ running?     →  409  "cancel it first"
+       ├─ unknown id?  →  404
+       └─ drop from the hot map + delete .jobs/<id>.md      →  {deleted:true}
+```
+
+Bundle content is never touched — chapters, the concept index, every TOC and `raw/` are untouched by both operations. A job record is bookkeeping *about* a run, not the knowledge the run produced; deleting one removes a row from a list.
+
+A running run is refused rather than deleted because removing the record of a live run leaves it writing into a bundle with nothing watching it — the one state the launcher model exists to prevent. Cancel first, then delete.
 
 ## Inline assets
 
@@ -145,8 +198,10 @@ All loopback-guarded, all reusing the same `core` functions as the tools. None o
 | `GET /bundles/<b>/export` · `POST /bundles/<b>/import` | `exportBundle` · `importBundle` |
 | `POST /bundles/<b>/merge` | `mergeConcepts` |
 | `POST /jobs` | **`triggerIngest`** — the app-side auto-trigger |
-| `GET /jobs` · `GET /jobs/<id>` | the job store |
+| `GET /jobs` · `GET /jobs/<id>` | the job store — includes `cancelled` runs and each run's `runId` |
 | `POST /jobs/<id>` | progress enrichment **only**; a `status` field is rejected |
+| `POST /jobs/<id>/cancel` | **`cancelJob`** — the Jobs tab's Cancel control |
+| `DELETE /jobs/<id>` | **`deleteJob`** — the Jobs tab's Delete control (409 while running) |
 
 `POST /bundles/<b>/ingest` is gone — `POST /jobs` supersedes it.
 
@@ -154,12 +209,14 @@ All loopback-guarded, all reusing the same `core` functions as the tools. None o
 
 `app/src/main.tsx` mounts `App` into `#root`. React is provided by the bundler; the item installs no npm packages and the app has **zero runtime dependencies** — including the force-directed graph, which is an in-app simulation (`query/forceSim.ts`) rather than d3 or vis.js.
 
-Three tabs share one state root, so a run started in Overview immediately bumps the Jobs badge. The Jobs poll (3s) runs on *every* tab, not only while Jobs is open, or a run started from Overview would look like nothing happened.
+Three tabs share one state root, so a run started in Overview immediately bumps the Jobs badge. The Jobs poll (3s) runs on *every* tab, not only while Jobs is open, or a run started from Overview would look like nothing happened. The badge counts every run on record, cancelled ones included.
+
+The Jobs rows carry **state-dependent controls**, exactly as the mockup specifies: a `running` row offers **Cancel** and no Delete; a `queued` row offers both; a terminal row (`completed` / `cancelled` / `failed`) offers **Delete** and no Cancel. They call `POST /jobs/<id>/cancel` and `DELETE /jobs/<id>`, which are the same worker operations the `okf_cancel_job` / `okf_delete_job` tools drive. A `cancelled` row renders its own dot — a muted warm amber that reads as *stopped*, deliberately not failed's red — and its own detail card, because the thing to know about a cancelled run is what survived, not what went wrong.
 
 The Query tab mounts only while visible: its force simulation sizes its viewBox from real container dimensions, which are 0 under `display: none`.
 
 ## See also
 
 - [data-model.md](data-model.md) — bundle layout, frontmatter, index/TOC format, the job record.
-- [tool-surface.md](tool-surface.md) — the 19 tools.
+- [tool-surface.md](tool-surface.md) — the 21 tools, and the abort-route dependency.
 - [extension.md](extension.md) — where to add a convention, and why the skill is the seam.
