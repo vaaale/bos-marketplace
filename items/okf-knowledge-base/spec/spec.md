@@ -196,6 +196,40 @@ In the app's **Query** tab the user has a **shared search field** and a **Graph 
 
 ---
 
+### User Story 11 - I can ingest a large document without hitting context limits (Priority: P1)
+
+The user (or an agent) ingests a large article or document (1MB+). The service pre-splits it into bounded chunks on its heading structure; the headless agent processes them sequentially (one chunk at a time, each well within the model's context window). The result is a complete document — all chapters, concepts, summaries, the TOC, and the concept index — with no chapter lost and no duplicate.
+
+**Why this priority**: Without chunking, any source above ~150KB blows the model's context window (the 1.4M-token failure), making the KB unable to ingest real-world documents (long articles, whitepapers, book chapters). This is a hard blocker for the KB's core use case.
+
+**Independent Test**: Ingest a 1MB+ structured document (with headings); verify the chunker splits it into chunks ≤ `maxChunkSize`; verify the agent processes each chunk sequentially; verify the resulting document has all its chapters (no loss, no duplicates), a correct TOC, and a populated concept index.
+
+**Acceptance Scenarios**:
+
+1. **Given** a source document larger than `maxChunkSize` with clear heading structure, **When** it is ingested, **Then** the service splits it into heading-delimited chunks (each ≤ `maxChunkSize`), and the agent processes them one at a time — the run completes and the document is fully ingested.
+2. **Given** a source document with no headings, **When** it is ingested, **Then** the chunker falls back to paragraph/sentence boundaries and the document is still fully ingested.
+3. **Given** a source document that fits within `maxChunkSize`, **When** it is ingested, **Then** it is processed as a single chunk (no splitting overhead) and the result is identical to the non-chunked path.
+4. **Given** a `maxChunkSize` setting changed in the service config, **When** the next ingest runs, **Then** the chunker uses the new size (the setting is honored without code changes).
+
+---
+
+### User Story 12 - I can see what the agent did during a run (trajectory) (Priority: P2)
+
+The user clicks on a job in the Jobs tab and sees the agent's complete trajectory: every tool call it made, with its input and the result it received, in chronological order — rendered as collapsible cards (the same pattern as Self-Heal and the Agentic Editor). For a running job, the trajectory grows in real-time as events are captured.
+
+**Why this priority**: Without the trajectory, a failed or surprising run is a black box — the user sees "0 chapters, 0 concepts" or an error message but can't tell *what the agent tried*. The trajectory is the audit log and the debug surface for the ingest pipeline.
+
+**Independent Test**: Complete an ingest run; click the job in the Jobs tab; verify the trajectory shows the agent's tool calls (`okf_add_raw_source`, `okf_upsert_concept`, `web_fetch`, etc.) with their inputs and results in chronological order, each in a collapsible card.
+
+**Acceptance Scenarios**:
+
+1. **Given** a completed ingest run, **When** the user clicks the job in the Jobs tab, **Then** the detail shows a tool-call timeline — each `tool_call` as a collapsible card (tool name + input summary), expandable to show the `tool_result` — in chronological order.
+2. **Given** a running ingest run, **When** the user views its trajectory, **Then** the timeline shows the events captured so far (it grows as the run progresses).
+3. **Given** a failed run (the agent hit an error), **When** the user views its trajectory, **Then** the timeline shows the calls leading up to the failure, making the error's cause diagnosable.
+4. **Given** a run that produced no events (immediate crash), **When** the user views its trajectory, **Then** a "No trajectory captured" message is shown (not an empty scroll).
+
+---
+
 ### User Story 10 - I can find content by the person it's about or authored by (Priority: P2)
 
 The user asks for content by or about a person — *"what has Diego Córdoba covered?"* or just searches his name. Because ingest registered the salient person as a person-kind term, the name is in the vocabulary and the existing concept-anchored search returns the person's documents/chapters.
@@ -212,6 +246,10 @@ The user asks for content by or about a person — *"what has Diego Córdoba cov
 
 ### Edge Cases
 
+- **What happens when a source has no headings (no natural chunk boundaries)?** → The chunker falls back to paragraph boundaries (double-newline splits). If a single paragraph exceeds `maxChunkSize`, it is split at the nearest sentence boundary (period/space). The chunk carries no `headingPath` (it's a flat split).
+- **What happens when a heading-delimited section exceeds `maxChunkSize`?** → The section is further split at paragraph boundaries within it, up to `maxChunkSize`. The `headingPath` is carried on each sub-chunk so the agent knows the section it's in.
+- **What happens when a job's trajectory is very large (many tool calls)?** → The trajectory is stored in full (it's the run's audit log). The app renders it lazily (virtualized or paginated if > 100 events). The job record size is bounded by the run's actual tool-call count (typically 20–80 for an ingest run).
+- **What happens when the agent's run produces no NDJSON events (immediate crash)?** → The trajectory is an empty array; the job's `error` field carries the failure. The app shows "No trajectory captured — the run failed before producing events."
 - **What happens when a query matches no concept term?** → `okf_search` returns an empty (or near-empty) result set; the agent can widen the query or read the vocabulary via `okf_list_concepts` and route semantically. No invented rows.
 - **What happens when a concept index entry points at a chapter that has since been deleted?** → `okf_lint` reports the drift; the index is regenerable, so a rebuild (or the write path) removes the dangling entry.
 - **What happens when a chapter has no headings (no natural section structure)?** → Ingest treats the whole source as a single chapter.
@@ -337,6 +375,16 @@ The user asks for content by or about a person — *"what has Diego Córdoba cov
 - **FR-053 (Person extraction & registration)**: Ingest MUST extract **salient persons** — the **author** and any **named key figures** (people who are *subjects* of the content, not every name that appears) — and register each as a **person-kind concept term**, attached at **document level** (the author) and at **chapter level** (a person a specific section is about). A person term is a concept term carrying `kind: person` (distinct from the default topical kind); it lives in the **same derived concept index** — it is **not** a new entity type and **not** a separate content file. It is **found by name through the existing `okf_search`** (a query token matching the person's name returns the documents/chapters that term covers); no separate search path is introduced.
 - **FR-054 (Person in graph & vocabulary)**: The knowledge graph MUST render person terms as **distinct nodes** (a category color/shape different from topic terms, chapters, and documents), and `okf_list_concepts` MUST report a term's kind so persons are distinguishable from topics.
 
+### Functional Requirements — ingest chunking
+
+- **FR-055 (Source chunking)**: Before the headless `okf-ingest` run processes a source, the service MUST **pre-split the source into bounded chunks** on its heading structure (markdown `##`/`###` boundaries, or paragraph boundaries for headingless sources), each chunk ≤ `maxChunkSize` characters (configurable in the item's service config, default 32000). The chunking is a **mechanical, deterministic** step performed by the service worker (not the agent) — it reads the staged source, splits it, and writes the chunks to a staging directory. The headless agent then processes **one chunk at a time** (sequential, not parallel): reads a chunk, decomposes it into chapters/concepts/summaries, writes them, moves to the next. The total document is reassembled from the per-chapter outputs (the doc stub, TOC, and concept index are built incrementally as chapters are written). A source that fits within `maxChunkSize` is a single chunk (no splitting). The chunking MUST preserve heading hierarchy context: each chunk carries a `headingPath` (the ancestor headings) so the agent knows where in the document it is.
+- **FR-056 (Chunk config)**: The `maxChunkSize` setting MUST be in the item's service config (`config/okf-knowledge-base.json`, alongside `maxDepth`/`maxWorkers`), default 32000 characters (~8K tokens). The service MUST expose it via `GET /config` so the app can display it. Changing it takes effect on the next ingest (no restart required for the setting itself, but the service config is read at start — a restart IS required to pick up a new value, same as `maxDepth`/`maxWorkers`).
+
+### Functional Requirements — job trajectory
+
+- **FR-057 (Trajectory capture)**: The launcher MUST **capture the headless run's full NDJSON stream** (every event: `run_started`, `tool_call`, `tool_result`, `done`) and store it on the job record as a `trajectory` field (an array of the raw NDJSON events, in order). This is the agent's complete conversation/trajectory for the run — every tool it called, every result it received, and its final output. The trajectory is stored alongside the existing job fields (status, summary, error, runId) in the job store (in-memory + persisted `.jobs/`). It MUST NOT be lost on service restart.
+- **FR-058 (Trajectory exposure)**: The service MUST expose the job's trajectory via the app-facing REST: `GET /jobs/<id>` returns the full job record **including `trajectory`** (the NDJSON event array). The app's Jobs tab MUST render the trajectory in the expandable job detail: a **tool-call timeline** — each `tool_call` event shown as a collapsible card (tool name + input, expandable to show the `tool_result`), matching the rendering pattern used by Self-Heal and the Agentic Editor (the same `tool_call`/`tool_result` NDJSON shape, the same collapsible-card UI pattern). The timeline is read-only (it's a historical record, not a live stream). For a running job, the trajectory shows the events captured so far (it grows as the run progresses); for a terminal job, it's complete.
+
 ### Non-Functional Requirements
 
 - **NFR-001 (OKF portability)**: Every bundle MUST be a spec-conformant OKF bundle usable with git/grep/editor; the concept index and document TOCs are plain `.md` files inside the bundle.
@@ -361,7 +409,9 @@ The user asks for content by or about a person — *"what has Diego Córdoba cov
 - **ConceptIndex**: Bundle-level stored, derived artifact. Maps each concept term to `(document, chapter, one-line description)` pairs.
 - **DocumentTOC**: Per-document stored `.md`, derived artifact. Lists the document's chapters with one-line descriptions and covered concepts.
 - **InlineAsset**: A downloaded non-HTML source asset in `raw/` plus its interpretation written into the owning chapter's markdown.
-- **IngestRun**: One headlessly-triggered run of the `okf-ingest` agent, started automatically by `okf_ingest` (FR-046). Recorded as an observable run with a lifecycle (queued → running → completed | **cancelled** | failed), a bundle, a source, timestamps, a summary (chapters written, concepts assigned, assets interpreted, references skipped/failed), and an error. Shown in the app's Jobs tab (FR-041) and listable by agents via `okf_list_jobs` (FR-048). Cancellable while running (FR-050); deletable when non-running (FR-051).
+- **IngestRun**: One headlessly-triggered run of the `okf-ingest` agent, started automatically by `okf_ingest` (FR-046). Recorded as an observable run with a lifecycle (queued → running → completed | **cancelled** | failed), a bundle, a source, timestamps, a summary (chapters written, concepts assigned, assets interpreted, references skipped/failed), an error, and a **trajectory** (the full NDJSON event array of the run's tool calls and results, FR-057). Shown in the app's Jobs tab (FR-041) and listable by agents via `okf_list_jobs` (FR-048). Cancellable while running (FR-050); deletable when non-running (FR-051).
+- **IngestChunk**: One bounded slice of a source document, produced by the mechanical chunker (FR-055) before the headless run processes it. Carries the chunk's text, its `headingPath` (ancestor headings), and its ordinal (which chunk in the document). The agent processes chunks sequentially.
+- **TrajectoryEvent**: One event in a job's trajectory array (FR-057) — a `run_started`, `tool_call`, `tool_result`, or `done` NDJSON event, in order. The trajectory is the agent's complete conversation for the run.
 - **GraphView**: The bundle's knowledge graph — nodes (documents, chapters, concept terms) and typed edges (containment, concept-coverage, explicit links) — derived from stored frontmatter / index / links, for the app's graph view (FR-042/FR-045).
 - **ServiceTool**: An `okf_*` tool declared per the 039 contract.
 - **BundleHealth**: Document / chapter / concept-term counts and stale/deprecated items, for the config-app.
@@ -386,6 +436,8 @@ The user asks for content by or about a person — *"what has Diego Córdoba cov
 - **SC-014**: Cancelling a running job from the Jobs tab or via `okf_cancel_job` aborts the underlying headless run and transitions the job to the distinct `cancelled` state; the job record and any content already written are preserved; cancelling a terminal job is a no-op.
 - **SC-015**: Deleting a non-running job removes its record (via `okf_delete_job` or the Jobs tab) without touching bundle content; deleting a running job is rejected; deleting a non-existent job returns a clean not-found.
 - **SC-016**: Searching a person's name (e.g. "Diego Córdoba") via `okf_search` returns the documents/chapters that person authored or is the subject of — because salient persons are registered as person-kind terms at ingest (FR-053); no separate search path is needed.
+- **SC-017**: A source document of 1MB+ (~250K tokens) is ingested successfully — the chunker splits it into chunks ≤ `maxChunkSize`, the agent processes them sequentially, and the resulting bundle has a complete document (all chapters, TOC, index) with no chapter lost or duplicated.
+- **SC-018**: Clicking a completed or failed job in the Jobs tab shows the agent's trajectory — a scrollable tool-call timeline with each `tool_call` (name + input) and its `tool_result` in collapsible cards — matching the rendering pattern of Self-Heal / Agentic Editor. For a running job, the trajectory grows in real-time as events are captured.
 
 ## Assumptions
 
