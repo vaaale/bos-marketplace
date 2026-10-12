@@ -1691,6 +1691,12 @@ async function mergeConcepts(bundleRoot, bundleName, from, to) {
 
 // ── links (FR-031/FR-032) ────────────────────────────────────────────────
 
+/** "concepts/qwen3/attention-sinks" -> "Attention Sinks" — a stub's title. */
+function conceptTitleFromId(id) {
+  const leaf = String(id).split("/").filter(Boolean).pop() || String(id);
+  return leaf.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() || String(id);
+}
+
 function ensureLinksSection(body) {
   if (/^##\s+Links\s*$/m.test(body)) return body;
   return `${body.replace(/\n+$/, "\n")}\n## Links\n`;
@@ -1716,8 +1722,22 @@ async function removeLinkFromBody(bundleRoot, bundleName, id, targetId) {
  */
 async function addLink(bundleRoot, bundleName, id, targetId, { label } = {}) {
   const bDir = bundleDir(bundleRoot, bundleName);
-  const existing = await readConceptRaw(bDir, id);
-  if (!existing) throw new Error(`concept not found: ${bundleName}/${id}`);
+  let existing = await readConceptRaw(bDir, id);
+  if (!existing) {
+    // The source concept does not exist YET. The ingest agent builds graph
+    // structure while it decomposes chunks, so it routinely links out of a
+    // chapter it has not written the body for — and throwing here turned
+    // that ordinary ordering into a cascade of errors that lost the edge.
+    // Write a minimal stub instead and record the link. The stub is
+    // idempotent: a later okf_upsert_concept on the same id merges onto it
+    // field-by-field (NFR-005), keeping created_at and this link's body.
+    const stubTitle = conceptTitleFromId(id);
+    existing = {
+      frontmatter: { id, type: "section", title: stubTitle, status: "draft", created_at: nowIso(), updated_at: nowIso() },
+      body: `# ${stubTitle}\n`,
+    };
+    await vfs.writeText(conceptFilePath(bDir, id), stringifyDocument(existing.frontmatter, existing.body));
+  }
   validateConceptId(targetId);
 
   if (!extractLinks(existing.body).includes(targetId)) {
@@ -2444,6 +2464,10 @@ async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers })
     maxWorkers: maxWorkers ?? null,
     queuedAt: nowIso(),
     startedAt: null,
+    // Last captured trajectory event (FR-049): the reaper's staleness clock.
+    // Null until the run produces its first event — `startedAt` covers that
+    // window, so a run that never says anything is still reapable.
+    lastEventAt: null,
     endedAt: null,
     durationMs: null,
     progress: null,
@@ -2515,6 +2539,14 @@ async function appendJobTrajectory(bundleRoot, id, event) {
   if (!job) return null;
   if (!Array.isArray(job.trajectory)) job.trajectory = [];
   job.trajectory.push(event);
+  // THE LIVENESS STAMP the stale reaper reads (FR-049). An event is the only
+  // honest evidence that the run is still alive, so it is recorded here, at
+  // the one place every event passes through. It rides the SAME coalesced
+  // write as the trajectory it belongs to — `schedulePersistJobs` already
+  // caps the store at one write per TRAJECTORY_PERSIST_MS, so stamping each
+  // event costs no additional I/O, and the terminal transition flushes it
+  // synchronously through `updateJob`'s own `persistJobs`.
+  job.lastEventAt = nowIso();
   await schedulePersistJobs(bundleRoot);
   return job;
 }
@@ -2736,6 +2768,14 @@ async function deleteJob(bundleRoot, id) {
 
 const CONVERTIBLE = /\.(pdf|docx|pptx|xlsx|doc|ppt|xls)$/i;
 
+/**
+ * A URL's path, with query and fragment removed, so an extension test can be
+ * anchored at the end of it: `…/report.pdf?raw=true` is still a PDF.
+ */
+function stripUrlSuffix(source) {
+  return String(source).replace(/[?#].*$/, "").replace(/\/+$/, "");
+}
+
 /** Filesystem-safe slug for the staged copy's filename. */
 function stagedName(source) {
   const base =
@@ -2765,12 +2805,29 @@ function acquisitionFirstSteps(bundle, source) {
 
   const staged = `/workspace/okf-staged-${stagedName(source)}`;
   const steps = [];
+  let sourcePath;
+
   if (isUrl) {
     steps.push({ tool: "web_fetch", args: { url: source, output_path: staged } });
+    // A convertible URL (PDF, DOCX, …) downloads as BINARY. Registering that
+    // as the raw source is how chunkSource ends up splitting PDF bytes into
+    // garbage chunks — the CONVERTIBLE check used to guard only the local
+    // path branch. Convert it BEFORE it becomes the source, and point
+    // okf_add_raw_source at the converted markdown, not at the download.
+    if (CONVERTIBLE.test(stripUrlSuffix(source))) {
+      const converted = staged.replace(/\.[a-z0-9]+$/i, "") + "-converted.md";
+      steps.push({ tool: "file_to_markdown", args: { path: staged, output_path: converted } });
+      sourcePath = converted;
+    } else {
+      sourcePath = staged;
+    }
   } else if (CONVERTIBLE.test(source)) {
     steps.push({ tool: "file_to_markdown", args: { path: source, output_path: staged } });
+    sourcePath = staged;
+  } else {
+    sourcePath = source;
   }
-  const sourcePath = steps.length ? staged : source;
+
   steps.push({
     tool: "okf_add_raw_source",
     args: { bundle, sourcePath, ...(isUrl ? { originUrl: source } : {}) },
@@ -3048,7 +3105,8 @@ function summaryFromOutput(output, toolCalls) {
  * and a Jobs tab with a permanently-spinning row is worse than one that says
  * plainly that the run was lost.
  *
- * So: any job still non-terminal and older than `staleJobMs` is marked
+ * So: any job still non-terminal that has been SILENT for `staleJobMs` — no
+ * trajectory event in that window, not merely running that long — is marked
  * `failed` with an honest "stale" reason. Only `queued`/`running` jobs are
  * candidates — a `cancelled` job is already terminal and is never reaped
  * (nor re-described as a failure, which is the point of the state). Run on a timer AND as a sweep on
@@ -3063,16 +3121,22 @@ async function reapStaleJobs(bundleRoot, staleJobMs) {
 
   for (const job of state.jobs) {
     if (job.status !== "queued" && job.status !== "running") continue;
-    const since = Date.parse(job.startedAt || job.queuedAt || "");
+    // INACTIVITY, not age. A 51-chunk ingest legitimately runs for 60-100
+    // minutes; measured from `startedAt` the reaper killed it at 30 while it
+    // was still emitting tool calls. `lastEventAt` is the liveness stamp
+    // `appendJobTrajectory` writes per captured event, so the window now
+    // means "has said nothing for 30 minutes" — which a live run never hits
+    // and a dead one (BOS restart, crashed agent) hits immediately.
+    const since = Date.parse(job.lastEventAt || job.startedAt || job.queuedAt || "");
     if (Number.isNaN(since)) continue;
-    const ageMs = now - since;
-    if (ageMs < cutoffMs) continue;
-    const minutes = Math.round(ageMs / 60000);
+    const idleMs = now - since;
+    if (idleMs < cutoffMs) continue;
+    const minutes = Math.round(idleMs / 60000);
     await updateJob(bundleRoot, job.id, {
       status: "failed",
       error:
-        `stale: the run was still "${job.status}" ${minutes} minute(s) after it started, past the ${Math.round(cutoffMs / 60000)}-minute ` +
-        `limit. The service did not see it finish — most likely BOS restarted while it was running. Anything it managed to write is ` +
+        `stale: the run was still "${job.status}" but produced nothing for ${minutes} minute(s), past the ${Math.round(cutoffMs / 60000)}-minute ` +
+        `inactivity limit. The service did not see it finish — most likely BOS restarted while it was running. Anything it managed to write is ` +
         `already in the bundle (writes are atomic and the derived index rebuilds from content); re-run okf_ingest to finish the job.`,
     }).catch(() => {});
     reaped.push(job.id);
