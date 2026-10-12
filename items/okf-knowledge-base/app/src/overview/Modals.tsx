@@ -147,6 +147,12 @@ export function IngestModal({ bundle, onClose, onStarted }: { bundle: string; on
       const res = await triggerIngest(bundle, source);
       setStarted(res);
       onStarted?.();
+      // A started run is watched in the Jobs tab, not in here — the dialog has
+      // nothing left to say, so it gets out of the way (the mockup's Ingest
+      // button closes the modal) and `onStarted` takes the user to the run.
+      // `already_ingested` is the one case that stays: no run was started, and
+      // this note is the only place that answer exists.
+      if (res.status !== "already_ingested") onClose();
     } catch (e) {
       setError((e as Error).message);
     } finally {

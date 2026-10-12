@@ -1072,8 +1072,12 @@ test("FR-016: the app's Ingest modal starts a real run and it appears in the Job
 
   await app.getByTestId("ingest-source").fill("raw/e2e-from-app.md");
   await app.getByTestId("start-ingest").click();
-  await expect(app.getByTestId("ingest-started")).toBeVisible({ timeout: 20000 });
-  await expect(app.getByTestId("ingest-started")).toContainText(/Run run-\d+ started/);
+
+  // the dialog gets out of the way once the run is started: there is nothing
+  // left to read in it, and the run is watched in the Jobs tab — which the
+  // shell switches to, so the user lands on the thing they just started
+  await expect(app.getByTestId("modal-ingest")).toHaveCount(0, { timeout: 20000 });
+  await expect(app.getByTestId("view-jobs")).not.toHaveClass(/hidden/);
 
   // the run is real: it exists on the service, and the Jobs tab shows it
   const after = (await (await api.get("jobs")).json()).jobs as { id: string; source: string }[];
@@ -1081,8 +1085,6 @@ test("FR-016: the app's Ingest modal starts a real run and it appears in the Job
   expect(created, "the modal must create a job, not just describe one").toBeTruthy();
   expect(created!.source).toBe("raw/e2e-from-app.md");
 
-  await app.getByTestId("modal-ingest").getByRole("button", { name: "Close" }).click();
-  await app.getByTestId("tab-jobs").click();
   await expect(app.getByTestId(`job-${created!.id}`)).toBeVisible({ timeout: 15000 });
 });
 

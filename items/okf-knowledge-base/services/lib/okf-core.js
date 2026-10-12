@@ -1213,7 +1213,22 @@ async function graph(bundleRoot, bundleName) {
  */
 async function initBundle(bundleRoot, name, opts = {}) {
   const bDir = bundleDir(bundleRoot, name);
-  if (await vfs.exists(bDir)) throw new Error(`bundle already exists: ${name}`);
+  if (await vfs.exists(bDir)) {
+    // A directory with neither `index.md` nor `concepts/` is not a bundle —
+    // `listBundles` uses exactly that test to decide what counts, and never
+    // lists it. It is the husk of a failed delete or a half-finished init, so
+    // clear it and carry on: a name the user just deleted must be reusable.
+    // A real bundle still refuses — deleting it stays the user's explicit call.
+    const populated =
+      (await vfs.exists(path.join(bDir, "index.md"))) || (await vfs.exists(path.join(bDir, "concepts")));
+    if (populated) throw new Error(`bundle already exists: ${name}`);
+    await vfs.remove(bDir);
+    graphCache.delete(bDir);
+    derivedCache.delete(bDir);
+    if (await vfs.exists(bDir)) {
+      throw new Error(`incomplete bundle directory could not be removed — retry: ${name}`);
+    }
+  }
   const title = opts.title || name;
   const description = opts.description || "";
   await vfs.mkdir(path.join(bDir, "raw"));
@@ -1465,8 +1480,15 @@ async function deleteBundle(bundleRoot, name) {
   const bDir = bundleDir(bundleRoot, name);
   if (!(await vfs.exists(bDir))) throw new Error(`bundle not found: ${name}`);
   await vfs.remove(bDir);
+  // Caches go first, in both outcomes: whatever is left on disk, the in-memory
+  // model of it is stale either way.
   graphCache.delete(bDir);
   derivedCache.delete(bDir);
+  // /api/fs's `delete` op can answer 200 without the directory actually being
+  // gone (a racing writer, a mount boundary). Verify it, so a half-done delete
+  // surfaces as an error the caller can retry rather than a `{deleted:true}`
+  // that leaves a husk behind in the bundle root.
+  if (await vfs.exists(bDir)) throw new Error(`bundle directory still exists after delete — retry: ${name}`);
   return { name, deleted: true };
 }
 

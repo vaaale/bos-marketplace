@@ -24,9 +24,12 @@ interface Props {
   activeBundle: string | null;
   onActiveBundle: (name: string | null) => void;
   onBundlesChanged: () => Promise<void> | void;
+  /** Called when the Ingest modal starts a real run — the shell switches to
+   *  the Jobs tab, which is where the run can actually be watched (FR-041). */
+  onIngestStarted?: () => void;
 }
 
-export default function Overview({ bundles, activeBundle, onActiveBundle, onBundlesChanged }: Props) {
+export default function Overview({ bundles, activeBundle, onActiveBundle, onBundlesChanged, onIngestStarted }: Props) {
   const [view, setView] = React.useState<"list" | "detail">("list");
   const [detail, setDetail] = React.useState<BundleDetail | null>(null);
   const [openBundle, setOpenBundle] = React.useState<string | null>(null);
@@ -137,7 +140,9 @@ export default function Overview({ bundles, activeBundle, onActiveBundle, onBund
           }}
         />
       ) : null}
-      {modal === "ingest" ? <IngestModal bundle={openBundle || ""} onClose={() => setModal(null)} /> : null}
+      {modal === "ingest" ? (
+        <IngestModal bundle={openBundle || ""} onClose={() => setModal(null)} onStarted={onIngestStarted} />
+      ) : null}
       {modal === "delete" && deleteTarget ? (
         <DeleteModal
           target={deleteTarget}

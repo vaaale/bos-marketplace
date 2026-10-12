@@ -147,6 +147,10 @@ export default function App() {
             activeBundle={activeBundle}
             onActiveBundle={setActiveBundle}
             onBundlesChanged={reloadBundles}
+            onIngestStarted={() => {
+              setTab("jobs");
+              void reloadJobs();
+            }}
           />
         </section>
 
