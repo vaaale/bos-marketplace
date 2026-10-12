@@ -264,6 +264,38 @@
   .job-cancelled>svg { flex:0 0 auto; color:var(--stopped); margin-top:1px; }
   .job-cancelled b { color:var(--text); }
 
+  /* --- job trajectory (FR-058 / ADR-013): collapsible tool-call timeline --- */
+  .traj-list { max-height:340px; overflow:auto; border:1px solid var(--border); border-radius:8px; background:#0f141b; padding:10px; display:flex; flex-direction:column; gap:8px; }
+  .traj-card { background:var(--panel); border:1px solid var(--border); border-radius:7px; overflow:hidden; flex:0 0 auto; }
+  .traj-card.run-started { border-left:2px solid var(--accent); }
+  .traj-card.done { border-left:2px solid var(--green); }
+  .traj-card.done.cancelled { border-left-color:var(--stopped); }
+  .traj-card.done.failed { border-left-color:var(--red); }
+  .traj-card.error { border-left:2px solid var(--red); background:rgba(248,81,73,.06); }
+  .traj-head { display:flex; align-items:center; gap:9px; padding:9px 12px; font-size:12.5px; }
+  .traj-head.static { cursor:default; }
+  .traj-card.tool .traj-head, .traj-card.done .traj-head, .traj-card.error .traj-head { cursor:pointer; }
+  .traj-card.tool .traj-head:hover, .traj-card.done .traj-head:hover, .traj-card.error .traj-head:hover { background:var(--panel2); }
+  .traj-caret { color:var(--muted); transition:transform .12s; flex:0 0 auto; }
+  .traj-card.open .traj-caret { transform:rotate(90deg); }
+  .traj-ic { flex:0 0 auto; color:var(--muted); }
+  .traj-toolname { font-weight:600; font-size:12.5px; flex:0 0 auto; }
+  .traj-summary { color:var(--muted); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 1 auto; min-width:0; font-family:ui-monospace,Menlo,monospace; }
+  .traj-badge { margin-left:auto; font-size:10px; text-transform:uppercase; letter-spacing:.4px; border-radius:20px; padding:1px 7px; flex:0 0 auto; }
+  .traj-badge.ok { color:var(--green); background:rgba(63,185,80,.12); border:1px solid rgba(63,185,80,.3); }
+  .traj-badge.err { color:var(--red); background:rgba(248,81,73,.12); border:1px solid rgba(248,81,73,.35); }
+  .traj-badge.run { color:var(--accent); background:rgba(79,140,255,.14); border:1px solid rgba(79,140,255,.4); }
+  .traj-badge.stopped { color:var(--stopped); background:rgba(208,137,78,.14); border:1px solid rgba(208,137,78,.4); }
+  .traj-body { border-top:1px solid var(--border); background:#141922; padding:11px 13px; }
+  .traj-body .blk { margin-bottom:10px; }
+  .traj-body .blk:last-child { margin-bottom:0; }
+  .traj-body .blk-lbl { font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-bottom:4px; display:flex; align-items:center; gap:6px; }
+  .traj-body pre { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; line-height:1.55; color:var(--text); background:#0b0e13; border:1px solid var(--border); border-radius:6px; padding:10px 12px; white-space:pre-wrap; word-break:break-word; margin:0; }
+  .traj-body pre.muted { color:var(--muted); }
+  .traj-nores { font-size:12px; color:var(--muted); font-style:italic; }
+  .traj-note { display:flex; gap:9px; align-items:flex-start; font-size:12.5px; color:var(--muted); background:var(--panel); border:1px dashed var(--border); border-radius:8px; padding:12px 14px; line-height:1.55; }
+  .traj-note>svg { flex:0 0 auto; margin-top:1px; }
+
   .job-acts { display:flex; gap:6px; flex:0 0 auto; margin-left:2px; }
   .job-act { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; padding:3px 9px; border-radius:5px; border:1px solid var(--border); background:var(--panel2); color:var(--muted); cursor:pointer; white-space:nowrap; }
   .job-act:hover { color:var(--text); background:#232a35; }
@@ -714,19 +746,59 @@ const EXPLICIT_LINKS = {
 /* ---------------- jobs (ingest runs) ---------------- */
 const JOBS = [
   { id:'run-1042', status:'running',   bundleId:'engineering',       source:'https://engineering.example.com/docs/performance-budgets', started:'2026-10-09 11:58', elapsed:'02:14',
-    progress:'Interpreting inline asset raw/perf-budget-chart.png · writing 3 of 6 chapters' },
+    progress:'Interpreting inline asset raw/perf-budget-chart.png · writing 3 of 6 chapters',
+    trajectory:[
+      {type:'run_started', runId:'headless-okf-ingest-1731b8e2', agent:'okf-ingest', at:'2026-10-09T11:58:05Z'},
+      {type:'tool', tool:'web_fetch', input:{url:'https://engineering.example.com/docs/performance-budgets', output_path:'raw/stage/perf-budgets.md'}},
+      {type:'tool_result', result:{bytes:42310, contentType:'text/html', savedTo:'raw/stage/perf-budgets.md'}},
+      {type:'tool', tool:'okf_add_raw_source', input:{bundle:'engineering', sourcePath:'raw/stage/perf-budgets.md', title:'Performance Budgets'}}
+    ] },
   { id:'run-1041', status:'completed', bundleId:'internal-policies', source:'https://policies.example.net/security-incident-response', started:'2026-10-08 14:32', duration:'00:48',
     summary:{chapters:4, concepts:5, assets:1, refsSkipped:2, refsFailed:0},
-    written:['Incident Severity Levels','Severity Response SLAs','Communication & Status Updates','Post-Incident Review'] },
+    written:['Incident Severity Levels','Severity Response SLAs','Communication & Status Updates','Post-Incident Review'],
+    trajectory:[
+      {type:'run_started', runId:'headless-okf-ingest-1731a4c9', agent:'okf-ingest', at:'2026-10-08T14:32:03Z'},
+      {type:'tool', tool:'web_fetch', input:{url:'https://policies.example.net/security-incident-response', output_path:'raw/stage/incident-response.md'}},
+      {type:'tool_result', result:{bytes:18240, contentType:'text/html', savedTo:'raw/stage/incident-response.md'}},
+      {type:'tool', tool:'okf_add_raw_source', input:{bundle:'internal-policies', sourcePath:'raw/stage/incident-response.md', title:'Security Incident Response'}},
+      {type:'tool_result', result:{rawFile:'raw/security-incident-response.md', docId:'security-incident-response', chunks:[{path:'.chunks/security-incident-response/001.md', ordinal:1, total:1}]}},
+      {type:'tool', tool:'okf_upsert_concept', input:{bundle:'internal-policies', id:'security-incident-response/severity-levels', title:'Incident Severity Levels', frontmatter:{concepts:['security','incident-response'], person_terms:['Mara Voss']}}},
+      {type:'tool_result', result:{id:'security-incident-response/severity-levels', created:true}},
+      {type:'tool', tool:'okf_upsert_concept', input:{bundle:'internal-policies', id:'security-incident-response/slas', title:'Severity Response SLAs', frontmatter:{concepts:['incident-response','slas']}}},
+      {type:'tool_result', result:{id:'security-incident-response/slas', created:true}},
+      {type:'done', text:'Wrote 4 chapters (Incident Severity Levels, Severity Response SLAs, Communication & Status Updates, Post-Incident Review); assigned 5 concept terms incl. person term "Mara Voss"; 1 asset interpreted; 2 references skipped, 0 failed.', result:{endedReason:'completed'}}
+    ] },
   { id:'run-1040', status:'cancelled', bundleId:'engineering', source:'https://engineering.example.com/handbook/observability-basics', started:'2026-10-08 09:20', duration:'00:31',
     cancelledPct:'60%', partialChapters:3, partialConcepts:4, partialAssets:1,
-    cancelReason:'3 of 5 chapters were decomposed before the stop. Because writes are atomic, nothing was committed — the concept index and existing chapters are untouched.' },
+    cancelReason:'3 of 5 chapters were decomposed before the stop. Because writes are atomic, nothing was committed — the concept index and existing chapters are untouched.',
+    trajectory:[
+      {type:'run_started', runId:'headless-okf-ingest-1730c55d', agent:'okf-ingest', at:'2026-10-08T09:20:04Z'},
+      {type:'tool', tool:'web_fetch', input:{url:'https://engineering.example.com/handbook/observability-basics', output_path:'raw/stage/observability.md'}},
+      {type:'tool_result', result:{bytes:22014, savedTo:'raw/stage/observability.md'}},
+      {type:'tool', tool:'okf_add_raw_source', input:{bundle:'engineering', sourcePath:'raw/stage/observability.md'}},
+      {type:'tool_result', result:{rawFile:'raw/observability-basics.md', docId:'observability-basics'}},
+      {type:'tool', tool:'okf_upsert_concept', input:{bundle:'engineering', id:'observability-basics/metrics-basics', title:'Metrics Basics', frontmatter:{concepts:['monitoring']}}},
+      {type:'tool_result', result:{id:'observability-basics/metrics-basics', created:true}},
+      {type:'done', text:'Stop requested — 3 of 5 chapters decomposed before cancel. Writes are atomic; nothing committed to the bundle.', result:{endedReason:'cancelled', aborted:true}}
+    ] },
   { id:'run-1039', status:'completed', bundleId:'employee-handbook', source:'raw/onboarding-playbook.pdf', started:'2026-10-07 09:11', duration:'01:05',
     summary:{chapters:3, concepts:3, assets:0, refsSkipped:0, refsFailed:1},
-    written:['First Week','Buddy Program','Probation Review'] },
+    written:['First Week','Buddy Program','Probation Review'],
+    trajectory:[
+      {type:'run_started', runId:'headless-okf-ingest-17308a21', agent:'okf-ingest', at:'2026-10-07T09:11:02Z'},
+      {type:'tool', tool:'file_to_markdown', input:{path:'raw/onboarding-playbook.pdf', output_path:'raw/stage/onboarding.md'}},
+      {type:'tool_result', result:{pages:12, savedTo:'raw/stage/onboarding.md'}},
+      {type:'done', text:'Wrote 3 chapters (First Week, Buddy Program, Probation Review); assigned 3 concept terms; 0 assets; 0 references skipped, 1 failed.', result:{endedReason:'completed'}}
+    ] },
   { id:'run-1036', status:'failed',    bundleId:'engineering',       source:'https://engineering.example.com/blog/deprecation-notice', started:'2026-10-06 16:40', duration:'00:12',
-    error:'Source unreachable (HTTP 410 Gone) — raw fetch failed before decomposition. The chapter files and the concept index were not modified (the write is atomic; nothing is left half-written).' },
-  { id:'run-1033', status:'queued',    bundleId:'internal-policies', source:'https://policies.example.net/vendor-risk-assessment', started:null }
+    error:'Source unreachable (HTTP 410 Gone) — raw fetch failed before decomposition. The chapter files and the concept index were not modified (the write is atomic; nothing is left half-written).',
+    trajectory:[
+      {type:'run_started', runId:'headless-okf-ingest-1730d1f7', agent:'okf-ingest', at:'2026-10-06T16:40:02Z'},
+      {type:'tool', tool:'web_fetch', input:{url:'https://engineering.example.com/blog/deprecation-notice', output_path:'raw/stage/deprecation-notice.md'}},
+      {type:'tool_result', result:{ok:false, status:410, error:'HTTP 410 Gone — resource no longer exists'}},
+      {type:'error', message:'Run crashed: source unreachable (HTTP 410 Gone) — raw fetch failed before decomposition; no chapters or index changes were written.', at:'2026-10-06T16:40:14Z'}
+    ] },
+  { id:'run-1033', status:'queued',    bundleId:'internal-policies', source:'https://policies.example.net/vendor-risk-assessment', started:null, trajectory:[] }
 ];
 const STATUS = {
   queued:{dot:'queued',      label:'queued'},
@@ -797,7 +869,7 @@ function assetBlock(a){
 let state = {
   mode:'populated', view:'list', bundleId:'engineering', tab:'conceptIndex',
   docId:null, chapterId:null, expandedTerm:null, termQuery:'', showSrc:{}, deleteId:null,
-  appTab:'overview', jobOpen:null,
+  appTab:'overview', jobOpen:null, trajOpen:{},
   qBundle:'engineering', qView:'graph', qsearch:'',
   pane:{kind:null, bundleId:'engineering', docId:null, chId:null, term:null}, paneShowSrc:false
 };
@@ -1123,9 +1195,116 @@ function jobDetail(j){
   } else if(j.status==='queued'){
     h+='<div class="job-queued">'+I('clock',15)+'<div>Waiting for the <b>okf-ingest</b> agent to pick this up. No bundle content has been modified yet — a run only writes once decomposition succeeds.</div></div>';
   }
+  h+=renderTrajectory(j);
   return h;
 }
 function sumCell(ic,val,lab){ return '<div class="js-cell"><span class="js-ic">'+I(ic,15)+'</span><span class="js-num">'+val+'</span><span class="js-lbl">'+lab+'</span></div>'; }
+/* --- job trajectory (FR-058 / ADR-013): collapsible tool-call timeline --- */
+function trajJson(x){ if(x==null) return 'null'; if(typeof x==='string') return x; try{ return JSON.stringify(x,null,2); }catch(e){ return String(x); } }
+function trajResValue(ev){ if(!ev) return null; if(ev.result!==undefined) return ev.result; if(ev.output!==undefined) return ev.output; if(ev.content!==undefined) return ev.content; return ev; }
+function trajInputSummary(input){
+  if(input==null) return '—';
+  if(typeof input!=='object') return trunc(String(input),80);
+  const keys=Object.keys(input); if(!keys.length) return '—';
+  const prefer=['url','filename','sourcePath','path','id','parent','target','query','source','bundle','title','label'];
+  let chosen=prefer.filter(k=>keys.indexOf(k)>=0).slice(0,2);
+  if(!chosen.length) chosen=keys.slice(0,1);
+  return trunc(chosen.map(k=>{ const v=input[k]; return k+': '+(v!=null&&typeof v==='object'? JSON.stringify(v): v); }).join('  ·  '),80);
+}
+function trajToggle(jobId,idx){ const k=jobId+':'+idx; state.trajOpen[k]=!state.trajOpen[k]; renderJobs(); }
+function trajToolCard(ev,res,job,idx){
+  const open=!!state.trajOpen[job.id+':'+idx];
+  let h='<div class="traj-card tool'+(open?' open':'')+'">'
+    +'<div class="traj-head" onclick="trajToggle(\''+job.id+'\','+idx+')">'
+    + I('caret',13,'traj-caret')
+    + '<span class="traj-ic">'+I('zap',13)+'</span>'
+    + '<span class="traj-toolname">'+escapeHtml(ev.tool||'tool')+'</span>'
+    + '<span class="traj-summary">'+escapeHtml(trajInputSummary(ev.input))+'</span>'
+    + '<span class="traj-badge '+(res?'ok':'run')+'">'+(res?'result':'…')+'</span>'
+    +'</div>';
+  if(open){
+    h+='<div class="traj-body">'
+      +'<div class="blk"><div class="blk-lbl">'+I('code',12)+' Input</div><pre>'+escapeHtml(trajJson(ev.input))+'</pre></div>'
+      +'<div class="blk"><div class="blk-lbl">'+I('check',12)+' Result</div>'
+      +(res? '<pre>'+escapeHtml(trajJson(trajResValue(res)))+'</pre>'
+           : '<div class="traj-nores">No result captured yet — the call is still in flight (run is live).</div>')
+      +'</div></div>';
+  }
+  return h+'</div>';
+}
+function trajStartedCard(ev,job){
+  const runId=ev.runId||job.runId||'…';
+  const agent=ev.agent||'okf-ingest';
+  return '<div class="traj-card run-started"><div class="traj-head static">'
+    + '<span class="traj-ic">'+I('play',13)+'</span>'
+    + '<span class="traj-toolname">Run started</span>'
+    + '<span class="traj-summary">agent: '+escapeHtml(agent)+' · runId: '+escapeHtml(runId)+'</span>'
+    + '<span class="traj-badge run">start</span>'
+    +'</div></div>';
+}
+function trajDoneCard(ev,job,idx){
+  const open=!!state.trajOpen[job.id+':'+idx];
+  const reason=((ev.result&&ev.result.endedReason)||ev.endedReason)||'completed';
+  const badge=reason==='completed'?'ok':(reason==='cancelled'?'stopped':'err');
+  const cardCls=reason==='completed'?'':(reason==='cancelled'?' cancelled':' failed');
+  const finalOut=ev.text!==undefined? ev.text : ((ev.result&&ev.result.text)!==undefined? ev.result.text : null);
+  let h='<div class="traj-card done'+cardCls+(open?' open':'')+'">'
+    +'<div class="traj-head" onclick="trajToggle(\''+job.id+'\','+idx+')">'
+    + I('caret',13,'traj-caret')
+    + '<span class="traj-ic">'+I('check',13)+'</span>'
+    + '<span class="traj-toolname">Done</span>'
+    + '<span class="traj-summary">'+escapeHtml(trunc(String(finalOut||'—'),72))+'</span>'
+    + '<span class="traj-badge '+badge+'">'+escapeHtml(reason)+'</span>'
+    +'</div>';
+  if(open){
+    h+='<div class="traj-body">'
+      +'<div class="blk"><div class="blk-lbl">'+I('stop',12)+' endedReason</div><pre>'+escapeHtml(reason)+'</pre></div>'
+      +'<div class="blk"><div class="blk-lbl">'+I('doc',12)+' Final output</div><pre class="muted">'+escapeHtml(finalOut!=null? (typeof finalOut==='string'? finalOut : trajJson(finalOut)) : '—')+'</pre></div>'
+      +'</div></div>';
+  }
+  return h+'</div>';
+}
+function trajErrorCard(ev,job,idx){
+  const open=!!state.trajOpen[job.id+':'+idx];
+  const raw=(ev.message!=null)? ev.message : (ev.error!=null? ev.error : 'Run ended in error');
+  const msg=String(raw);
+  let h='<div class="traj-card error'+(open?' open':'')+'">'
+    +'<div class="traj-head" onclick="trajToggle(\''+job.id+'\','+idx+')">'
+    + I('caret',13,'traj-caret')
+    + '<span class="traj-ic">'+I('alert',13)+'</span>'
+    + '<span class="traj-toolname">Run ended in error</span>'
+    + '<span class="traj-summary">'+escapeHtml(trunc(msg,72))+'</span>'
+    + '<span class="traj-badge err">error</span>'
+    +'</div>';
+  if(open){ h+='<div class="traj-body"><div class="blk"><div class="blk-lbl">'+I('alert',12)+' Error</div><pre>'+escapeHtml(typeof raw==='object'? trajJson(raw): msg)+'</pre></div></div>'; }
+  return h+'</div>';
+}
+function renderTrajectory(job){
+  const evs=job.trajectory;
+  let h='<div class="jd-sub">Run trajectory'+(evs&&evs.length? ' · '+evs.length+' event'+(evs.length!==1?'s':''): '')+'</div>';
+  if(!evs||!evs.length){
+    h+='<div class="traj-note">'+I('info',15)+'<div>No trajectory captured — the run failed before producing events.</div></div>';
+    return h;
+  }
+  h+='<div class="traj-list">';
+  let i=0, cardIdx=0;
+  while(i<evs.length){
+    const ev=evs[i];
+    if(ev.type==='run_started'){ h+=trajStartedCard(ev,job); cardIdx++; i++; }
+    else if(ev.type==='tool'){
+      let j=i+1;
+      while(j<evs.length && (evs[j].type==='reasoning_delta'||evs[j].type==='final_text')) j++;
+      const res=(j<evs.length && evs[j].type==='tool_result')? evs[j] : null;
+      h+=trajToolCard(ev,res,job,cardIdx); cardIdx++;
+      i = res? j+1 : i+1;
+    }
+    else if(ev.type==='done'){ h+=trajDoneCard(ev,job,cardIdx); cardIdx++; i++; }
+    else if(ev.type==='error'){ h+=trajErrorCard(ev,job,cardIdx); cardIdx++; i++; }
+    else { i++; } /* reasoning_delta / final_text omitted for v1 (ADR-013) */
+  }
+  h+='</div>';
+  return h;
+}
 function toggleJob(id){ state.jobOpen = state.jobOpen===id? null : id; renderJobs(); }
 function mockFetch(method, path){ console.log('[okf-mockup] '+method+' '+path); }
 function cancelJob(id){
