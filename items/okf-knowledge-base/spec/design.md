@@ -45,6 +45,8 @@ convention), and the app's Query tab (4th node color + kind label). It is **pure
 `marketplace-item`** — no new `src/` file (the one generic abort route from the cancel/delete
 scope-add is untouched).
 
+**Note on this revision's scope-adds (FR-055/FR-056/FR-057/FR-058, US11/US12, SC-017/SC-018).** This increment adds two capabilities: **ingest chunking** (the worker pre-splits large sources into bounded chunks before the headless run, so the agent's per-chunk context stays bounded — ADR-012) and **job trajectory** (the launcher captures the full NDJSON stream and stores it on the job record; the app renders it as a collapsible tool-call timeline — ADR-013). Both are **pure `marketplace-item`** — no new `src/` file, no new tools (21 stays 21).
+
 ---
 
 ## 1. Classification
@@ -280,7 +282,7 @@ data/user-apps/items/okf-knowledge-base/
 │       │                      #   the index (person iff the name appears in any person_terms,
 │       │                      #   else topic); kind surfaced in the graph (4th node type,
 │       │                      #   §6.3), okf_search rows, and okf_list_concepts terms
-│       │                      #   (ADR-011). No search-algorithm change.
+│       │                      #   (ADR-011). No search-algorithm change. ADDS: `chunkSource(source, maxChunkSize)` — the mechanical chunker (ADR-012, FR-055): splits on heading → paragraph → sentence boundaries, returns `[{chunk, total, headingPath, content}]`; called by the `okf_ingest` handler in `tools.js`, which writes the results to `raw/chunks/<docId>/`.
 │       ├── vfs-bridge.js      # RETAINED /api/fs loopback. writeBinary/readRaw for non-HTML
 │       │                      #   assets (base64 write; GET /api/fs/raw stream read).
 │       ├── delegate-bridge.js # AUTO-INGEST (baseline) + CANCEL (this scope-add).
@@ -290,7 +292,10 @@ data/user-apps/items/okf-knowledge-base/
 │       │                      #   needs). FINALIZES the job from the terminal line's
 │       │                      #   endedReason (completed→completed, cancelled→cancelled,
 │       │                      #   error/max_steps→failed; ADR-006) + records the run's
-│       │                      #   summary. STALE REAPER: a timer marks any job still
+│       │                      #   summary. **CAPTURES TRAJECTORY (FR-057, ADR-013):** appends every
+│       │                      #   NDJSON event (run_started, tool_call, tool_result, done) to
+│       │                      #   `job.trajectory` as the stream is read — persisted with the job.
+│       │                      #   STALE REAPER: a timer marks any job still
 │       │                      #   non-terminal past jobFinalizeTimeoutMs as failed.
 │       │                      #   CANCEL: POST /api/subagents/<runId>/abort over loopback,
 │       │                      #   then confirm cancelled from the terminal line (ADR-010).
@@ -300,8 +305,11 @@ data/user-apps/items/okf-knowledge-base/
 │       └── tools.js           # REWORKED. DECLARATIONS = exactly the 21 tools in §8.2
 │                              #   (was 31; the person-kind increment adds NO tools).
 │                              #   Read-only tools stay parallelSafe (readOnly()). okf_ingest
-│                              #   mints the job + kicks off delegate-bridge and returns the
-│                              #   jobId immediately (ADR-005). Handlers: okf_list_jobs
+│                              #   mints the job, **reads the staged source and chunks it**
+│                              #   (ADR-012, FR-055: calls `okf-core.chunkSource`, writes chunks
+│                              #   to `raw/chunks/<docId>/`, constructs the task text referencing
+│                              #   the chunks), kicks off delegate-bridge and returns the jobId
+│                              #   immediately (ADR-005). Handlers: okf_list_jobs
 │                              #   (FR-048), okf_cancel_job (FR-050), okf_delete_job
 │                              #   (FR-051). PERSON KIND: okf_list_concepts gains kind on each
 │                              #   term (+ optional kind? filter); okf_search rows gain an
@@ -317,7 +325,14 @@ data/user-apps/items/okf-knowledge-base/
 │                              #   (FR-053 — author at doc level, named key figures at chapter
 │                              #   level, as person_terms; the agent judges salience), and —
 │                              #   in its FINAL message — a concise structured run summary
-│                              #   the launcher records (ADR-006).
+│                              #   the launcher records (ADR-006). **CHUNK PROCESSING (FR-055,
+│                              #   ADR-012):** the task text references `raw/chunks/<docId>/001.md`
+│                              #   through `NNN.md`; the agent processes them sequentially (read
+│                              #   chunk → decompose into chapters → write them → next chunk);
+│                              #   the `headingPath` frontmatter in each chunk tells the agent
+│                              #   its position in the document; the document stub is written
+│                              #   after chunk 1; the TOC + concept-index rebuild happens after
+│                              #   the last chunk.
 ├── skills/
 │   └── okf-bundle-schema/
 │       └── SKILL.md           # REWORKED. Authoritative ingest/query/lint conventions:
@@ -326,10 +341,16 @@ data/user-apps/items/okf-knowledge-base/
 │                              #   the PERSON-KIND CONVENTION (FR-053/FR-054 — what "salient"
 │                              #   means, doc-level author vs chapter-level key figure, the
 │                              #   kind: person semantics, ADR-011), and the "end with a
-│                              #   structured summary" rule (ADR-006).
+│                              #   structured summary" rule (ADR-006), and the **CHUNK PROCESSING
+│                              #   CONVENTION** (FR-055, ADR-012): the chunk frontmatter format
+│                              #   (chunk/total/headingPath), the sequential processing protocol
+│                              #   (one chunk at a time, in order), and the stub/TOC/index write
+│                              #   timing (stub after chunk 1, TOC + index after the last chunk).
 ├── config/
 │   └── okf-knowledge-base.json  # RETAINED (bundleRoot, port:0, maxDepth, maxWorkers);
-│                                #   + jobFinalizeTimeoutMs (stale reaper bound).
+│                                #   + jobFinalizeTimeoutMs (stale reaper bound);
+│                                #   + **maxChunkSize** (FR-056, ADR-012 — default 32000 chars,
+│                                #     read at service start, exposed via `GET /config`).
 ├── app/
 │   └── src/                   # NEW standalone master-detail app (replaces app/config-app/).
 │       ├── main.tsx           # entry — mounts into #root (item app-facet anatomy;
@@ -344,7 +365,9 @@ data/user-apps/items/okf-knowledge-base/
 │       │                      #   modals (new/import/export/delete/ingest).
 │       ├── jobs/              # JobsList (lifecycle dots incl. CANCELLED; Cancel control on
 │       │                      #   running jobs; Delete control on non-running jobs), JobDetail
-│       │                      #   (summary cells / error / progress), polling loop.
+│       │                      #   (summary cells / error / progress + **trajectory section**: collapsible tool-call
+│       │                      #   cards rendering the `trajectory` NDJSON events — FR-058, ADR-013),
+│       │                      #   polling loop.
 │       │                      #   (Cancel → POST /jobs/<id>/cancel; Delete → DELETE
 │       │                      #   /jobs/<id> — FR-050/FR-051, §8.3.)
 │       ├── query/             # QueryShell (bundle select + shared search + Graph/Table
@@ -355,7 +378,7 @@ data/user-apps/items/okf-knowledge-base/
 │       │                      #   ReaderPane (frontmatter + md + assets + source link +
 │       │                      #   concept-term view — a person node opens the SAME term view,
 │       │                      #   its covering chapters), Resizer.
-│       └── lib/               # api.ts (typed clients for §8 routes, incl. cancel/delete),
+│       └── lib/               # api.ts (typed clients for §8 routes, incl. cancel/delete + **trajectory type** on the job record — FR-058),
 │                              #   markdown.ts (the mockup's tiny renderer, kept), types.ts.
 └── docs/                       # REQUIRED item facet (target-marketplace-item.md).
     ├── usage/OKF Knowledge Base/
@@ -801,6 +824,52 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
   `kind` to 'topic'; `rebuildIndex` (on the next write or an explicit rebuild) populates
   `kind` from the now-present `person_terms` (empty set → all topic).
 
+### ADR-012 — Ingest chunking: the worker pre-splits the source into bounded chunks before the headless run (FR-055/FR-056, US11, SC-017)
+
+- **Context.** The agent reads the entire staged source into its context via `file_read`. A 351KB source ≈ 1.4M tokens > the 524K context limit → the run dies with "exceeds the available context size." Any source above ~150KB is at risk. The fix must keep the agent's per-chunk context bounded without adding a new tool.
+- **Options.**
+  - **(a) Agent-side chunking** — the agent reads the full source, then processes it section by section. Rejected: defeats the purpose; the agent still loads the full source into context in the first `file_read` call.
+  - **(b) Worker-side mechanical pre-split** — the service worker (in the `okf_ingest` handler, between minting the job and firing the headless run) reads the staged source via VFS, splits it into bounded chunks, writes them to a staging location, and constructs the agent's task text to reference the chunks (not the full source). The agent reads one chunk at a time via `file_read` (already on its allowlist). No new tool. No LLM in the split.
+  - **(c) A new `okf_read_chunk` tool** — the agent calls a service tool to fetch one chunk at a time. Rejected: adds a 22nd tool (FR-037/SC-007 fixes the surface at 21), and the agent already has `file_read` which can read chunk files directly from the VFS.
+- **Decision.** **(b)**. The chunking is a **service-side mechanical step** — the worker performs it; the agent never reads the full source.
+  - **Where in the code**: `tools.js` `okf_ingest` handler, between the dedup check and the `delegate-bridge` fire. The worker: (1) ensures the source is staged in the VFS (URL → HTTP GET → VFS write via `vfs-bridge`; VFS path → already staged); (2) reads the staged source via loopback `/api/fs`; (3) calls `okf-core.chunkSource(source, maxChunkSize)` which returns `[{chunk, total, headingPath, content}]`; (4) writes each chunk to `raw/chunks/<docId>/<NNN>.md`; (5) constructs the task text referencing `raw/chunks/<docId>/001.md` through `<NNN>.md`.
+  - **Chunk format**: a `.md` file with a small frontmatter block:
+    ```yaml
+    ---
+    chunk: 3
+    total: 12
+    headingPath: ["Part II: Numerical Methods", "Section 4: Spectral Methods"]
+    ---
+    <the chunk's markdown content>
+    ```
+    `headingPath` carries the ancestor headings so the agent knows where in the document it is. `chunk`/`total` give the ordinal. A headingless source has no `headingPath`.
+  - **Staging location**: `raw/chunks/<docId>/` inside the bundle's `raw/` store. Chunks are part of the raw provenance (the source IS these chunks, assembled) — they persist in the bundle, are readable by the agent via `file_read`, and require no cleanup step. On re-ingest, the chunk directory is replaced (new files, old ones kept — consistent with `raw/`'s append-only discipline).
+  - **Chunking algorithm** (`okf-core.chunkSource`): split on heading boundaries (markdown `##`, `###`, etc.). If a heading-delimited section exceeds `maxChunkSize`, split further at paragraph boundaries (double-newline). If a paragraph exceeds `maxChunkSize`, split at sentence boundaries. Each chunk carries the `headingPath` (the stack of ancestor headings at that point). A source with no headings → paragraph/sentence split, no `headingPath`. A source within `maxChunkSize` → single chunk (no splitting, no overhead).
+  - **Config** (FR-056): `maxChunkSize` in `config/okf-knowledge-base.json`, default **32000** characters (~8K tokens). Exposed via `GET /config`. Read at service start (same lifecycle as `maxDepth`/`maxWorkers`).
+  - **Agent processing** (FR-055): the task text instructs: "This document has been split into N chunks at `raw/chunks/<docId>/001.md` through `NNN.md`. Process them **in order**: read chunk 1, decompose it into chapters, write them, then read chunk 2, etc. The `headingPath` in each chunk's frontmatter tells you where you are in the document. Write the document stub after the first chunk; write the TOC and rebuild the index after the last chunk." The agent's existing allowlist already has `file_read` and `okf_upsert_concept` — no new tools.
+- **Consequences.** The agent's context is bounded to one chunk at a time (~8K tokens max, not ~1.4M). The `raw/` store gains a `chunks/` subdirectory (a new, predictable path — no layout change to existing content). No new tools (21 stays 21). The chunker is a pure function in `okf-core.js` (no I/O in the function itself — the I/O is in the `okf_ingest` handler). The `okf-ingest` agent's `AGENT.md` gains a "chunk processing" section describing the sequential protocol; the `okf-bundle-schema` `SKILL.md` gains the chunk frontmatter convention. A source that fits within `maxChunkSize` produces a single chunk — the agent's processing is identical to the non-chunked path (no behavioral change for small sources).
+
+### ADR-013 — Job trajectory: the launcher captures the full NDJSON stream; the app renders it as a collapsible tool-call timeline (FR-057/FR-058, US12, SC-018)
+
+- **Context.** The user can't see what the agent did during a run. The Jobs tab shows status + summary + error, but not the tool calls. A failed or surprising run is a black box — the user sees "0 chapters, 0 concepts" or an error but can't tell *what the agent tried*. The trajectory is the audit log and the debug surface for the ingest pipeline.
+- **Options.**
+  - **(a) Summary-only** — the launcher extracts a human-readable summary from the stream (e.g. "called web_fetch 3 times, okf_upsert_concept 6 times"). Rejected: lossy; can't debug a specific tool call or its arguments.
+  - **(b) Full NDJSON capture** — the launcher stores every event from the stream as-is. The app renders it as a tool-call timeline. No summarization, no filtering — the raw events are the audit log.
+  - **(c) A new `okf_get_trajectory` tool** — the agent (or the user via the app) queries the trajectory through a tool. Rejected: the trajectory is for the *user* (the app), not the agent; the agent is the one *producing* it. A tool would add surface (21 → 22) for a read path that already exists via `GET /jobs/<id>`.
+- **Decision.** **(b)**. The **launcher** (`delegate-bridge.js`) already reads the NDJSON stream line-by-line (it parses the `run_started` line for the `runId` and the terminal `done` line for finalization). It now **also appends every parsed event to an array**. That array becomes the `trajectory` field on the job record.
+  - **Capture**: in the existing stream-reading loop, each NDJSON line is parsed into an event object and pushed to `job.trajectory`. The events are the same NDJSON shape the delegate route streams: `run_started`, `tool_call`, `tool_result`, `reasoning_delta`, `final_text`, `done`. No new event types, no transformation.
+  - **Storage**: `trajectory` is a field on the job record (in-memory hot map + persisted `.jobs/<id>.json`). For a running job, it grows as events are captured. For a terminal job, it's complete. A run with 80 tool calls produces ~50–100KB of JSON — acceptable for a per-job file.
+  - **Exposure**: `GET /jobs/<id>` already returns the full job record — the `trajectory` field is just a new field in that record. No new route. The app's `api.ts` `getJob(id)` already fetches it.
+  - **Rendering** (FR-058): the app's Jobs tab detail view (the expandable job row) gains a **trajectory section**: a scrollable list of events rendered as collapsible cards:
+    - `run_started` → a small header card ("Run started — agent: okf-ingest, runId: …").
+    - `tool_call` + `tool_result` pairs → a card showing the tool name + input summary (collapsed) → expandable to show the full input and the result. This is the **same pattern as Self-Heal and the Agentic Editor** (they render `tool_call`/`tool_result` NDJSON as collapsible cards). The app reuses or mirrors that rendering pattern.
+    - `done` → a terminal card showing the final output + `endedReason`.
+    - `reasoning_delta` / `final_text` → optional: shown in an expandable "reasoning" section (or omitted for v1 — the tool calls are the primary debug surface).
+    - **Running job**: the trajectory section updates as new events arrive (the existing polling loop re-fetches `GET /jobs/<id>` — the trajectory array grows).
+    - **No trajectory** (immediate crash): show "No trajectory captured — the run failed before producing events."
+  - **Virtualization**: for runs with >100 events, the list is virtualized or paginated (the spec's edge case for large trajectories).
+- **Consequences.** The job record grows by the run's tool-call count (typically 20–80 events → 50–100KB per job file). No new routes, no new tools (21 stays 21). The app's Jobs tab gains a trajectory section in the detail view — a new UI component that mirrors the Self-Heal/Agentic Editor card pattern. The `delegate-bridge.js` change is additive (append to an array it already iterates). The `.jobs/<id>.json` file format gains a `trajectory` field (additive; existing fields unchanged). The mockup's Jobs tab detail needs a trajectory section with sample data.
+
 ---
 
 ## 5. Data model & storage layout
@@ -834,7 +903,8 @@ is retained unchanged.
 ├── .jobs/                   # OPERATIONAL (this scope-add + auto-ingest). One job record
 │   └── <id>.md              #   per ingest run: {id, status ∈ queued|running|completed|
 │                            #     cancelled|failed, bundleId, source, runId?, startedAt,
-│                            #     endedAt, durationMs?, progress?, summary?, error?}.
+│                            #     endedAt, durationMs?, progress?, summary?, error?,
+│                            #     trajectory? (FR-057, ADR-013)}.
 │                            #   Restart-survival for Jobs. NOT OKF content (like log.md) —
 │                            #   excluded from okf_export_bundle by default.
 ├── raw/                     # IMMUTABLE (append-only, never overwritten).
@@ -843,10 +913,13 @@ is retained unchanged.
 │   ├── sources.json         #   Provenance ledger: {sourceKey → {rawFile, docId,
 │   │                        #     ingestedAt}} for dedup (FR-018) + "Open source" target
 │   │                        #     (FR-043). sourceKey = normalized URL or raw path.
-│   └── assets/              #   Downloaded non-HTML inline assets (FR-015/FR-020).
-│       └── <docId>/
-│           ├── <name>.png   #   Binary, written via /api/fs base64; immutable.
-│           └── <name>.mp4
+│   ├── assets/              #   Downloaded non-HTML inline assets (FR-015/FR-020).
+│   │   └── <docId>/
+│   │       ├── <name>.png   #   Binary, written via /api/fs base64; immutable.
+│   │       └── <name>.mp4
+│   └── chunks/              #   Mechanical pre-split chunks (ADR-012, FR-055). One dir
+│       └── <docId>/         #   per ingested document; 001.md, 002.md, … each with
+│           └── <NNN>.md     #   chunk/total/headingPath frontmatter. Part of raw/ provenance.
 └── concepts/                # CONTENT (the source of truth for the derived index).
     ├── <docId>.md           #   Document stub: {type: document, title, summary,
     │                        #     sources, created_at, updated_at}. okf_read_concept on
@@ -1197,8 +1270,9 @@ immediately** (FR-046):
 2. Mints a **job** `{id, status:"queued", bundleId, source}` (persisted to
    `/KnowledgeBase/.jobs/<id>.md`; in-memory map updated).
 3. **Fires the headless run** through `delegate-bridge.js`: `POST
-   /api/subagents/delegate` with the `okf-ingest` agent + a task carrying the `jobId` and
-   the source (the run is **self-sufficient** — it does `web_fetch`/`file_to_markdown`
+   /api/subagents/delegate` with the `okf-ingest` agent + a task carrying the `jobId` and the **chunk paths**
+   (the source was pre-split into bounded chunks by `okf-core.chunkSource` before the run
+   fired — ADR-012, FR-055; the agent reads one chunk at a time). The run is **self-sufficient** — it does `web_fetch`/`file_to_markdown`
    pinning `output_path`, `okf_add_raw_source`, the decomposition, inline assets, and the
    index — FR-047). It **captures the `runId`** from the `run_started` line and stores it on
    the job, and **holds the NDJSON stream**.
@@ -1224,7 +1298,8 @@ records the provenance ledger entry, optionally stubs a concept. No LLM, no dele
 ```
 Caller ─okf_ingest({bundle, source})─▶ Worker (okf-core + delegate-bridge):
             • validates + dedups (FR-018); mints job {id, status:queued, bundleId, source}
-            • fires POST /api/subagents/delegate (okf-ingest agent + task carrying jobId)
+            • chunks the source → raw/chunks/<docId>/ (ADR-012, FR-055)
+            • fires POST /api/subagents/delegate (okf-ingest agent + task carrying jobId + chunk paths)
             • returns {jobId, job} TO THE CALLER IMMEDIATELY (FR-046) — caller freed
 
 Worker (delegate-bridge) ── holds the open NDJSON stream from the delegate route ──▶
@@ -1234,8 +1309,9 @@ Worker (delegate-bridge) ── holds the open NDJSON stream from the delegate r
 
 runSubAgent (main Next.js process) ─▶ okf-ingest headless run (narrow allowlist, §8.4):
             • web_fetch / file_to_markdown (pin output_path) → okf_add_raw_source → raw/
-            • decomposes into chapters; per chapter: okf_upsert_concept(parent, concepts,
-                  summary, status, sources)
+            • processes chunks sequentially (ADR-012): read chunk N → decompose into
+                  chapters → okf_upsert_concept(parent, concepts, summary, status, sources)
+                  → next chunk; stub after chunk 1, TOC + index after last chunk
             • inline non-HTML assets (§7.5): download → view_image/video_keyframes →
                   write link + interpretation block
             • writes toc/<docId>.md + rebuilds concept-index.md (derived)
@@ -1495,6 +1571,7 @@ routes drive the *same* worker job-store + `delegate-bridge` operations as the
                                                                   //   has error null — it
                                                                   //   is a stop, not an
                                                                   //   error)
+  "trajectory": [ /* run_started, tool_call, tool_result, done — FR-057, ADR-013 */ ]
 }
 ```
 The Jobs tab **polls** `GET /jobs` (and, for the expanded row, `GET /jobs/<id>`) on a short
@@ -1567,12 +1644,15 @@ Retrieval (app, Query tab):
   GET /bundles/<b>/graph          → {nodes, edges}  → force-render → click node → same /concept
 
 Ingest (auto-triggered, headless — ADR-005/ADR-006):
-  okf_ingest → worker mints job(queued) + fires POST /api/subagents/delegate,
+  okf_ingest → worker mints job(queued) + **chunks the source** (ADR-012) +
+              fires POST /api/subagents/delegate (task references chunk paths),
               captures runId, holds the stream, RETURNS {jobId, job} immediately
   → okf-ingest run (main process): acquisition (pin output_path) → okf_add_raw_source →
-     chapters (upsert) + concepts/summaries + assets (download+interpret) + toc +
-     concept-index (derived rebuild) + ENDS with a structured summary
+     **processes chunks sequentially** (ADR-012) + concepts/summaries + assets
+     (download+interpret) + toc + concept-index (derived rebuild)
+     + ENDS with a structured summary
   → worker reads terminal line → job → completed | cancelled | failed (reaper covers stuck)
+     + **captures trajectory** (every NDJSON event → job.trajectory — FR-057, ADR-013)
 
 Job control (this scope-add — ADR-010 / FR-050 / FR-051):
   cancel: okf_cancel_job / POST /jobs/<id>/cancel
@@ -1681,7 +1761,7 @@ with `okf_delete_bundle`.
     with descriptions) → document → **stored TOC** → **full chapter** (frontmatter card,
     markdown body, **inline-asset** blocks with thumbnail + stored interpretation,
     "View source (.md)" toggle). Modals: New / Import / Export / **Ingest** / Delete.
-  - **Jobs** (scope-add surface — updated for this change) — run list (status dots **queued/running/completed/cancelled/failed**, bundle, source, time, elapsed/duration), with **a cancelled status dot and a cancelled sample run**, a **Cancel** control on running jobs, and a **Delete** control on non-running jobs (FR-041, FR-050, FR-051) → expandable detail (summary cells: chapters/concepts/assets/refsSkipped/refsFailed; written-chapter chips; error card; live progress bar). Cancel → `POST /jobs/<id>/cancel`; Delete → `DELETE /jobs/<id>` (§8.3) — driven by these routes.
+  - **Jobs** (scope-add surface — updated for this change) — run list (status dots **queued/running/completed/cancelled/failed**, bundle, source, time, elapsed/duration), with **a cancelled status dot and a cancelled sample run**, a **Cancel** control on running jobs, and a **Delete** control on non-running jobs (FR-041, FR-050, FR-051) → expandable detail (summary cells: chapters/concepts/assets/refsSkipped/refsFailed; written-chapter chips; error card; live progress bar; **trajectory section**: collapsible tool-call cards — FR-058, ADR-013). Cancel → `POST /jobs/<id>/cancel`; Delete → `DELETE /jobs/<id>` (§8.3) — driven by these routes.
   - **Query** — bundle selector + a **shared search box** + a **Graph / Table** view toggle;
     a **mouse-resizable reader pane** (the `.resizer`) that opens the full chapter
     (frontmatter + markdown + assets + **"Open source"** link at top) or a document's TOC
@@ -1697,7 +1777,7 @@ with `okf_delete_bundle`.
     and name.
 - **Map to the Component design (§3.3 `app/src/`):** shell→`App.tsx`; Overview
   (list/detail/concept-index/documents/TOC/chapter/health/IO + modals)→`app/src/overview/`;
-  Jobs (list/detail/progress/**cancel/delete**)→`app/src/jobs/`; Query (graph + table +
+  Jobs (list/detail/progress/**cancel/delete**/**trajectory**)→`app/src/jobs/`; Query (graph + table +
   search + reader pane + resizer)→`app/src/query/`; the force sim is ported verbatim from
   the mockup's `stepGraph/renderGraph/drawGraph/attachGraphInteractions` (ADR-009) — with a
   **4th node color for `type:"person"` (teal/green)** on the mockup's
