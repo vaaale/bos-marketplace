@@ -1272,9 +1272,9 @@ immediately** (FR-046):
 3. **Fires the headless run** through `delegate-bridge.js`: `POST
    /api/subagents/delegate` with the `okf-ingest` agent + a task carrying the `jobId` and the **chunk paths**
    (the source was pre-split into bounded chunks by `okf-core.chunkSource` before the run
-   fired — ADR-012, FR-055; the agent reads one chunk at a time). The run is **self-sufficient** — it does `web_fetch`/`file_to_markdown`
+   fired — ADR-012, FR-055; the agent reads one chunk at a time). The run is **self-sufficient** (FR-047) — it does `web_fetch`/`file_to_markdown`
    pinning `output_path`, `okf_add_raw_source`, the decomposition, inline assets, and the
-   index — FR-047). It **captures the `runId`** from the `run_started` line and stores it on
+   index. It **captures the `runId`** from the `run_started` line and stores it on
    the job, and **holds the NDJSON stream**.
 4. **Returns `{jobId, job}` to the caller immediately.** The caller (agent, or the app's
    Ingest modal — which drives the same worker path via `POST /jobs`) is freed (FR-046,
