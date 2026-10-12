@@ -149,7 +149,7 @@ The service rebuilds `concept-index.md` and `toc/<docId>.md` on every write. The
 
 `okf_add_raw_source` registers the bytes into `raw/` **and** splits them mechanically into `.chunks/<docId>/NNN.md`, bounded by the service's `maxChunkSize` (default 32000 characters, ~8K tokens). The split is at heading boundaries first, then paragraphs inside an oversized section, then sentences inside an oversized paragraph. No model is involved; nothing is summarised or dropped.
 
-The response carries the paths:
+The response carries the id and the paths. **The `docId` it returns is the document's one id** — derived by the service from the source's real origin (`originUrl`, else the source path), stable across re-ingests, and already used to key `.chunks/<docId>/` and the `raw/sources.json` entry. Write the stub (`concepts/<docId>.md`), the chapters (`<docId>/<chId>`, `parent: <docId>`) and therefore the TOC (`toc/<docId>.md`) under that exact id; a second id coined for the stub leaves the TOC empty.
 
 ```json
 { "rawFile": "raw/numerical-methods.md", "docId": "numerical-methods", "maxChunkSize": 32000,

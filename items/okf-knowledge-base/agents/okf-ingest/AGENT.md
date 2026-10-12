@@ -44,7 +44,22 @@ Your task's **Step 0** spells out the exact calls for this source. Run them verb
 | a **plain-text / markdown** path | `okf_add_raw_source({bundle, sourcePath})` — nothing to convert |
 | already a **`raw/` path** | nothing to acquire; `file_read` it from the bundle |
 
-`okf_add_raw_source` returns the `rawFile` path inside the bundle. That file — immutable, append-only — is the provenance. **You do not read it whole**: the same response also carries `chunks`, the source pre-split into bounded pieces, and those are what you decompose. See *Chunk processing* below. Put the **original URL** in `originUrl` when there is one: it becomes the document's "Open source" target in the app.
+`okf_add_raw_source` returns the `rawFile` path inside the bundle. That file — immutable, append-only — is the provenance. **You do not read it whole**: the same response also carries `chunks`, the source pre-split into bounded pieces, and those are what you decompose. See *Chunk processing* below. Put the **original URL** in `originUrl` when there is one: it becomes the document's "Open source" target in the app — and it is what the document's id is derived from.
+
+### 1b. Take the document's id from that same response
+
+The response also carries a **`docId`**. That is the document's id, **already assigned** — `.chunks/<docId>/` and the `raw/sources.json` provenance entry were written under it before you saw it. Use **that exact string**, verbatim, everywhere:
+
+| Artifact | Id to use |
+|---|---|
+| document stub | `okf_upsert_concept({id: "<docId>"})` → `concepts/<docId>.md` |
+| every chapter | `id: "<docId>/<chId>"`, and `parent: "<docId>"` in its frontmatter |
+| document TOC | `toc/<docId>.md` (derived), `okf_read_toc({docId})` |
+| inline assets | `okf_add_raw_source({asset: true, docId, …})` → `raw/assets/<docId>/` |
+
+**Do not derive or invent your own id** — not a slug of the title, not one from the URL, not a tidier version of the one you were given. There is exactly one id per document and you are handed it. Coining your own keys the stub and the TOC to one id while the chunks and the ledger keep another: the document's TOC then renders with `chapters: []` and the bundle looks empty. If the `docId` you get back looks wrong, **use it anyway** and note it in your final summary.
+
+(The service derives it from the source's real origin — `originUrl`, else the source path — so it is the same id on every re-ingest of that source, which is what lets a re-ingest update the document instead of forking a second one.)
 
 ## Chunk processing
 
@@ -74,6 +89,8 @@ One chapter per section the author actually wrote. **A source with no headings i
 The chunk boundaries are **mechanical**, not editorial: never treat "one chunk" as "one chapter". Decompose by what the author wrote, using each chunk's `headingPath` to place yourself in the document.
 
 ### 4. Write the document stub, then the chapters
+
+`<docId>` here is always the `docId` from the `okf_add_raw_source` response (§1b) — never one you made up.
 
 - Stub: `okf_upsert_concept({bundle, id: "<docId>", frontmatter: {type: "document", title, summary, person_terms: ["<the author>"], sources: [{id, uri}]}})`.
 - Each chapter: `okf_upsert_concept({bundle, id: "<docId>/<chId>", title, body, frontmatter: {type: "section", parent: "<docId>", concepts: [...], person_terms: [...], summary: "one line", status, sources: [...]}})`.

@@ -2014,22 +2014,71 @@ async function writeChunks(bDir, docId, chunks) {
   return written;
 }
 
+/** The pipeline's own staging prefix (see `acquisitionFirstSteps`) — never part of a document id. */
+const STAGED_PREFIX = /^okf-staged-/i;
+
+/** A trailing extension worth dropping: `.pdf`, `.md` — but not the `.2` of `v1.2`. */
+const FILE_EXTENSION = /\.[A-Za-z][A-Za-z0-9]{0,7}$/;
+
 /**
- * The docId a source filename maps to — the ONE derivation, so the id the
- * chunk directory is named for and the id the response reports are the same
- * string by construction rather than by two copies of the same expression.
+ * Lowercase, hyphen-joined slug, safe as a concept id. The leading
+ * non-alphanumerics go because validateConceptId (and therefore
+ * `.chunks/<docId>/`) requires an alphanumeric first character — "_internal.md"
+ * must not fail the write.
  */
-function docIdForSource(source) {
-  const name = path.basename(String(source || "").replace(/[?#].*$/, "").replace(/\/+$/, ""));
-  const base = path.basename(name, path.extname(name));
-  const slug = base
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
+function slugifyDocId(text) {
+  return String(text || "")
+    .replace(/[^A-Za-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    // validateConceptId (and therefore .chunks/<docId>/) requires an
-    // alphanumeric first character — "_internal.md" must not fail the write
-    .replace(/^[^A-Za-z0-9]+/, "")
     .toLowerCase();
-  return slug || "source";
+}
+
+/** The document-naming part of one locator (a URL or a path), or "" if it has none. */
+function docNameFromLocator(locator) {
+  const s = String(locator || "").trim();
+  if (!s) return "";
+  let name;
+  if (s.includes("://")) {
+    let u;
+    try {
+      u = new URL(s);
+    } catch {
+      return ""; // a malformed URL names nothing — let the next locator answer
+    }
+    const segment = u.pathname.split("/").filter(Boolean).pop();
+    // A bare host ("https://example.com/") still names its own source.
+    if (!segment) return slugifyDocId((u.hostname || u.pathname).replace(/^www\./i, ""));
+    try {
+      name = decodeURIComponent(segment);
+    } catch {
+      name = segment;
+    }
+  } else {
+    name = path.basename(s.replace(/[?#].*$/, "").replace(/\/+$/, ""));
+  }
+  return slugifyDocId(name.replace(STAGED_PREFIX, "").replace(FILE_EXTENSION, ""));
+}
+
+/**
+ * The docId a source maps to — the ONE derivation, so the id the chunk
+ * directory is named for, the id the ledger records and the id the response
+ * reports are the same string by construction rather than three copies of the
+ * same expression.
+ *
+ * `originUrl` WINS over the path the bytes happen to sit at, because by the
+ * time `okf_add_raw_source` is called that path is almost always
+ * `/workspace/okf-staged-….md` — a pipeline-internal staging name. Deriving
+ * from it produced ids like "okf-staged-tech_report", which no agent would
+ * ever write a document stub under, so the agent invented its own id and the
+ * document's chunks, ledger entry and TOC ended up keyed three different ways.
+ *
+ * Pure and deterministic: the same source yields the same id on every run,
+ * which is what lets a re-ingest reconcile onto the existing document instead
+ * of forking a second one. (Nothing agent-authored — a title, say — feeds it,
+ * for exactly that reason.)
+ */
+function docIdForSource(source, { originUrl } = {}) {
+  return docNameFromLocator(originUrl) || docNameFromLocator(source) || "source";
 }
 
 /**
@@ -2064,11 +2113,14 @@ async function addRawSource(bundleRoot, bundleName, { filename, content, sourceP
   }
   await vfs.writeText(safeJoin(bDir, "raw", finalName), content);
 
-  const docId = conceptId || docIdForSource(safeName);
-  const ledgerEntry = await recordSource(bDir, originUrl || sourcePath || `raw/${finalName}`, {
+  // The document's real origin, when there is one — the id, the ledger's
+  // record of it and the ledger key are all derived from this ONE value.
+  const origin = originUrl || (sourcePath && /^https?:\/\//i.test(sourcePath) ? sourcePath : null);
+  const docId = conceptId || docIdForSource(safeName, { originUrl: origin });
+  const ledgerEntry = await recordSource(bDir, origin || sourcePath || `raw/${finalName}`, {
     rawFile: `raw/${finalName}`,
     docId,
-    originUrl: originUrl || (sourcePath && /^https?:\/\//i.test(sourcePath) ? sourcePath : null),
+    originUrl: origin,
     ingestedAt: nowIso(),
   });
   await appendLog(bundleRoot, bundleName, { event: "raw_add", message: `added raw source "${finalName}"` });
@@ -2119,6 +2171,13 @@ async function addRawSource(bundleRoot, bundleName, { filename, content, sourceP
           ? ` Chunking did not run (${chunkError}) — read rawFile directly.`
           : "";
 
+  // The id is ASSIGNED here, not negotiated. Everything this call already
+  // wrote — .chunks/<docId>/, the ledger entry — is keyed to it, so a caller
+  // that coins its own id for the stub/chapters/TOC splits one document in
+  // two and leaves the TOC empty. Say the id, and say what to do with it.
+  const docIdNote =
+    ` This document's id is "${docId}" — use EXACTLY that: the stub at concepts/${docId}.md, every chapter as "${docId}/<chId>" with parent: ${docId}, and the TOC under ${docId}. Do not derive or invent a different one.`;
+
   return {
     rawFile: `raw/${finalName}`,
     bytes: content.length,
@@ -2133,8 +2192,8 @@ async function addRawSource(bundleRoot, bundleName, { filename, content, sourceP
     maxChunkSize: chunkBound,
     ...(chunkError ? { chunkError } : {}),
     note: concept
-      ? `Source stored (${content.length} chars) and the document stub "${concept.id}" created.${chunkNote} Next: okf_ingest({bundle, source: "raw/${finalName}"}).`
-      : `Source stored (${content.length} chars). concept:null is expected — no conceptId was requested, and chapters are written later by the okf-ingest agent. Do NOT re-import the content.${chunkNote} Next: okf_ingest({bundle, source: "raw/${finalName}"}).`,
+      ? `Source stored (${content.length} chars) and the document stub "${concept.id}" created.${docIdNote}${chunkNote} Next: okf_ingest({bundle, source: "raw/${finalName}"}).`
+      : `Source stored (${content.length} chars). concept:null is expected — no conceptId was requested, and chapters are written later by the okf-ingest agent. Do NOT re-import the content.${docIdNote}${chunkNote} Next: okf_ingest({bundle, source: "raw/${finalName}"}).`,
   };
 }
 
@@ -2851,15 +2910,28 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
       `Run those calls verbatim. \`output_path\` is pinned on purpose: with it the source streams to disk and the tool ` +
       `returns a receipt, so the document never passes through your context. Do NOT drop it and paste the content into ` +
       `\`okf_add_raw_source({content})\` instead — that re-emits the entire document as output tokens for no benefit. ` +
-      `\`okf_add_raw_source\` returns the \`rawFile\` path AND a \`chunks\` array — see "Chunk processing" below; the ` +
-      `chunks are what you decompose, not the whole \`rawFile\`.\n\n`
+      `\`okf_add_raw_source\` returns the \`rawFile\` path, a \`docId\` AND a \`chunks\` array — see "The document id" ` +
+      `and "Chunk processing" below; the chunks are what you decompose, not the whole \`rawFile\`.\n\n`
     : `## Step 0 — the source is already in the bundle\n\nIt is at \`${source}\`. Read it from there with \`file_read\`; ` +
-      `do not expect it inline and do not re-fetch it.\n\n`;
+      `do not expect it inline and do not re-fetch it. Its \`docId\` is \`${docIdForSource(source)}\` — unless ` +
+      `\`raw/sources.json\` already records a different one for this file, in which case that recorded id wins.\n\n`;
 
   return (
     `Ingest \`${source}\` into the OKF bundle "${bundle}" as organized chapters.\n\n` +
     `jobId: ${jobId}\nbundle: ${bundle}\nsource: ${source}\nmaxDepth: ${maxDepth}\nmaxWorkers: ${maxWorkers}\n\n` +
     acquisition +
+    `## The document id — ONE id, and you do not choose it\n\n` +
+    `\`okf_add_raw_source\`'s response carries a \`docId\`. That string is the document's id, already assigned: the ` +
+    `chunk directory (\`.chunks/<docId>/\`) and the provenance ledger entry are keyed to it before you see it. Use ` +
+    `**that exact \`docId\`**, verbatim, for ALL of:\n\n` +
+    `- the document stub — \`okf_upsert_concept({id: "<docId>"})\` → \`concepts/<docId>.md\`\n` +
+    `- every chapter — \`id: "<docId>/<chId>"\` and \`parent: "<docId>"\` in its frontmatter\n` +
+    `- the document TOC — \`toc/<docId>.md\`, and any \`okf_read_toc({docId})\`\n` +
+    `- any inline asset — \`okf_add_raw_source({asset: true, docId, …})\` → \`raw/assets/<docId>/\`\n\n` +
+    `Do NOT derive, prettify or invent an id of your own — not from the document's title, not from the URL. An id you ` +
+    `coin keys the stub and the TOC to one document while the chunks and the ledger stay keyed to another, and the ` +
+    `TOC of the document you just wrote comes out EMPTY. If the returned \`docId\` looks wrong, use it anyway and say ` +
+    `so in your summary.\n\n` +
     `## Chunk processing (ADR-012)\n\n` +
     `\`okf_add_raw_source\`'s response carries \`chunks\`: \`[{path, ordinal, total}]\`, the source already split ` +
     `mechanically into pieces of at most \`maxChunkSize\` characters. Process them SEQUENTIALLY — \`file_read\` ` +
@@ -2870,7 +2942,8 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
     `call is what exhausts the context before anything is written. A chunk is a context window, not a chapter: a ` +
     `section split across two chunks is still ONE chapter. With \`total: 1\` this is exactly the ordinary path.\n\n` +
     `## Then do the whole job\n\n` +
-    `Decompose the source at its natural heading structure into chapters (\`concepts/<docId>/<chId>.md\`, ` +
+    `\`<docId>\` below is always the id from the \`okf_add_raw_source\` response (see "The document id"), never one ` +
+    `of your own making. Decompose the source at its natural heading structure into chapters (\`concepts/<docId>/<chId>.md\`, ` +
     `\`type: section\`), each carrying \`parent\`, the \`concepts\` terms it covers and a one-line \`summary\` — those ` +
     `three fields are what the concept index and the document TOC are derived from. Upsert the document stub ` +
     `(\`concepts/<docId>.md\`, \`type: document\`) with the original URL in \`sources[].uri\` so the app's "Open source" ` +

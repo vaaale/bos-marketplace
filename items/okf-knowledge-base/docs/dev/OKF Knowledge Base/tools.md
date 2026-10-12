@@ -97,6 +97,8 @@ Two modes:
 
 Both record a `raw/sources.json` provenance entry, which is what `okf_ingest` dedups against and what the app's "Open source" link resolves through.
 
+**The returned `docId` is the document's one id.** `docIdForSource` derives it from the source's real origin — `originUrl` first, the source path only as a fallback — with the pipeline's internal `okf-staged-` prefix and the file extension stripped, slugified: `…/main/tech_report.pdf` → `tech-report`, never `okf-staged-tech_report`. It is pure and deterministic, so a re-ingest of the same source reconciles onto the same document; nothing agent-authored (a `title`, say) feeds it. The same id keys `.chunks/<docId>/`, the ledger entry, and — because the agent is told to use the returned value verbatim (task text + `AGENT.md` §1b) — `concepts/<docId>.md`, every chapter's `parent`, and `toc/<docId>.md`. An id invented downstream instead of taken from here is what leaves a document's TOC empty.
+
 ## Organization
 
 ### `okf_add_link`
