@@ -2117,6 +2117,13 @@ async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers })
     progress: null,
     summary: null,
     error: null,
+    // The handle the cancel path needs (FR-052): captured from the run's own
+    // `run_started` line by the launcher, so it is null for exactly as long
+    // as the run has not started. `cancelRequested` covers that window — a
+    // cancel arriving before the runId exists is remembered, and the launcher
+    // fires the abort the moment it learns the id (ADR-010 S4).
+    runId: null,
+    cancelRequested: false,
   };
   state.jobs.unshift(job);
   await persistJobs(bundleRoot);
@@ -2136,8 +2143,13 @@ async function getJob(bundleRoot, id) {
   return state.jobs.find((j) => j.id === id) || null;
 }
 
-const TERMINAL = new Set(["completed", "failed"]);
-const JOB_STATUSES = ["queued", "running", "completed", "failed"];
+// `cancelled` is TERMINAL and is NOT a failure (FR-050): an intentional stop
+// carries `error: null`, because writing a reason into `error` would make the
+// Jobs tab render a red failure card for something the user asked for. The
+// stale reaper never sees a cancelled job for the same reason it never sees a
+// completed one — it only reaps what is still non-terminal.
+const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+const JOB_STATUSES = ["queued", "running", "completed", "failed", "cancelled"];
 
 /**
  * Apply a lifecycle transition. Terminal states are FINAL: a late callback
@@ -2160,6 +2172,11 @@ async function updateJob(bundleRoot, id, patch = {}) {
   if (patch.progress !== undefined) job.progress = patch.progress;
   if (patch.summary !== undefined) job.summary = patch.summary;
   if (patch.error !== undefined) job.error = patch.error;
+  if (patch.runId !== undefined) job.runId = patch.runId;
+  if (patch.cancelRequested !== undefined) job.cancelRequested = !!patch.cancelRequested;
+  // A cancellation is not an error — whatever a late stream signal would have
+  // written, a cancelled job's `error` stays null (FR-050).
+  if (patch.status === "cancelled") job.error = null;
 
   if (patch.status === "running" && job.status !== "running") {
     job.status = "running";
@@ -2177,6 +2194,121 @@ async function updateJob(bundleRoot, id, patch = {}) {
 
   await persistJobs(bundleRoot);
   return job;
+}
+
+// ── JOB CONTROL: cancel & delete (FR-050 / FR-051) ───────────────────────
+//
+// Both live HERE, in the core, and not in the tools layer or the HTTP
+// bridge — because both of those surfaces drive them (ADR-003: one
+// capability, two surfaces). `okf_cancel_job` and `POST /jobs/<id>/cancel`
+// are the same function called from two places, exactly like okf_search and
+// `GET /bundles/<b>/search`.
+//
+// The status codes travel ON the error (`err.statusCode`), so the REST
+// bridge answers 404/409 without pattern-matching message text, and the tool
+// surface — which has no HTTP — still gets a message that names the reason.
+
+function jobError(message, statusCode) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
+/**
+ * Cancel a queued or running ingest run (FR-050).
+ *
+ * The run itself lives in the main Next.js process; this worker only holds
+ * its `runId`, so the abort goes through the platform's generic
+ * `POST /api/subagents/<runId>/abort` route (FR-052) over loopback.
+ *
+ * Two windows, both covered:
+ *   • the runId IS captured  -> abort it now;
+ *   • the runId is NOT yet captured (the job is queued, or running but the
+ *     `run_started` line has not arrived) -> record `cancelRequested`, and
+ *     the launcher fires the abort the instant it learns the id.
+ *
+ * Either way the job goes `cancelled` IMMEDIATELY: the user asked for a stop
+ * and the record must say so, rather than waiting on a round trip to a run
+ * that may already be gone. A late terminal signal from the stream cannot
+ * undo it — terminal states are final (ADR-006).
+ */
+async function cancelJob(bundleRoot, id) {
+  const delegate = require("./delegate-bridge");
+  const state = await loadJobs(bundleRoot);
+  const job = state.jobs.find((j) => j.id === id);
+  if (!job) throw jobError(`job not found: ${id}`, 404);
+  if (TERMINAL.has(job.status)) {
+    throw jobError(
+      `job ${id} is already ${job.status} — a terminal state is final, so there is nothing to cancel`,
+      409,
+    );
+  }
+
+  let aborted = false;
+  let abortError = null;
+
+  if (job.runId) {
+    try {
+      const result = await delegate.abortRun(job.runId);
+      aborted = !!(result && result.aborted);
+      if (!aborted) abortError = (result && result.error) || "the platform reported no live run for that runId";
+    } catch (err) {
+      // The abort call failing does NOT make the cancel fail: the user's
+      // intent is recorded either way, and a run whose abort we could not
+      // deliver still ends — it just ends on its own terms. Saying the job
+      // is still running would be the bigger lie.
+      abortError = err.message;
+    }
+  } else {
+    job.cancelRequested = true;
+    await persistJobs(bundleRoot);
+  }
+
+  const updated = await updateJob(bundleRoot, id, { status: "cancelled", error: null, progress: null });
+  return {
+    ...updated,
+    cancelled: true,
+    aborted,
+    abortError,
+    runId: job.runId || null,
+    cancelRequested: !!job.cancelRequested,
+    note: job.runId
+      ? aborted
+        ? `Run ${id} was aborted and the job is now cancelled. Anything the run already wrote is still in the bundle — a cancel never removes content.`
+        : `Job ${id} is cancelled. The abort could not be confirmed (${abortError}); the run had most likely already ended.`
+      : `Job ${id} is cancelled before its run reported a runId. The launcher aborts the run the moment it learns the id.`,
+  };
+}
+
+/**
+ * Delete a TERMINAL ingest run's record (FR-051).
+ *
+ * This removes the job record and nothing else — never a chapter, never the
+ * index, never raw/. An active job is refused rather than silently orphaning
+ * a live run: cancel it first, which is the whole reason cancel exists.
+ */
+async function deleteJob(bundleRoot, id) {
+  const state = await loadJobs(bundleRoot);
+  const index = state.jobs.findIndex((j) => j.id === id);
+  if (index === -1) throw jobError(`job not found: ${id}`, 404);
+
+  const job = state.jobs[index];
+  if (!TERMINAL.has(job.status)) {
+    throw jobError(`job ${id} is still ${job.status} — cancel it first, then delete it`, 409);
+  }
+
+  // Out of the hot map AND out of the file it is mirrored to: persistJobs
+  // rewrites jobs.json from this array, so one splice covers both.
+  state.jobs.splice(index, 1);
+  await persistJobs(bundleRoot);
+
+  return {
+    deleted: true,
+    jobId: id,
+    status: job.status,
+    bundleId: job.bundleId,
+    note: "The run record is gone. Bundle content the run wrote (chapters, index, TOCs, raw/) is untouched — deleting a job never deletes knowledge.",
+  };
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -2406,6 +2538,20 @@ async function driveRun(bundleRoot, jobId, task) {
       onTool: ({ tool, index }) => {
         void updateJob(bundleRoot, jobId, { progress: progressFor(tool, index) }).catch(() => {});
       },
+      // FR-052: the run's own `run_started` line is the ONLY place the runId
+      // exists — the delegate POST returns a stream, not an id. Storing it on
+      // the job is what makes `okf_cancel_job` able to abort anything at all.
+      onRunStarted: async ({ runId }) => {
+        await updateJob(bundleRoot, jobId, { runId }).catch(() => {});
+        // ADR-010 S4 — the queued window: a cancel that arrived before this
+        // id existed only recorded the intent. Now that the handle is here,
+        // honour it immediately rather than leaving a "cancelled" job with a
+        // run still burning tokens behind it.
+        const job = await getJob(bundleRoot, jobId).catch(() => null);
+        if (job && (job.cancelRequested || job.status === "cancelled")) {
+          await delegate.abortRun(runId).catch(() => {});
+        }
+      },
     });
 
     if (run.ok) {
@@ -2413,6 +2559,11 @@ async function driveRun(bundleRoot, jobId, task) {
         status: "completed",
         summary: summaryFromOutput(run.output, run.toolCalls),
       });
+    } else if (run.endedReason === "cancelled") {
+      // An aborted run is NOT a failed run (FR-050). The stream's own
+      // endedReason is what distinguishes the two, so the derivation reads
+      // it rather than treating every not-ok ending as an error.
+      await updateJob(bundleRoot, jobId, { status: "cancelled", error: null });
     } else {
       await updateJob(bundleRoot, jobId, {
         status: "failed",
@@ -2467,7 +2618,9 @@ function summaryFromOutput(output, toolCalls) {
  * plainly that the run was lost.
  *
  * So: any job still non-terminal and older than `staleJobMs` is marked
- * `failed` with an honest "stale" reason. Run on a timer AND as a sweep on
+ * `failed` with an honest "stale" reason. Only `queued`/`running` jobs are
+ * candidates — a `cancelled` job is already terminal and is never reaped
+ * (nor re-described as a failure, which is the point of the state). Run on a timer AND as a sweep on
  * (re)start, because a restart is exactly the event that orphans jobs and
  * waiting a full interval to admit it is the wrong default.
  */
@@ -2541,6 +2694,8 @@ module.exports = {
   listJobs,
   getJob,
   updateJob,
+  cancelJob,
+  deleteJob,
   reapStaleJobs,
   // the auto-trigger (THE single ingest path)
   triggerIngest,

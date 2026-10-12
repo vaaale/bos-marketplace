@@ -43,7 +43,7 @@ If the vocabulary genuinely outgrows a single deterministic pass — roughly 50k
 
 ### A new tool
 
-19 is a contract, not an accident: `service.json`'s description, `GET /tools`, the app badge and the e2e suite all reflect the real declared list, so adding one is a deliberate, visible act.
+21 is a contract, not an accident: `service.json`'s description, `GET /tools`, the app badge and the e2e suite all reflect the real declared list, so adding one is a deliberate, visible act.
 
 Before adding, check the two folds this surface already made:
 
@@ -81,7 +81,7 @@ Two invariants when touching the last row:
 
 ## Changing the agent's allowlist
 
-`agents/okf-ingest/AGENT.md`'s `tools:` frontmatter. The agent is deliberately **self-sufficient but narrow**: the full 19-tool `okf_*` surface plus `web_search`, `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`, `file_read`, `file_list`.
+`agents/okf-ingest/AGENT.md`'s `tools:` frontmatter. The agent is deliberately **self-sufficient but narrow**: 19 of the 21 `okf_*` tools (it gets no `okf_cancel_job` / `okf_delete_job` — it does the work, it does not manage the job it is running) plus `web_search`, `web_fetch`, `file_to_markdown`, `view_image`, `video_keyframes`, `file_read`, `file_list`.
 
 Self-sufficient, because an ingest that has to stop and ask for a capability doesn't finish. Narrow, because it never needs unrestricted `run_command` or `agent_delegate`, and granting either would widen a background agent's reach well past its job. Add to this list only what a run genuinely cannot complete without.
 

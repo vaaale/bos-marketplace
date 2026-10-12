@@ -5,13 +5,13 @@
 // ── Why this exists at all (ADR-003) ─────────────────────────────────────
 //
 // The app is a sandboxed browser iframe. It is NOT an agent and cannot call
-// the 19 okf_* tools: those are an agent surface, IPC-dispatched and
+// the 21 okf_* tools: those are an agent surface, IPC-dispatched and
 // JSON-schema-gated. So the app gets its own HTTP data layer here, reusing
 // the SAME okf-core functions the tools call. One capability, two surfaces —
 // `okf_search` and `GET/POST /bundles/<b>/search` run the identical
 // `core.search()`, so the UI can never drift from what the agent sees.
 //
-// Critically: adding app views adds NOTHING to the 19-tool agent surface
+// Critically: adding app views adds NOTHING to the 21-tool agent surface
 // (FR-036/SC-007). These routes are internal plumbing, not tool_declare'd.
 //
 // ── Routes (design.md §8.3) ──────────────────────────────────────────────
@@ -39,6 +39,10 @@
 //   GET    /jobs/<id>                           -> one job record
 //   POST   /jobs/<id>  {progress}               -> OPTIONAL progress
 //                                                  enrichment only
+//   POST   /jobs/<id>/cancel                    -> core.cancelJob: abort the
+//                                                  run, job -> `cancelled`
+//   DELETE /jobs/<id>                           -> core.deleteJob: drop the
+//                                                  record (terminal jobs only)
 //
 // ── What happened to POST /bundles/<b>/ingest ────────────────────────────
 //
@@ -57,9 +61,20 @@
 // anything other than the thing that actually watched the run — which is why
 // `POST /jobs/<id>` below accepts progress and NOTHING else.
 //
+// ── Job control (FR-050 / FR-051) ────────────────────────────────────────
+//
+// `POST /jobs/<id>/cancel` and `DELETE /jobs/<id>` are the Jobs tab's Cancel
+// and Delete buttons. They are APP endpoints, not tools — but they call the
+// very same core.cancelJob / core.deleteJob that `okf_cancel_job` and
+// `okf_delete_job` call, so a run stopped from the UI and a run stopped by an
+// agent are the same transition on the same record (ADR-003). Neither adds
+// anything to the agent surface.
+//
 // Everything the APP calls is read-only except bundle create/import/export/
-// delete, which the mockup gates behind explicit confirmation dialogs. All
-// knowledge WRITES stay agent/tool-driven.
+// delete and this job control, which the mockup gates behind explicit
+// confirmation dialogs. All knowledge WRITES stay agent/tool-driven — and
+// deleting a job is not a knowledge write: it removes a run record, never
+// bundle content.
 //
 // ── Trust boundary ───────────────────────────────────────────────────────
 // Loopback-scoped auth (spec FR-023 / bos-spec 039 FR-009): the server binds
@@ -115,6 +130,11 @@ function readJsonBody(req) {
 }
 
 function statusForError(err) {
+  // An error that knows its own status says so (core.cancelJob/deleteJob
+  // raise 404/409 this way) — reading it beats re-deriving the code from
+  // message text, which is how a reworded message silently becomes a 400.
+  const carried = err && (err.statusCode || err.status);
+  if (Number.isInteger(carried) && carried >= 400 && carried <= 599) return carried;
   if (/not found/i.test(err.message)) return 404;
   if (/already exists/i.test(err.message)) return 409;
   return 400;
@@ -160,7 +180,7 @@ function createRequestHandler(ctx) {
 
       // GET /tools — the declared okf_* surface, so the app's titlebar badge
       // states the REAL count rather than a hardcoded string, and so the e2e
-      // suite can assert the 19-tool contract (SC-007) against what the
+      // suite can assert the 21-tool contract (SC-007) against what the
       // service actually declares. Read-only; this is not itself a tool.
       if (req.method === "GET" && parts.length === 1 && parts[0] === "tools") {
         const tools = ctx.declarations || [];
@@ -230,6 +250,23 @@ function createRequestHandler(ctx) {
           }
           if (body.progress === undefined) return sendJson(res, 400, { error: "progress is required" });
           return sendJson(res, 200, await core.updateJob(bundleRoot, jobId, { progress: body.progress }));
+        }
+
+        // POST /jobs/<id>/cancel — the Jobs tab's Cancel button (FR-050).
+        // The SAME core.cancelJob the okf_cancel_job tool calls: it aborts
+        // the headless run through the platform's generic abort route and
+        // moves the job to the distinct `cancelled` terminal state. 404 for
+        // an unknown job, 409 for one that already ended — both carried on
+        // the error the core raises.
+        if (jobId && req.method === "POST" && parts.length === 3 && parts[2] === "cancel") {
+          return sendJson(res, 200, await core.cancelJob(bundleRoot, jobId));
+        }
+
+        // DELETE /jobs/<id> — the Jobs tab's Delete button (FR-051). Removes
+        // the run RECORD and nothing else; a job that is still queued or
+        // running is refused with 409 (cancel it first).
+        if (jobId && req.method === "DELETE" && parts.length === 2) {
+          return sendJson(res, 200, await core.deleteJob(bundleRoot, jobId));
         }
       }
 

@@ -36,7 +36,7 @@ The OKF Knowledge Base ships as one marketplace item with four facets: a **servi
 | `lib/vfs-bridge.js` | The loopback client for `/api/fs` (text) and `/api/fs/raw` (binary). The only way this service touches storage. |
 | `lib/delegate-bridge.js` | The loopback client for `/api/subagents/delegate`. How the service starts an agent run. |
 | `lib/http-bridge.js` | The app-facing REST surface, loopback-guarded. |
-| `lib/tools.js` | The 19 `okf_*` declarations + handlers. |
+| `lib/tools.js` | The 21 `okf_*` declarations + handlers. |
 
 `okf-core` never touches the host filesystem. Every path it handles is a BOS **VFS** path, and every read/write goes through `vfs-bridge` into `/api/fs`. (An earlier version remapped `bundleRoot` onto a host path derived from the service's config directory; every bundle landed inside BOS's internal `system/` directory, invisible to the Files app and to everything else that reads `/KnowledgeBase` — while the service and its app, which only ever talked to each other, looked fine. The one-time migration for that is still in `index.js`.)
 
@@ -109,14 +109,34 @@ okf_ingest({bundle, source})
 
 `driveRun` builds the task (embedding `jobId`, bundle, source, and the per-source acquisition first steps, **each pinning `output_path`**), POSTs it to the delegate endpoint, and consumes the NDJSON stream:
 
+- `{type:"run_started"}` carries the run's `runId` — stored on the job (FR-052). It is the handle the cancel path aborts by, and the only place it is ever published.
 - `{type:"tool"}` lines advance `job.progress`.
-- `{type:"done"}` carries `result.endedReason`: `"completed"` → `updateJob(completed)` with a summary parsed from `result.output`; `"error"` or `"max_steps"` → `updateJob(failed)` with `result.error`.
+- `{type:"done"}` carries `result.endedReason`: `"completed"` → `updateJob(completed)` with a summary parsed from `result.output`; `"cancelled"` → `updateJob(cancelled)` with `error: null`; `"error"` or `"max_steps"` → `updateJob(failed)` with `result.error`.
 - `{type:"error"}` → failed.
 - Stream ends with no terminal line → failed. We don't know it succeeded, so it didn't.
 
 **The launcher owns terminal state.** The thing that watched the run writes the outcome. The agent's only job-facing duty is its final summary text — it cannot declare itself finished, and `POST /jobs/<id>` rejects a `status` field for exactly that reason. An agent that dies, loops, or goes quiet still produces an honest record.
 
 `max_steps` is deliberately **not** a success: the bundle may hold a half-decomposed document, and recording that as completed would be the job store lying about its own data.
+
+## Cancel & delete (FR-050 / FR-051 / FR-052)
+
+The run executes in the main Next.js process; the job belongs to the worker. So cancelling goes out the way the launch came in — over loopback, to a **generic** platform route:
+
+```
+okf_cancel_job({jobId})        POST /jobs/<id>/cancel
+          └──────────┬──────────────────┘
+                core.cancelJob()
+                     ├─ runId known?   → POST /api/subagents/<runId>/abort   (BOS run-registry)
+                     ├─ runId not yet? → job.cancelRequested = true          (the launcher fires it on run_started)
+                     └─ updateJob(status: "cancelled", error: null)
+```
+
+That route is not OKF-specific — it is the HTTP face of BOS's in-process `abortHeadlessRun(runId)`, and the item merely consumes it. `OKF_DELEGATE_URL` overrides the base for both the delegate call and the abort, so they can never address two different servers.
+
+`cancelled` is a **distinct terminal state**, not a flavour of `failed`: cancelling is something the user asked for, so the record carries no error and the Jobs tab paints it in muted warm amber rather than red. The job record and everything the run already wrote are preserved.
+
+`core.deleteJob()` (`okf_delete_job` / `DELETE /jobs/<id>`) removes a **terminal** job's record from the hot map and the mirrored `jobs.json` — and nothing else. Bundle content is never touched. A still-active job is refused: cancel it first.
 
 ## The reaper
 
@@ -161,6 +181,8 @@ All loopback-guarded, all reusing the same `core` functions as the tools. None o
 | `POST /jobs` | **`triggerIngest`** — the app-side auto-trigger |
 | `GET /jobs` · `GET /jobs/<id>` | the job store |
 | `POST /jobs/<id>` | progress enrichment **only**; a `status` field is rejected |
+| `POST /jobs/<id>/cancel` | **`cancelJob`** — the Jobs tab's Cancel button (404 unknown · 409 terminal) |
+| `DELETE /jobs/<id>` | **`deleteJob`** — the Jobs tab's Delete button, record only (404 unknown · 409 active) |
 
 `POST /bundles/<b>/ingest` is gone — `POST /jobs` supersedes it.
 
@@ -175,5 +197,5 @@ The Query tab mounts only while visible: its force simulation sizes its viewBox 
 ## See also
 
 - [data-model.md](data-model.md) — bundle layout, frontmatter, index/TOC format, the job record.
-- [tool-surface.md](tool-surface.md) — the 19 tools (and the additive `kind` on two of them).
+- [tool-surface.md](tool-surface.md) — the 21 tools (the additive `kind` on two of them, and the job-control pair).
 - [extension.md](extension.md) — where to add a convention, and why the skill is the seam.

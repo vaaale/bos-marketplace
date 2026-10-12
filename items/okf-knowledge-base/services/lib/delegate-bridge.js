@@ -31,6 +31,7 @@
 //
 // Content-Type: application/x-ndjson. One JSON object per line:
 //
+//   {type:"run_started", runId}         FIRST — the run's handle (FR-052)
 //   {type:"tool", tool, input}          one per tool call, as it happens
 //   {type:"tool_result", ...}           enriched (ADR-13), may be absent
 //   {type:"reasoning_delta", ...}       enriched, may be absent
@@ -38,8 +39,9 @@
 //   {type:"done", result, text}         TERMINAL — result.{output, endedReason, error}
 //   {type:"error", error}               TERMINAL — the run threw before finishing
 //
-// We deliberately parse only what we act on (`tool` for progress, `done` /
-// `error` for the terminal state) and ignore unknown line types rather than
+// We deliberately parse only what we act on (`run_started` for the runId the
+// cancel path needs, `tool` for progress, `done` / `error` for the terminal
+// state) and ignore unknown line types rather than
 // failing on them: the endpoint is allowed to add event kinds, and a service
 // that crashed on an unrecognised line would be broken by an additive change.
 
@@ -53,9 +55,15 @@ const INGEST_AGENT = "okf-ingest";
  * The loopback base for BOS's own API — resolved exactly the way vfs-bridge
  * resolves it for /api/fs, by reusing that function rather than re-deriving
  * it. One place learns the Next.js port; both bridges follow it.
+ *
+ * `OKF_DELEGATE_URL` overrides it, and is the ONE seam for pointing the
+ * delegate AND abort calls somewhere else (a test double, or a BOS whose API
+ * is not on $PORT). Both calls resolve through here, so they can never end
+ * up addressing two different servers.
  */
 function loopbackBaseUrl() {
-  return vfs.vfsBaseUrl();
+  const override = process.env.OKF_DELEGATE_URL;
+  return override && override.trim() ? override.trim() : vfs.vfsBaseUrl();
 }
 
 /**
@@ -102,13 +110,16 @@ function openDelegateStream({ task, agent }) {
  * @param {string}   opts.task         the full task text (embeds jobId/bundle/source)
  * @param {string}  [opts.agent]       defaults to "okf-ingest"
  * @param {function} [opts.onTool]     ({tool, index}) => void — progress ticks
- * @returns {Promise<{ok: boolean, output?: string, endedReason?: string, error?: string, toolCalls: number}>}
+ * @param {function} [opts.onRunStarted] ({runId}) => void — fired once, as
+ *        soon as the run names itself (FR-052). The launcher stores the id on
+ *        the job; it is the handle `okf_cancel_job` aborts by.
+ * @returns {Promise<{ok: boolean, output?: string, endedReason?: string, error?: string, runId?: string, toolCalls: number}>}
  *          Resolves with the run's own terminal signal. NEVER rejects for a
  *          run that failed — a failed run is a result, not an exception. It
  *          rejects only when the stream itself could not be established or
  *          read, which the launcher reports as a failed job all the same.
  */
-async function runIngestAgent({ task, agent, onTool }) {
+async function runIngestAgent({ task, agent, onTool, onRunStarted }) {
   const res = await openDelegateStream({ task, agent });
 
   if (res.statusCode && res.statusCode >= 400) {
@@ -127,9 +138,28 @@ async function runIngestAgent({ task, agent, onTool }) {
 
   let terminal = null;
   let toolCalls = 0;
+  let runId = null;
 
   await consumeNdjson(res, (line) => {
     if (!line || typeof line !== "object") return;
+    // The run's handle. `run_started` is where the endpoint announces it;
+    // we also accept a runId riding on any earlier line rather than insisting
+    // on one event name, because missing it costs the cancel path its only
+    // handle for the whole run.
+    if (!runId && (line.type === "run_started" || line.runId)) {
+      const id = line.runId || (line.run && line.run.id) || (line.result && line.result.runId);
+      if (id) {
+        runId = String(id);
+        if (onRunStarted) {
+          try {
+            void Promise.resolve(onRunStarted({ runId })).catch(() => {});
+          } catch {
+            /* capturing the id must never break the stream that carried it */
+          }
+        }
+      }
+      if (line.type === "run_started") return;
+    }
     if (line.type === "tool") {
       toolCalls++;
       if (onTool) {
@@ -153,12 +183,13 @@ async function runIngestAgent({ task, agent, onTool }) {
       ok: false,
       error: "the sub-agent stream ended without a terminal line — the run was interrupted",
       endedReason: "error",
+      runId,
       toolCalls,
     };
   }
 
   if (terminal.type === "error") {
-    return { ok: false, error: String(terminal.error || "the sub-agent run threw"), endedReason: "error", toolCalls };
+    return { ok: false, error: String(terminal.error || "the sub-agent run threw"), endedReason: "error", runId, toolCalls };
   }
 
   const result = terminal.result || {};
@@ -171,10 +202,77 @@ async function runIngestAgent({ task, agent, onTool }) {
     ok,
     output: typeof result.output === "string" ? result.output : terminal.text || "",
     endedReason,
-    error: ok ? undefined : result.error || `the run ended as "${endedReason}"`,
+    // A cancelled run is a STOP, not an error — the launcher maps it to the
+    // `cancelled` job status and must not be handed an error string to paint
+    // a failure card with (FR-050).
+    error: ok || endedReason === "cancelled" ? undefined : result.error || `the run ended as "${endedReason}"`,
     steps: typeof result.steps === "number" ? result.steps : undefined,
+    runId: runId || (typeof result.runId === "string" ? result.runId : undefined),
     toolCalls,
   };
+}
+
+/**
+ * Abort a headless run by its id (FR-052).
+ *
+ * `POST /api/subagents/<runId>/abort` is a GENERIC platform route — the HTTP
+ * face of BOS's in-process `abortHeadlessRun(runId)` run-registry. It knows
+ * nothing about OKF jobs: it aborts a run and answers `{aborted: true|false}`.
+ * Mapping that onto a job record is this item's business, done in
+ * `core.cancelJob`.
+ *
+ * `aborted: false` is a legitimate answer, not an error: it means no live run
+ * is registered under that id — it already finished, or the process that
+ * owned it restarted. Only a transport failure or a non-2xx status rejects.
+ *
+ * @param {string} runId
+ * @returns {Promise<{aborted: boolean, runId: string, error?: string}>}
+ */
+function abortRun(runId) {
+  return new Promise((resolve, reject) => {
+    const id = String(runId || "").trim();
+    if (!id) return reject(new Error("runId is required to abort a run"));
+
+    const url = new URL(`/api/subagents/${encodeURIComponent(id)}/abort`, loopbackBaseUrl());
+    const body = JSON.stringify({ reason: "cancelled from the OKF Knowledge Base service" });
+    const req = http.request(
+      {
+        method: "POST",
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+          Accept: "application/json",
+        },
+      },
+      (res) => {
+        readAll(res)
+          .then((text) => {
+            let parsed = null;
+            try {
+              parsed = text ? JSON.parse(text) : null;
+            } catch {
+              /* a non-JSON body is reported through the status check below */
+            }
+            if (res.statusCode && res.statusCode >= 400) {
+              const message = (parsed && parsed.error) || `abort endpoint returned HTTP ${res.statusCode}`;
+              return reject(new Error(message));
+            }
+            resolve({
+              aborted: !!(parsed && parsed.aborted),
+              runId: id,
+              error: parsed && parsed.error ? String(parsed.error) : undefined,
+            });
+          })
+          .catch(reject);
+      },
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
 }
 
 /** Read a whole (small, non-stream) response body as text. */
@@ -233,4 +331,4 @@ function consumeNdjson(res, onLine) {
   });
 }
 
-module.exports = { runIngestAgent, loopbackBaseUrl, INGEST_AGENT };
+module.exports = { runIngestAgent, abortRun, loopbackBaseUrl, INGEST_AGENT };

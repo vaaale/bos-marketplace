@@ -1,8 +1,8 @@
-# Tool surface — the 19 `okf_*` tools
+# Tool surface — the 21 `okf_*` tools
 
 Declared at startup over worker IPC (`deploymentMode: "tools"`, one `tool_declare` per tool) and registered into BOS's `AssistantTool` registry. Every one appears under the **Knowledge Base** group named in `services/service.json`'s `toolGroups`; a tool resolving to no declared group is rejected at startup, with the reason surfaced in Settings → Services.
 
-Arguments are validated against each `inputSchema` in the 039 bridge **before** dispatch. Errors come back in-band as `tool_error`, never as a crash. Stopping or uninstalling the service removes all 19 immediately.
+Arguments are validated against each `inputSchema` in the 039 bridge **before** dispatch. Errors come back in-band as `tool_error`, never as a crash. Stopping or uninstalling the service removes all 21 immediately.
 
 **Read-only tools are `parallelSafe`.** Every writer is deliberately sequential: two concurrent upserts, merges or deletes against one bundle would race on the same files *and* on the derived-index rebuild each of them triggers.
 
@@ -56,13 +56,20 @@ Both changes are **additive and backward compatible**, and the surface count is 
 
 Git/tarball import: fetch and unpack into the VFS first, then import the directory by path. The worker has no shell.
 
-## Ingest (3)
+## Ingest (2)
 
 | Tool | Input | Returns |
 |---|---|---|
 | `okf_ingest` | `{bundle, source, maxDepth?, maxWorkers?}` | `{jobId, status: "queued"}` — or `{status: "already_ingested", docId}` |
 | `okf_add_raw_source` | `{bundle, filename?, content?, sourcePath?, conceptId?, title?, originUrl?, asset?, docId?}` | the `rawFile` path |
+
+## Jobs (3)
+
+| Tool | Input | Returns |
+|---|---|---|
 | `okf_list_jobs` *(readOnly)* | `{bundle?, status?, jobId?, limit?}` | `{jobs, count, active}` |
+| `okf_cancel_job` | `{bundle?, jobId}` | the job, now `cancelled` (`error: null`) — 404 unknown, 409 already terminal |
+| `okf_delete_job` | `{jobId}` | `{deleted: true, jobId}` — 404 unknown, 409 still queued/running |
 
 ### `okf_ingest` is an auto-trigger, not a dispatcher
 
@@ -82,6 +89,15 @@ Versions a source into `raw/` (append-only, never overwritten), records the ledg
 
 Since `okf_ingest` returns only a job id, this is the only way an agent learns how a run went. It reads the **same** `core.listJobs()` records the app's Jobs tab renders, so the agent's view and the user's view cannot disagree.
 
+### `okf_cancel_job` / `okf_delete_job` are the agent's half of job control
+
+The app's Jobs tab has a **Cancel** and a **Delete** button; these are the same two capabilities for an agent, running the same `core.cancelJob` / `core.deleteJob` the REST routes (`POST /jobs/<id>/cancel`, `DELETE /jobs/<id>`) run — one capability, two surfaces.
+
+- **Cancel** aborts the underlying headless run through the platform's generic `POST /api/subagents/<runId>/abort` route (the item consumes it; it is not OKF-specific) and moves the job to the distinct **`cancelled`** terminal state. Cancelling is not a failure: `error` stays `null`. If the run has not yet reported its `runId`, the intent is recorded and the launcher fires the abort the moment `run_started` arrives.
+- **Delete** removes the **run record only** — never chapters, the index, TOCs or `raw/`. A still-active job is refused (409); cancel it first.
+
+Neither is `parallelSafe`: both mutate the job store. The bundled `okf-ingest` sub-agent gets neither — it does the work, it does not manage the job it is running.
+
 ## Organization (2)
 
 | Tool | Input | Notes |
@@ -100,7 +116,7 @@ Because both index levels are derived, detected drift is **rebuilt**, not hand-p
 
 ## What this replaced
 
-The pre-redesign surface declared 31. Four were added — `okf_search`, `okf_read_toc`, `okf_merge_concepts`, `okf_list_jobs` — and sixteen removed by name:
+The pre-redesign surface declared 31. Six were added — `okf_search`, `okf_read_toc`, `okf_merge_concepts`, `okf_list_jobs`, `okf_cancel_job`, `okf_delete_job` — and sixteen removed by name:
 
 | Removed | Where the capability went |
 |---|---|
@@ -114,7 +130,7 @@ The pre-redesign surface declared 31. Four were added — `okf_search`, `okf_rea
 | `okf_attest`, `okf_provenance` | the `sources` / `verified` frontmatter |
 | `okf_remove_link`, `okf_list_links`, `okf_neighbors`, `okf_shortest_path`, `okf_export_graph` | retrieval is index-based; the app renders the graph from the derived `/graph` route |
 
-Net: 31 → 19. The field-setter family and the attest/provenance pair are "removed tools, not removed features" — their capability lives on inside `okf_upsert_concept`.
+Net: 31 → 21. The field-setter family and the attest/provenance pair are "removed tools, not removed features" — their capability lives on inside `okf_upsert_concept`.
 
 ### Why `okf_list_jobs` exists when the design said no jobs tool
 
@@ -132,4 +148,4 @@ Not declared by this item and not owned by it — BOS assistant tools the bundle
 | `video_keyframes` | interpreting video assets |
 | `file_read` / `file_list` | reading the raw source from the bundle |
 
-The agent is granted the full 19-tool `okf_*` surface plus exactly those seven, and **nothing else** — no other BOS tool, no unrestricted `run_command`, no `agent_delegate`. Self-sufficient, so an ingest never stops to ask for a capability; narrow, so it can't reach past its job.
+The agent is granted 19 of the 21 `okf_*` tools (every one except `okf_cancel_job` / `okf_delete_job`) plus exactly those seven, and **nothing else** — no other BOS tool, no unrestricted `run_command`, no `agent_delegate`. Self-sufficient, so an ingest never stops to ask for a capability; narrow, so it can't reach past its job.

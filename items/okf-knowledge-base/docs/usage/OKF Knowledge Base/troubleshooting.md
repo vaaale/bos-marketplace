@@ -33,7 +33,7 @@ Stale does not mean wrong — it means *nobody has vouched for it lately*. The c
 
 First, give it a minute: a long document with assets and references genuinely takes a while, and the elapsed clock is live.
 
-If it really is stuck — the usual cause is BOS or the service restarting while the run was in flight, which orphans it — the **reaper** handles it. Any run still queued or running past the staleness limit (30 minutes by default) is marked **failed** with a "stale" reason explaining what happened. The reaper also sweeps immediately whenever the service starts, because a restart is exactly the event that orphans runs: it doesn't wait out the interval to admit a run it knows it isn't running.
+If it really is stuck — the usual cause is BOS or the service restarting while the run was in flight, which orphans it — the **reaper** handles it. Any run still queued or running past the staleness limit (30 minutes by default) is marked **failed** with a "stale" reason explaining what happened. (You can also stop it yourself with the row's **Cancel** button — that ends it as **cancelled**, which is not a failure.) The reaper also sweeps immediately whenever the service starts, because a restart is exactly the event that orphans runs: it doesn't wait out the interval to admit a run it knows it isn't running.
 
 A reaped run is not destructive. Every write is atomic and the derived index rebuilds from content, so a half-finished run leaves a smaller bundle, not a broken one. Re-run the ingest to finish the job.
 
@@ -60,7 +60,7 @@ The app retries for about fifteen seconds while the service is binding its port,
 
 ## The tools aren't there
 
-The 19 `okf_*` tools are declared by the service at startup and removed when it stops. If the assistant says it has no such tool, the service isn't running — Settings → Plugins.
+The 21 `okf_*` tools are declared by the service at startup and removed when it stops. If the assistant says it has no such tool, the service isn't running — Settings → Plugins.
 
 If the service is running but tools are missing, check its log in Settings → Plugins: a declaration rejected at startup reports its reason there.
 

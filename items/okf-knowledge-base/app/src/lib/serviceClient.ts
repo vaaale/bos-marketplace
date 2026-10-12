@@ -274,6 +274,29 @@ export function fetchJob(id: string): Promise<Job> {
 }
 
 /**
+ * Stop a queued or running run (FR-050) — the Jobs tab's Cancel button.
+ *
+ * POST /jobs/<id>/cancel runs the same `core.cancelJob()` the
+ * `okf_cancel_job` tool runs: the service aborts the underlying headless run
+ * and the job moves to the distinct `cancelled` state. Rejects with the
+ * service's own message on 404 (unknown job) or 409 (already terminal).
+ */
+export function cancelJob(id: string): Promise<Job & { cancelled: boolean; aborted: boolean; note: string }> {
+  return send(`jobs/${encodeURIComponent(id)}/cancel`, "POST");
+}
+
+/**
+ * Remove a finished run's record (FR-051) — the Jobs tab's Delete button.
+ *
+ * DELETE /jobs/<id> runs the same `core.deleteJob()` the `okf_delete_job`
+ * tool runs. It removes the RECORD only: the chapters, index, TOCs and raw/
+ * sources the run wrote are untouched. A still-active run is refused (409).
+ */
+export function deleteJob(id: string): Promise<{ deleted: boolean; jobId: string; note: string }> {
+  return send(`jobs/${encodeURIComponent(id)}`, "DELETE");
+}
+
+/**
  * Absolute URL for a stored inline asset, so the reader pane can render the
  * thumbnail without reaching /api/fs itself (ADR-008). Returns null when the
  * base URL isn't resolved yet or we're on the broker path, where an <img src>

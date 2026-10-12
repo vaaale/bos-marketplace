@@ -234,7 +234,7 @@ In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json`. Service-level, ne
 ```jsonc
 {
   "id": "run-1042",
-  "status": "queued | running | completed | failed",
+  "status": "queued | running | completed | cancelled | failed",
   "bundleId": "engineering",
   "source": "https://example.com/performance-budgets",
   "maxDepth": 1,
@@ -250,13 +250,17 @@ In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json`. Service-level, ne
     "text": "Wrote 6 chapters…",
     "toolCalls": 41
   },
-  "error": null
+  "error": null,
+  "runId": "sub-8f2c…",      // captured from the run's run_started event (FR-052)
+  "cancelRequested": false  // a cancel that landed before the runId existed
 }
 ```
 
 - `progress` is advanced by the launcher from the run's `{type:"tool"}` stream lines, and may be enriched by the agent via `POST /jobs/<id> {progress}`. It is cleared on a terminal transition.
 - `summary` exists on `completed`. The counts are read out of the agent's prose where it states them plainly; `text` keeps the report verbatim, and is the authority when a count reads 0 because the agent phrased it differently.
-- `error` exists on `failed`, including the reaper's "stale" reason.
+- `error` exists on `failed`, including the reaper's "stale" reason. It is **null on `cancelled`**: an intentional stop is not an error (FR-050).
+- `runId` is the handle `okf_cancel_job` aborts by. It is null until the run emits `run_started`; a cancel arriving in that window sets `cancelRequested`, and the launcher fires the abort the moment the id arrives.
+- `cancelled` is terminal, so the reaper never touches it and `okf_delete_job` accepts it.
 - **Terminal states are final.** A late transition against a terminal job is a recorded no-op, never a resurrection.
 - `.jobs/` is operational state, not OKF content: it is excluded from `okf_export_bundle`.
 

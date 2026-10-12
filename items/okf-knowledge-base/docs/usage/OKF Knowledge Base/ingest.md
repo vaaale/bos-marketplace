@@ -37,7 +37,16 @@ The **Jobs** tab lists every run, newest first, with a status dot and a live ela
 | **queued** | The run has been created and the agent is starting. Nothing has been written yet. |
 | **running** | In progress. Expand the row for the progress line. |
 | **completed** | Finished. The detail shows the summary cells — chapters, concepts, assets, references skipped, references failed — and the agent's own report. |
-| **failed** | Stopped. The detail shows why. |
+| **cancelled** | You stopped it. Not a failure, so there is no error — and everything the run had already written stays in the bundle. |
+| **failed** | Stopped by something going wrong. The detail shows why. |
+
+### Stopping and clearing runs
+
+A run that is still **queued** or **running** has a **Cancel** button on its row: it aborts the underlying ingest agent and the run ends as **cancelled**. Because every write is atomic, a cancelled run leaves a *smaller* bundle, never a half-updated one — re-run it whenever you like.
+
+A run that has **finished** (completed, cancelled or failed) has a **Delete** button, which removes the run record from the list. It does **not** touch the chapters, concept index, TOCs or `raw/` sources the run wrote. Deleting a run that is still going is refused — cancel it first.
+
+Your assistant has the same two controls: `okf_cancel_job({jobId})` and `okf_delete_job({jobId})`.
 
 The assistant can see the same records:
 

@@ -144,7 +144,9 @@ export interface BundleGraph {
   indexGeneratedAt: string | null;
 }
 
-export type JobStatus = "queued" | "running" | "completed" | "failed";
+/** `cancelled` is TERMINAL and is NOT a failure (FR-050) — an intentional
+ *  stop, which is why a cancelled job carries `error: null`. */
+export type JobStatus = "queued" | "running" | "completed" | "cancelled" | "failed";
 
 export interface JobSummary {
   chapters: number;
@@ -174,6 +176,12 @@ export interface Job {
   progress: string | null;
   summary: JobSummary | null;
   error: string | null;
+  /** The headless run's id, captured from its `run_started` event (FR-052).
+   *  Null until the run names itself — the window `cancelRequested` covers. */
+  runId?: string | null;
+  /** A cancel that arrived before the runId existed; the launcher fires the
+   *  abort as soon as it has the handle. */
+  cancelRequested?: boolean;
 }
 
 export interface LintReport {

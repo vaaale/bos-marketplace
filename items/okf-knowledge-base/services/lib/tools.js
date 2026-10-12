@@ -7,20 +7,30 @@
 // hands the sub-agent). Handlers validate shape and delegate to okf-core,
 // which owns all storage semantics.
 //
-// ── EXACTLY 19 TOOLS (spec FR-037 / SC-007, design.md §8.2 + the auto-trigger
-//    rework's okf_list_jobs) ─────────────────────────────────────────────
+// ── EXACTLY 21 TOOLS (spec FR-037 / SC-007, design.md §8.2 + the auto-trigger
+//    rework's okf_list_jobs + the job-control scope-add) ────────────────
 //
-// The pre-redesign surface declared 31. This declares 19 and nothing else:
+// The pre-redesign surface declared 31. This declares 21 and nothing else:
 //
 //   Retrieval      okf_search · okf_read_toc · okf_read_concept · okf_list_concepts
 //   Concepts       okf_upsert_concept · okf_delete_concept · okf_merge_concepts
 //   Bundles        okf_list_bundles · okf_init_bundle · okf_import_bundle
 //                  okf_export_bundle · okf_delete_bundle
-//   Ingest         okf_ingest · okf_add_raw_source · okf_list_jobs
+//   Ingest         okf_ingest · okf_add_raw_source
+//   Jobs           okf_list_jobs · okf_cancel_job · okf_delete_job
 //   Organization   okf_add_link · okf_backlinks
 //   Health         okf_lint · okf_stale_report
 //
-// ADDED (4): okf_search, okf_read_toc, okf_merge_concepts, okf_list_jobs.
+// ADDED (6): okf_search, okf_read_toc, okf_merge_concepts, okf_list_jobs,
+// okf_cancel_job, okf_delete_job.
+//
+// okf_cancel_job and okf_delete_job are the 20th and 21st (FR-050/FR-051).
+// They are the agent's half of job CONTROL: the app's Jobs tab has a Cancel
+// and a Delete button, and an agent that started a run with okf_ingest must
+// be able to stop it and clear it without telling the user to go click
+// something. Both run the same core.cancelJob/core.deleteJob the REST routes
+// run — one capability, two surfaces (ADR-003). Neither is parallelSafe:
+// they mutate the job store.
 //
 // okf_list_jobs is the 19th. Design.md's ADR-006 explicitly rejected a jobs
 // tool — but it rejected it as a way for the SUB-AGENT to report lifecycle,
@@ -222,18 +232,43 @@ const DECLARATIONS = [
   readOnly({
     name: "okf_list_jobs",
     description:
-      "List ingest runs and how they went — the same records the app's Jobs tab shows. Each is `{id, status, bundleId, source, queuedAt, startedAt, endedAt, durationMs, progress, summary, error}`, newest first.\n\n" +
-      "This is how you follow up on an okf_ingest you started: the run is asynchronous and okf_ingest returns only a jobId, so this is the only way to learn whether it completed (with a summary) or failed (with a reason). Filter by `bundle`, by `status`, or pass the `jobId` you were given.",
+      "List ingest runs and how they went — the same records the app's Jobs tab shows. Each is `{id, status, bundleId, source, queuedAt, startedAt, endedAt, durationMs, progress, summary, error, runId}`, newest first.\n\n" +
+      "This is how you follow up on an okf_ingest you started: the run is asynchronous and okf_ingest returns only a jobId, so this is the only way to learn whether it completed (with a summary), was cancelled (an intentional stop — `error` is null), or failed (with a reason). Filter by `bundle`, by `status`, or pass the `jobId` you were given.",
     inputSchema: {
       type: "object",
       properties: {
         bundle: { type: "string", description: "Only runs against this bundle." },
-        status: { type: "string", enum: ["queued", "running", "completed", "failed"] },
+        status: { type: "string", enum: ["queued", "running", "completed", "cancelled", "failed"] },
         jobId: { type: "string", description: "Return just this one run." },
         limit: { type: "number", description: "Most recent N runs (default: all)." },
       },
     },
   }),
+  {
+    name: "okf_cancel_job",
+    description:
+      "Stop an ingest run that is still queued or running. The service aborts the underlying headless okf-ingest run and the job moves to the distinct `cancelled` state — an intentional stop, NOT a failure, so its `error` stays null.\n\n" +
+      "Nothing is removed: the job record stays (delete it with okf_delete_job once you are done with it), and every chapter the run already wrote stays in the bundle. Writes are atomic, so a cancelled run leaves a smaller bundle, never a half-written one.\n\n" +
+      "Cancelling a run that already ended (completed / failed / cancelled) is an error, not a no-op you need to guard against — read the status with okf_list_jobs first if you are unsure.",
+    inputSchema: required(
+      {
+        bundle: { type: "string", description: "Optional — the bundle the run targets. Jobs are service-global, so the jobId alone identifies the run." },
+        jobId: { type: "string", description: "The run to stop, as returned by okf_ingest or okf_list_jobs." },
+      },
+      ["jobId"],
+    ),
+  },
+  {
+    name: "okf_delete_job",
+    description:
+      "Delete a FINISHED ingest run's record — completed, cancelled or failed — to clear it from the Jobs list. Returns `{deleted: true, jobId}`.\n\n" +
+      "This removes the run record ONLY. The chapters, concept index, TOCs and raw/ sources the run wrote are untouched: deleting a job never deletes knowledge (use okf_delete_concept or okf_delete_bundle for that, deliberately).\n\n" +
+      "A run that is still queued or running is refused — cancel it first with okf_cancel_job.",
+    inputSchema: required(
+      { jobId: { type: "string", description: "The finished run to remove, as listed by okf_list_jobs." } },
+      ["jobId"],
+    ),
+  },
 
   // ── Organization ───────────────────────────────────────────────────────
   {
@@ -367,6 +402,15 @@ function makeHandlers(core) {
         active: jobs.filter((j) => j.status === "running" || j.status === "queued").length,
       };
     },
+
+    // Job CONTROL. Both call the same core functions the app's
+    // `POST /jobs/<id>/cancel` and `DELETE /jobs/<id>` routes call, so the
+    // Cancel button and the tool cannot drift apart (ADR-003). The core
+    // raises a carrying `statusCode` (404 unknown / 409 wrong lifecycle
+    // state) which the REST bridge turns into a status; here it surfaces as
+    // the error message, which is what an agent can act on.
+    okf_cancel_job: (args, ctx) => core.cancelJob(ctx.bundleRoot, args.jobId),
+    okf_delete_job: (args, ctx) => core.deleteJob(ctx.bundleRoot, args.jobId),
 
     // ── Organization ─────────────────────────────────────────────────────
     okf_add_link: (args, ctx) => core.addLink(ctx.bundleRoot, args.bundle, args.id, args.target, { label: args.label }),

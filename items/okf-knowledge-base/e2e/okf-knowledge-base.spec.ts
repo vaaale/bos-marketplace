@@ -42,7 +42,8 @@ import { expect, request, test, type APIRequestContext, type FrameLocator, type 
 const BASE = process.env.BOS_PREVIEW_URL || "http://localhost:8090";
 const SERVICE_ID = "okf-knowledge-base";
 
-/** The 19 declared tools (spec FR-037 / SC-007 + okf_list_jobs). */
+/** The 21 declared tools (spec FR-037 / SC-007 + okf_list_jobs + the
+ *  job-control pair okf_cancel_job / okf_delete_job). */
 const EXPECTED_TOOLS = [
   "okf_search",
   "okf_read_toc",
@@ -59,6 +60,8 @@ const EXPECTED_TOOLS = [
   "okf_ingest",
   "okf_add_raw_source",
   "okf_list_jobs",
+  "okf_cancel_job",
+  "okf_delete_job",
   "okf_add_link",
   "okf_backlinks",
   "okf_lint",
@@ -67,9 +70,9 @@ const EXPECTED_TOOLS = [
 
 /** The 16 removed BY NAME (FR-037). None may still be declared.
  *
- *  The net change is 31 -> 19, i.e. 12 fewer, because four were added
- *  (okf_search, okf_read_toc, okf_merge_concepts, okf_list_jobs) alongside
- *  these sixteen removals. Asserting all sixteen names are gone is the
+ *  The net change is 31 -> 21, i.e. 10 fewer, because six were added
+ *  (okf_search, okf_read_toc, okf_merge_concepts, okf_list_jobs,
+ *  okf_cancel_job, okf_delete_job) alongside these sixteen removals. Asserting all sixteen names are gone is the
  *  stronger check, and the one that catches a tool quietly surviving the
  *  rework. */
 const REMOVED_TOOLS = [
@@ -252,18 +255,18 @@ test.afterAll(async () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════
-//  SC-007 / FR-037 / FR-038 — the tool surface is exactly 19
+//  SC-007 / FR-037 / FR-038 — the tool surface is exactly 21
 // ════════════════════════════════════════════════════════════════════════
 
-test("SC-007: the service declares exactly the 19 okf_* tools and none of the 16 removed", async () => {
+test("SC-007: the service declares exactly the 21 okf_* tools and none of the 16 removed", async () => {
   const res = await api.get("tools");
   expect(res.ok()).toBeTruthy();
   const { count, tools } = await res.json();
 
   // The badge in the app and this assertion both read the service's OWN
   // declaration list — neither hardcodes the number anywhere but here.
-  expect(count).toBe(19);
-  expect(tools.length).toBe(19);
+  expect(count).toBe(21);
+  expect(tools.length).toBe(21);
   expect(tools.map((t: { name: string }) => t.name).sort()).toEqual(EXPECTED_TOOLS);
 
   const names = new Set(tools.map((t: { name: string }) => t.name));
@@ -948,7 +951,7 @@ test("FR-035: the app is a standalone master-detail app with Overview / Jobs / Q
   // by actually agreeing.
   const { count } = await (await api.get("tools")).json();
   await expect(app.getByTestId("tool-badge")).toContainText(`${count} okf_* tools`);
-  expect(count).toBe(19);
+  expect(count).toBe(21);
 });
 
 test("US7 AS1/AS2/AS3: Overview browses health, the concept index, a document TOC and a full chapter", async ({ page }) => {
@@ -1541,4 +1544,206 @@ test("O3/N2–N5: the app paints the 4th category teal — graph, legend, table,
   await expect(app.getByTestId("concept-index")).toBeVisible();
   await expect(app.getByTestId("term-kind-Diego Córdoba")).toHaveText("person");
   await expect(app.getByTestId("term-kind-water-rights")).toHaveText("concept");
+});
+
+// ════════════════════════════════════════════════════════════════════════
+//  FR-050 / FR-051 / FR-052 / SC-007 — JOB CONTROL (cancel & delete)
+// ════════════════════════════════════════════════════════════════════════
+//
+// The scope-add on top of the auto-trigger: a run you started can be STOPPED
+// (into a distinct `cancelled` terminal state, not a failure), and a run that
+// has finished can be CLEARED (the record only — never bundle content).
+//
+// WHY THESE DRIVE THE REST ROUTES. `okf_cancel_job` / `okf_delete_job` are
+// 039 tools dispatched over worker IPC; there is no HTTP face to call them
+// from a test. `POST /jobs/<id>/cancel` and `DELETE /jobs/<id>` run the SAME
+// core.cancelJob / core.deleteJob those tools call (ADR-003), so exercising
+// the routes exercises the tools' worker logic exactly; the tool DECLARATIONS
+// are asserted separately against GET /tools (C3).
+//
+// WHY THE FIXTURES ARE SEEDED. A `queued` job is a window a real run leaves
+// in milliseconds, and cancelling a real run would burn a live provider call
+// for a state machine assertion. So the records are written straight into the
+// persisted store and the service restarted — the same seam the reaper test
+// uses. The seeded jobs are minutes old, well inside the 30-minute staleness
+// window, so the startup sweep leaves them alone.
+
+let jobFixtures: { queued: string; completed: string; running: string } | null = null;
+
+async function seedJobControlFixtures(): Promise<{ queued: string; completed: string; running: string }> {
+  if (jobFixtures) return jobFixtures;
+
+  const shell = await request.newContext();
+  const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
+  const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
+  const jobsFile = `${bundleRoot}/.jobs/jobs.json`;
+
+  const existing = await shell.get(`${BASE}/api/fs?op=read&path=${encodeURIComponent(jobsFile)}`);
+  const store = existing.ok() ? JSON.parse((await existing.json()).content) : { jobs: [], seq: 1000 };
+
+  const stamp = Date.now();
+  const ids = {
+    queued: `run-e2e-cancel-queued-${stamp}`,
+    completed: `run-e2e-terminal-${stamp}`,
+    running: `run-e2e-running-${stamp}`,
+  };
+  const now = new Date().toISOString();
+  const base = {
+    bundleId: B.main,
+    source: "raw/e2e-job-control.md",
+    maxDepth: 1,
+    maxWorkers: 3,
+    queuedAt: now,
+    startedAt: null as string | null,
+    endedAt: null as string | null,
+    durationMs: null as number | null,
+    progress: null as string | null,
+    summary: null as unknown,
+    error: null as string | null,
+    runId: null as string | null,
+    cancelRequested: false,
+  };
+
+  store.jobs.unshift(
+    { ...base, id: ids.queued, status: "queued" },
+    {
+      ...base,
+      id: ids.completed,
+      status: "completed",
+      startedAt: now,
+      endedAt: now,
+      durationMs: 1234,
+      summary: { chapters: 2, concepts: 3, assets: 0, refsSkipped: 0, refsFailed: 0, written: [], text: "2 chapters written.", toolCalls: 7 },
+    },
+    { ...base, id: ids.running, status: "running", startedAt: now, progress: "writing 2 of 5 chapters" },
+  );
+
+  const wrote = await shell.post(`${BASE}/api/fs`, {
+    data: { op: "write", path: jobsFile, content: JSON.stringify(store, null, 2) + "\n" },
+  });
+  expect(wrote.ok(), "could not seed the job store").toBeTruthy();
+
+  const restarted = await shell.post(`${BASE}/api/services/${SERVICE_ID}`, {
+    data: { action: "restart", reason: "e2e job-control fixtures" },
+  });
+  expect(restarted.ok()).toBeTruthy();
+
+  // the port is OS-assigned, so a restart can move it — re-resolve, never reuse
+  await api.dispose();
+  serviceBase = await resolveServiceBase(shell);
+  api = await request.newContext({ baseURL: serviceBase });
+  await shell.dispose();
+
+  jobFixtures = ids;
+  return ids;
+}
+
+test("C1 (FR-051/FR-050): a queued run cancels into the distinct `cancelled` state; terminal is 409, unknown is 404", async () => {
+  const ids = await seedJobControlFixtures();
+
+  // the fixture is really there, and really queued
+  expect((await (await api.get(`jobs/${ids.queued}`)).json()).status).toBe("queued");
+
+  const res = await api.post(`jobs/${ids.queued}/cancel`);
+  expect(res.ok(), "cancelling a queued run must succeed").toBeTruthy();
+  const cancelled = await res.json();
+
+  // the WHOLE point of the state: cancelled, terminal, and NOT an error
+  expect(cancelled.status).toBe("cancelled");
+  expect(cancelled.error, "a cancel is an intentional stop — it carries no error").toBeNull();
+  expect(cancelled.endedAt).toBeTruthy();
+  expect(cancelled.durationMs).not.toBeNull();
+  expect(cancelled.progress, "a terminal transition clears progress").toBeNull();
+
+  // ADR-010 S4: no runId had been captured yet, so the intent is recorded for
+  // the launcher to act on the moment `run_started` arrives
+  expect(cancelled.runId).toBeNull();
+  expect(cancelled.cancelRequested).toBe(true);
+
+  // it persisted, and the list surface (what okf_list_jobs reads) shows it
+  const after = await (await api.get(`jobs/${ids.queued}`)).json();
+  expect(after.status).toBe("cancelled");
+  expect(after.error).toBeNull();
+  const { jobs, active } = await (await api.get("jobs")).json();
+  const listed = jobs.find((j: { id: string }) => j.id === ids.queued);
+  expect(listed, "a cancelled run stays listed — cancel is not delete").toBeTruthy();
+  expect(listed.status).toBe("cancelled");
+  expect(
+    jobs.filter((j: { status: string }) => j.status === "running" || j.status === "queued").length,
+  ).toBe(active);
+
+  // cancelling something that already ended is a 409, and changes nothing
+  const onTerminal = await api.post(`jobs/${ids.completed}/cancel`);
+  expect(onTerminal.status()).toBe(409);
+  expect(JSON.stringify(await onTerminal.json())).toMatch(/already completed/i);
+  expect((await (await api.get(`jobs/${ids.completed}`)).json()).status).toBe("completed");
+
+  // including the one just cancelled — terminal is terminal
+  expect((await api.post(`jobs/${ids.queued}/cancel`)).status()).toBe(409);
+
+  // an unknown job is a clean 404, not a 500
+  expect((await api.post("jobs/run-does-not-exist/cancel")).status()).toBe(404);
+});
+
+test("C2 (FR-052/FR-051): a finished run's record deletes; a running one is 409; an unknown one is 404", async () => {
+  const ids = await seedJobControlFixtures();
+
+  const before = await (await api.get(`bundles/${B.main}`)).json();
+
+  const res = await api.delete(`jobs/${ids.completed}`);
+  expect(res.ok()).toBeTruthy();
+  const body = await res.json();
+  expect(body.deleted).toBe(true);
+  expect(body.jobId).toBe(ids.completed);
+
+  // gone from BOTH surfaces — the record, and the list okf_list_jobs reads
+  expect((await api.get(`jobs/${ids.completed}`)).status()).toBe(404);
+  const { jobs } = await (await api.get("jobs")).json();
+  expect(jobs.some((j: { id: string }) => j.id === ids.completed)).toBe(false);
+
+  // and the bundle it ran against is untouched: deleting a job never deletes
+  // knowledge (FR-051)
+  const after = await (await api.get(`bundles/${B.main}`)).json();
+  expect(after.documents.length).toBe(before.documents.length);
+  expect(after.conceptIndex.length).toBe(before.conceptIndex.length);
+  expect(after.health.chapters).toBe(before.health.chapters);
+
+  // a still-running run is refused — cancel it first
+  const onRunning = await api.delete(`jobs/${ids.running}`);
+  expect(onRunning.status()).toBe(409);
+  expect(JSON.stringify(await onRunning.json())).toMatch(/cancel it first/i);
+  expect((await (await api.get(`jobs/${ids.running}`)).json()).status).toBe("running");
+
+  // an unknown job is a clean 404
+  expect((await api.delete("jobs/run-does-not-exist")).status()).toBe(404);
+
+  // cancel → delete is the sequence the 409 asks for, and it works (this also
+  // clears the fixtures this block seeded)
+  expect((await api.post(`jobs/${ids.running}/cancel`)).ok()).toBeTruthy();
+  expect((await (await api.get(`jobs/${ids.running}`)).json()).status).toBe("cancelled");
+  expect((await api.delete(`jobs/${ids.running}`)).ok()).toBeTruthy();
+  expect((await api.delete(`jobs/${ids.queued}`)).ok(), "a cancelled run is terminal, so it is deletable").toBeTruthy();
+
+  const left = (await (await api.get("jobs")).json()).jobs;
+  for (const id of Object.values(ids)) expect(left.some((j: { id: string }) => j.id === id)).toBe(false);
+});
+
+test("C3 (SC-007): the tool surface is exactly 21 — the job-control pair is declared, and is not parallelSafe", async () => {
+  const { count, tools } = await (await api.get("tools")).json();
+  expect(count).toBe(21);
+  expect(tools.length).toBe(21);
+  expect(tools.map((t: { name: string }) => t.name).sort()).toEqual(EXPECTED_TOOLS);
+
+  const byName = new Map(tools.map((t: { name: string }) => [t.name, t]));
+  for (const name of ["okf_cancel_job", "okf_delete_job"]) {
+    const tool = byName.get(name) as { inputSchema: { required: string[]; properties: Record<string, unknown> }; parallelSafe: boolean };
+    expect(tool, `${name} must be declared`).toBeTruthy();
+    expect(tool.inputSchema.required).toContain("jobId");
+    expect(tool.parallelSafe, `${name} mutates the job store — it must not be parallelSafe`).toBe(false);
+  }
+
+  // the job-control pair added NOTHING to the read-only set (FR-038's
+  // parallelSafe contract still describes exactly the readers)
+  const parallel = tools.filter((t: { parallelSafe: boolean }) => t.parallelSafe).map((t: { name: string }) => t.name).sort();
+  expect(parallel).toEqual([...READ_ONLY_TOOLS].sort());
 });

@@ -3,7 +3,7 @@
 // Retained unchanged in shape from the pre-redesign item (spec Assumptions):
 // the bind-then-handshake-first ordering, the loopback VFS bridge, and the
 // 039 tool_declare loop. What changed around it: DECLARATIONS is now the
-// 19-tool surface, createRequestHandler serves the standalone app's REST
+// 21-tool surface, createRequestHandler serves the standalone app's REST
 // routes (bundles/toc/concept/search/graph/jobs) instead of the old
 // settings config-app's, and this file now also runs the JOB STALE REAPER
 // (see startReaper below).

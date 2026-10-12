@@ -1,7 +1,11 @@
 // JobDetail.tsx — the expanded run: summary cells (chapters / concepts /
 // assets / refs skipped / refs failed), the written-chapter chips, the error
-// card, and the live progress bar — the four states the mockup specifies, one
-// per lifecycle status.
+// card, the cancelled card and the live progress bar — one state per
+// lifecycle status, exactly as the mockup specifies.
+//
+// `cancelled` gets its OWN card rather than reusing the red error one: it is
+// an intentional stop and carries no error, so painting it as a failure would
+// misreport what happened (FR-050).
 
 import React from "react";
 import { Icon } from "../lib/icons";
@@ -83,6 +87,18 @@ export default function JobDetail({ job }: { job: Job }) {
             one.
           </div>
         </>
+      ) : null}
+
+      {job.status === "cancelled" ? (
+        <div className="job-cancelled" data-testid={`job-cancelled-${job.id}`}>
+          <Icon name="x" size={15} />
+          <div>
+            <b>Cancelled.</b> Stopped on request — this is not a failure, and there is no error to report. Everything
+            the run had already written is still in the bundle: writes are atomic and the derived index rebuilds from
+            content, so a cancelled run leaves a smaller bundle, never a half-updated one. Re-run it any time from the
+            bundle's <b>Ingest</b> button, or with <code>okf_ingest</code>.
+          </div>
+        </div>
       ) : null}
 
       {job.status === "running" ? (

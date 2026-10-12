@@ -60,23 +60,23 @@ export default function App() {
   // The badge is live on EVERY tab (FR-041: "the app must reflect a run's
   // status as it changes") — not only while the Jobs tab is open, or a run
   // started from Overview would look like nothing happened.
-  React.useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const data = await fetchJobs();
-        if (!cancelled) setJobs(data.jobs);
-      } catch {
-        /* a transient bridge hiccup must not blank the UI */
-      }
-    };
-    void tick();
-    const timer = setInterval(tick, JOBS_POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
+  // Also the Jobs tab's post-action refresh: cancelling or deleting a run
+  // re-reads the list from the service rather than editing it client-side,
+  // so a row only changes once the service says it did.
+  const reloadJobs = React.useCallback(async () => {
+    try {
+      const data = await fetchJobs();
+      setJobs(data.jobs);
+    } catch {
+      /* a transient bridge hiccup must not blank the UI */
+    }
   }, []);
+
+  React.useEffect(() => {
+    void reloadJobs();
+    const timer = setInterval(() => void reloadJobs(), JOBS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [reloadJobs]);
 
   const activeJobs = jobs.filter((j) => j.status === "running" || j.status === "queued").length;
 
@@ -151,7 +151,7 @@ export default function App() {
         </section>
 
         <section className={`app-view${tab === "jobs" ? "" : " hidden"}`} data-testid="view-jobs">
-          <JobsTab jobs={jobs} activeJobs={activeJobs} />
+          <JobsTab jobs={jobs} activeJobs={activeJobs} onJobsChanged={reloadJobs} />
         </section>
 
         {/* The Query tab mounts only while visible: its force simulation sizes
