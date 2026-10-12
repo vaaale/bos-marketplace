@@ -3,5 +3,6 @@
   "port": 0,
   "maxDepth": 1,
   "maxWorkers": 3,
+  "maxChunkSize": 32000,
   "staleJobMs": 1800000
 }

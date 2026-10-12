@@ -16,6 +16,9 @@ These are the defaults for every OKF bundle. A bundle may carry its own `schema.
 ├── concept-index.md      DERIVED level 1 — concept term → covering (doc, chapter, description)
 ├── toc/<docId>.md        DERIVED level 2 — one document's chapters, descriptions, concept terms
 ├── links.json            machine-readable okf_add_link edges
+├── .chunks/<docId>/      OPERATIONAL — the mechanical pre-split of one source
+│   └── NNN.md            001.md, 002.md, … one bounded chunk each; a derived
+│                         cache, excluded from export, cleared on re-ingest
 ├── raw/                  immutable sources (append-only, never edited)
 │   ├── sources.json      provenance ledger: source → raw file, docId, ingestedAt
 │   └── assets/<docId>/   downloaded non-HTML inline assets (immutable)
@@ -23,6 +26,8 @@ These are the defaults for every OKF bundle. A bundle may carry its own `schema.
     ├── <docId>.md        document stub      — type: document
     └── <docId>/<chId>.md chapter            — type: section  ← the retrieval unit
 ```
+
+`.chunks/` is **operational**, like the service's job records — not OKF content. It holds a mechanical re-cut of a source whose bytes already live byte-exact in `raw/`, so it is excluded from `okf_export_bundle`, invisible to `okf_list_bundles`/health/`okf_lint`, and it is **cleared and rewritten** when a source is re-ingested. The append-only rule covers `raw/`; it does not cover a cache.
 
 **Only the `concepts/` files and `raw/` are the source of truth.** `concept-index.md` and every `toc/*.md` are *derived* from chapter frontmatter and rebuilt by the service on every write. You never hand-edit them, and they can never be the only place something is recorded. If they drift (a git merge, an external editor), `okf_lint` rebuilds them from the content.
 
@@ -131,7 +136,7 @@ The point is that the interpretation is written **once, at ingest, as stored tex
 
 1. Read the conventions (this skill; the bundle's `schema.md` if it has one) and `okf_list_concepts` to see the existing vocabulary.
 2. **Acquire the source with `output_path` pinned.** URL → `web_fetch({url, output_path})`; PDF/DOCX/PPTX/XLSX → `file_to_markdown({path, output_path})`; plain text → straight to `okf_add_raw_source({sourcePath})`. Then `okf_add_raw_source` registers it into `raw/`, which is append-only and never edited. Dropping `output_path` and passing the document back as `content` re-emits the whole thing as output tokens — it is the one mistake that makes this pipeline pointless.
-3. Read the raw source from `raw/` with `file_read`.
+3. **Read the source one chunk at a time** — see *Chunks* below. `okf_add_raw_source`'s response carries `chunks`; read those, not the whole `rawFile`.
 4. Decide chapter boundaries at the source's headings. No headings = one chapter.
 5. Upsert the document stub (`type: document`, with the original URL in `sources`, and the **author** in `person_terms`), then each chapter with `parent` / `concepts` / `summary` — plus `person_terms` for any named key figure the chapter is about.
 6. Download, interpret and inline every non-HTML asset.
@@ -139,6 +144,44 @@ The point is that the interpretation is written **once, at ingest, as stored tex
 8. Finish with an honest summary (below).
 
 The service rebuilds `concept-index.md` and `toc/<docId>.md` on every write. There is no manual index step.
+
+### Chunks — the source arrives pre-split, and is read one piece at a time
+
+`okf_add_raw_source` registers the bytes into `raw/` **and** splits them mechanically into `.chunks/<docId>/NNN.md`, bounded by the service's `maxChunkSize` (default 32000 characters, ~8K tokens). The split is at heading boundaries first, then paragraphs inside an oversized section, then sentences inside an oversized paragraph. No model is involved; nothing is summarised or dropped.
+
+The response carries the paths:
+
+```json
+{ "rawFile": "raw/numerical-methods.md", "docId": "numerical-methods", "maxChunkSize": 32000,
+  "chunks": [ {"path": ".chunks/numerical-methods/001.md", "ordinal": 1, "total": 12 },
+              {"path": ".chunks/numerical-methods/002.md", "ordinal": 2, "total": 12 } ] }
+```
+
+Each chunk file is a normal frontmatter document:
+
+```markdown
+---
+chunk: 3
+total: 12
+headingPath:
+  - "Part II: Numerical Methods"
+  - "Section 4: Spectral Methods"
+---
+## Section 4: Spectral Methods
+
+…the chunk's markdown…
+```
+
+**The protocol:**
+
+1. `file_read` chunk `001.md`, decompose **it** into chapters, write them with `okf_upsert_concept`.
+2. Then `002.md`. Then `003.md`. **One at a time, in order** — never read several ahead, and never read the whole `rawFile` when `total > 1`. That single call is what exhausts the run's context before a chapter is written.
+3. Write the **document stub after the first chunk** (by then the title, author and shape are known).
+4. Write the **TOC after the last chunk**, and let the index rebuild then — the whole-document work happens once, at the end, not once per chunk.
+
+**`headingPath` is positional context, not a chapter list.** It is the stack of headings open at that point in the document, deepest last, so you know where you are without having re-read what came before. A chunk is a **context window**: the chapter decomposition is still yours, one chunk may contain several chapters, and a section split across two chunks is still **one** chapter — carry it and write it once, when its last piece has been read.
+
+A source that fits inside `maxChunkSize` comes back as a **single chunk** with an empty `headingPath` — identical handling, no special case.
 
 ### Dedup — do not ingest the same thing twice
 

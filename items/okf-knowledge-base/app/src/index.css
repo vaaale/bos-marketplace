@@ -406,3 +406,39 @@ body { margin: 0; }
 .stale-banner { display:flex; gap:8px; align-items:flex-start; font-size:12px; color:var(--amber);
   background:rgba(210,153,34,.08); border:1px solid rgba(210,153,34,.3); border-radius:var(--radius);
   padding:10px 12px; margin-bottom:14px; }
+
+/* ── job trajectory (FR-058 / ADR-013): collapsible tool-call timeline ─────
+ * Ported from the mockup's .traj-* block verbatim, with one adaptation: the
+ * caret rotation is driven by the card's `.open` class exactly as there, but
+ * the icon is the app's shared <Icon name="caret">, so the rule targets the
+ * svg the component renders rather than the mockup's inline markup. */
+  .traj-list { max-height:340px; overflow:auto; border:1px solid var(--border); border-radius:8px; background:#0f141b; padding:10px; display:flex; flex-direction:column; gap:8px; }
+  .traj-card { background:var(--panel); border:1px solid var(--border); border-radius:7px; overflow:hidden; flex:0 0 auto; }
+  .traj-card.run-started { border-left:2px solid var(--accent); }
+  .traj-card.done { border-left:2px solid var(--green); }
+  .traj-card.done.cancelled { border-left-color:var(--stopped); }
+  .traj-card.done.failed { border-left-color:var(--red); }
+  .traj-card.error { border-left:2px solid var(--red); background:rgba(248,81,73,.06); }
+  .traj-head { display:flex; align-items:center; gap:9px; padding:9px 12px; font-size:12.5px; }
+  .traj-head.static { cursor:default; }
+  .traj-card.tool .traj-head, .traj-card.done .traj-head, .traj-card.error .traj-head { cursor:pointer; }
+  .traj-card.tool .traj-head:hover, .traj-card.done .traj-head:hover, .traj-card.error .traj-head:hover { background:var(--panel2); }
+  .traj-caret { color:var(--muted); transition:transform .12s; flex:0 0 auto; }
+  .traj-card.open .traj-caret { transform:rotate(90deg); }
+  .traj-ic { flex:0 0 auto; color:var(--muted); display:inline-flex; align-items:center; }
+  .traj-toolname { font-weight:600; font-size:12.5px; flex:0 0 auto; }
+  .traj-summary { color:var(--muted); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 1 auto; min-width:0; font-family:ui-monospace,Menlo,monospace; }
+  .traj-badge { margin-left:auto; font-size:10px; text-transform:uppercase; letter-spacing:.4px; border-radius:20px; padding:1px 7px; flex:0 0 auto; }
+  .traj-badge.ok { color:var(--green); background:rgba(63,185,80,.12); border:1px solid rgba(63,185,80,.3); }
+  .traj-badge.err { color:var(--red); background:rgba(248,81,73,.12); border:1px solid rgba(248,81,73,.35); }
+  .traj-badge.run { color:var(--accent); background:rgba(79,140,255,.14); border:1px solid rgba(79,140,255,.4); }
+  .traj-badge.stopped { color:var(--stopped); background:rgba(208,137,78,.14); border:1px solid rgba(208,137,78,.4); }
+  .traj-body { border-top:1px solid var(--border); background:#141922; padding:11px 13px; }
+  .traj-body .blk { margin-bottom:10px; }
+  .traj-body .blk:last-child { margin-bottom:0; }
+  .traj-body .blk-lbl { font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-bottom:4px; display:flex; align-items:center; gap:6px; }
+  .traj-body pre { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; line-height:1.55; color:var(--text); background:#0b0e13; border:1px solid var(--border); border-radius:6px; padding:10px 12px; white-space:pre-wrap; word-break:break-word; margin:0; }
+  .traj-body pre.muted { color:var(--muted); }
+  .traj-nores { font-size:12px; color:var(--muted); font-style:italic; }
+  .traj-note { display:flex; gap:9px; align-items:flex-start; font-size:12.5px; color:var(--muted); background:var(--panel); border:1px dashed var(--border); border-radius:8px; padding:12px 14px; line-height:1.55; }
+  .traj-note>svg { flex:0 0 auto; margin-top:1px; }

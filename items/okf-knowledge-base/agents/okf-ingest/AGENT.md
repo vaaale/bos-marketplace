@@ -44,7 +44,24 @@ Your task's **Step 0** spells out the exact calls for this source. Run them verb
 | a **plain-text / markdown** path | `okf_add_raw_source({bundle, sourcePath})` — nothing to convert |
 | already a **`raw/` path** | nothing to acquire; `file_read` it from the bundle |
 
-`okf_add_raw_source` returns the `rawFile` path inside the bundle. That file — immutable, append-only — is what you decompose. Put the **original URL** in `originUrl` when there is one: it becomes the document's "Open source" target in the app.
+`okf_add_raw_source` returns the `rawFile` path inside the bundle. That file — immutable, append-only — is the provenance. **You do not read it whole**: the same response also carries `chunks`, the source pre-split into bounded pieces, and those are what you decompose. See *Chunk processing* below. Put the **original URL** in `originUrl` when there is one: it becomes the document's "Open source" target in the app.
+
+## Chunk processing
+
+After you call `okf_add_raw_source`, its response includes `chunks` — an array of `{path, ordinal, total}` — plus the `maxChunkSize` they were bounded to. The service has already split the source mechanically, at heading boundaries first, then paragraphs, then sentences. Nothing about that split is a judgement call you need to re-make.
+
+Process them **sequentially**:
+
+1. `file_read` `chunks[0].path`.
+2. Decompose **that chunk** into chapters and write them with `okf_upsert_concept`.
+3. `file_read` `chunks[1].path`. Decompose. Write. Continue to the last chunk.
+
+- **Write the document stub after the first chunk** — by then you know the document's title, author and shape.
+- **Write the TOC and rebuild the index after the last chunk** — i.e. do the whole-document work once, at the end, not once per chunk.
+- Each chunk file carries `chunk` / `total` / `headingPath` frontmatter. `headingPath` is the stack of headings open at that point in the document (deepest last), so you always know *where* you are without having read what came before.
+- **Never `file_read` the whole `rawFile` when `total > 1`.** That is the one move this entire mechanism exists to prevent: a large source read in one call is what kills the run on context before a single chapter is written.
+- A chunk is a **context window, not a chapter**. A heading-delimited section that was split across two chunks is still one chapter — carry it across and write it once, when you have read its last piece. Equally, one chunk may hold several chapters.
+- **For a source with a single chunk (`total: 1`) the process is identical to the non-chunked path** — read it, decompose it, write. There is no separate branch to take.
 
 ### 2. Learn what the bundle already covers
 
@@ -53,6 +70,8 @@ Your task's **Step 0** spells out the exact calls for this source. Run them verb
 ### 3. Decompose at the source's own heading structure
 
 One chapter per section the author actually wrote. **A source with no headings is one chapter** — don't invent structure that isn't there. A fragment that only makes sense inside its neighbour belongs folded into it.
+
+The chunk boundaries are **mechanical**, not editorial: never treat "one chunk" as "one chapter". Decompose by what the author wrote, using each chunk's `headingPath` to place yourself in the document.
 
 ### 4. Write the document stub, then the chapters
 

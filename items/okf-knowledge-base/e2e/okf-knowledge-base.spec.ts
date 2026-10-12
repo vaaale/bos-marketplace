@@ -139,6 +139,9 @@ const B = {
   // deliberately without — the backward-compat guard needs a clean one
   person: "e2e-okf-person",
   noPerson: "e2e-okf-no-person",
+  // the ingest-chunking scope-add (ADR-012): raw sources get registered and
+  // pre-split here, so nothing else's raw/ or .chunks/ is disturbed
+  chunk: "e2e-okf-chunk",
 };
 
 async function del(bundle: string): Promise<void> {
@@ -1748,4 +1751,387 @@ test("C3 (SC-007): the tool surface is exactly 21 — the job-control pair is de
   // parallelSafe contract still describes exactly the readers)
   const parallel = tools.filter((t: { parallelSafe: boolean }) => t.parallelSafe).map((t: { name: string }) => t.name).sort();
   expect(parallel).toEqual([...READ_ONLY_TOOLS].sort());
+});
+
+// ════════════════════════════════════════════════════════════════════════
+//  INGEST CHUNKING — FR-055 / FR-056 / SC-017 (ADR-012)
+// ════════════════════════════════════════════════════════════════════════
+//
+// Chunking happens inside the `okf_add_raw_source` handler, in the worker, at
+// the moment the run hands the service the acquired bytes — NOT in
+// `okf_ingest` (the worker is a plain Node thread outside Next.js: no
+// `web_fetch`, so it cannot stage a URL source itself).
+//
+// The okf_* tools have no HTTP face (039 dispatches them over worker IPC), so
+// these drive `POST /bundles/<b>/raw`, which runs the very same
+// `core.addRawSource` the tool runs — one capability, two surfaces (ADR-003).
+// The tool DECLARATION is asserted separately, against GET /tools.
+
+/** The service's own effective config, as GET /config reports it. */
+async function serviceConfig(): Promise<{ runtime?: { bundleRoot?: string; maxChunkSize?: number }; maxChunkSize?: number }> {
+  const res = await api.get("config");
+  expect(res.ok(), "GET /config must answer").toBeTruthy();
+  return res.json();
+}
+
+async function readVfs(shell: APIRequestContext, vfsPath: string): Promise<string | null> {
+  const res = await shell.get(`${BASE}/api/fs?op=read&path=${encodeURIComponent(vfsPath)}`);
+  if (!res.ok()) return null;
+  return (await res.json()).content as string;
+}
+
+/** The body of a chunk file, with its `---` frontmatter block stripped. */
+function chunkBody(raw: string): string {
+  const m = /^---\n([\s\S]*?)\n---\n*/.exec(raw);
+  return m ? raw.slice(m[0].length) : raw;
+}
+
+function chunkFrontmatter(raw: string): string {
+  const m = /^---\n([\s\S]*?)\n---/.exec(raw);
+  return m ? m[1] : "";
+}
+
+test("U3 (FR-056): GET /config reports maxChunkSize, defaulting to 32000", async () => {
+  const cfg = await serviceConfig();
+  const maxChunkSize = cfg.runtime?.maxChunkSize ?? cfg.maxChunkSize;
+  expect(typeof maxChunkSize, "maxChunkSize must be exposed on /config").toBe("number");
+  // the shipped default (config/okf-knowledge-base.json + the service.json
+  // configSchema both say 32000, ~8K tokens)
+  expect(maxChunkSize).toBe(32000);
+});
+
+test("U1 (FR-055/SC-017): a large source is pre-split into bounded chunks, on disk and in the response", async () => {
+  const shell = await request.newContext();
+  const cfg = await serviceConfig();
+  const bundleRoot = cfg.runtime?.bundleRoot || "/KnowledgeBase";
+  const maxChunkSize = (cfg.runtime?.maxChunkSize ?? cfg.maxChunkSize) as number;
+
+  expect((await api.post(`bundles`, { data: { name: B.chunk, title: "E2E Chunking" } })).ok()).toBeTruthy();
+
+  // a genuinely oversized source: several headings, each section itself well
+  // over the bound, so BOTH the heading split and the paragraph/sentence
+  // split inside a section are exercised
+  const paragraph = (n: number) =>
+    `Paragraph ${n} of this section states a complete thought. It continues with a second sentence for the sentence splitter to find. ` .repeat(12).trim();
+  const section = (title: string, level: number, count: number) =>
+    `${"#".repeat(level)} ${title}\n\n${Array.from({ length: count }, (_, i) => paragraph(i)).join("\n\n")}\n`;
+  const content =
+    section("Part I: Foundations", 1, 40) +
+    "\n" +
+    section("Section 1: Definitions", 2, 40) +
+    "\n" +
+    section("Part II: Numerical Methods", 1, 40) +
+    "\n" +
+    section("Section 4: Spectral Methods", 2, 40);
+  expect(content.length, "the fixture must exceed the bound or there is nothing to split").toBeGreaterThan(maxChunkSize);
+
+  const res = await api.post(`bundles/${B.chunk}/raw`, { data: { filename: "numerical-methods.md", content } });
+  expect(res.ok(), "registering a raw source must succeed").toBeTruthy();
+  const body = await res.json();
+
+  // the registration contract is unchanged — raw/ still holds the source
+  expect(body.stored).toBe(true);
+  expect(body.rawFile).toBe("raw/numerical-methods.md");
+  expect(body.docId).toBe("numerical-methods");
+  expect(body.maxChunkSize).toBe(maxChunkSize);
+
+  // ...and it now also carries the chunk paths the agent reads one at a time
+  expect(Array.isArray(body.chunks)).toBe(true);
+  expect(body.chunks.length, "an oversized source must split into more than one chunk").toBeGreaterThan(1);
+  const total = body.chunks.length;
+  body.chunks.forEach((c: { path: string; ordinal: number; total: number }, i: number) => {
+    expect(c.ordinal).toBe(i + 1);
+    expect(c.total).toBe(total);
+    expect(c.path).toBe(`.chunks/numerical-methods/${String(i + 1).padStart(3, "0")}.md`);
+  });
+
+  // every chunk really exists, carries its frontmatter, and respects the bound
+  for (const c of body.chunks as { path: string; ordinal: number; total: number }[]) {
+    const raw = await readVfs(shell, `${bundleRoot}/${B.chunk}/${c.path}`);
+    expect(raw, `${c.path} must exist in the VFS`).toBeTruthy();
+    const fm = chunkFrontmatter(raw!);
+    expect(fm).toContain(`chunk: ${c.ordinal}`);
+    expect(fm).toContain(`total: ${total}`);
+    expect(fm).toContain("headingPath");
+    expect(chunkBody(raw!).length, `${c.path} must be within maxChunkSize`).toBeLessThanOrEqual(maxChunkSize);
+  }
+
+  // headingPath is positional context: the deepest heading open at that point
+  const first = await readVfs(shell, `${bundleRoot}/${B.chunk}/${body.chunks[0].path}`);
+  expect(chunkFrontmatter(first!)).toContain("Part I: Foundations");
+  const last = await readVfs(shell, `${bundleRoot}/${B.chunk}/${body.chunks[total - 1].path}`);
+  expect(chunkFrontmatter(last!)).toContain("Section 4: Spectral Methods");
+
+  // .chunks/ is OPERATIONAL — derived staging, not provenance and not content
+  const exported = await (await api.get(`bundles/${B.chunk}/export`)).json();
+  expect(exported.files.filter((f: { path: string }) => f.path.startsWith(".chunks/")).length).toBe(0);
+  expect(exported.files.some((f: { path: string }) => f.path === "raw/numerical-methods.md")).toBe(true);
+
+  await shell.dispose();
+});
+
+test("U2 (FR-055): a source within maxChunkSize comes back as a single chunk — the unchanged path", async () => {
+  const res = await api.post(`bundles/${B.chunk}/raw`, {
+    data: { filename: "short-note.md", content: "# Short Note\n\nThis one fits comfortably inside the bound.\n" },
+  });
+  expect(res.ok()).toBeTruthy();
+  const body = await res.json();
+
+  expect(body.chunks).toHaveLength(1);
+  expect(body.chunks[0].total).toBe(1);
+  expect(body.chunks[0].ordinal).toBe(1);
+  expect(body.chunks[0].path).toBe(".chunks/short-note/001.md");
+  // and nothing else about the response changed
+  expect(body.stored).toBe(true);
+  expect(body.rawFile).toBe("raw/short-note.md");
+  expect(body.docId).toBe("short-note");
+});
+
+test("U1b (FR-055): re-registering a changed source CLEARS the previous split (.chunks/ is a cache, raw/ is not)", async () => {
+  const shell = await request.newContext();
+  const cfg = await serviceConfig();
+  const bundleRoot = cfg.runtime?.bundleRoot || "/KnowledgeBase";
+
+  const long = `# Rewritten\n\n${"A sentence that is repeated to make this long enough to split. ".repeat(900)}`;
+  const first = await (await api.post(`bundles/${B.chunk}/raw`, { data: { filename: "rewritten.md", content: long } })).json();
+  expect(first.chunks.length).toBeGreaterThan(1);
+  const lastPath = first.chunks[first.chunks.length - 1].path;
+  expect(await readVfs(shell, `${bundleRoot}/${B.chunk}/${lastPath}`)).toBeTruthy();
+
+  // same docId, much shorter content: the old split's tail must NOT survive
+  const second = await (
+    await api.post(`bundles/${B.chunk}/raw`, { data: { filename: "rewritten.md", conceptId: "rewritten", content: "# Rewritten\n\nMuch shorter now.\n" } })
+  ).json();
+  expect(second.docId).toBe("rewritten");
+  expect(second.chunks).toHaveLength(1);
+  expect(
+    await readVfs(shell, `${bundleRoot}/${B.chunk}/${lastPath}`),
+    "a stale chunk from the previous, longer split must be gone",
+  ).toBeNull();
+
+  // raw/ is still APPEND-ONLY — the first version was not overwritten
+  expect(second.rawFile).toBe("raw/rewritten.v2.md");
+  expect(await readVfs(shell, `${bundleRoot}/${B.chunk}/raw/rewritten.md`)).toBe(long);
+
+  await shell.dispose();
+});
+
+// ════════════════════════════════════════════════════════════════════════
+//  JOB TRAJECTORY — FR-057 / FR-058 / SC-018 (ADR-013)
+// ════════════════════════════════════════════════════════════════════════
+//
+// WHY THE FIXTURES ARE SEEDED, same as the job-control block above. Capturing
+// a trajectory from a REAL run means a live provider call, and the shape under
+// test is what the launcher STORED, not whether a model behaves. The capture
+// itself — the delegate bridge reading an NDJSON stream and appending every
+// line — is exercised offline against a mock delegate in
+// tests/job-trajectory.test.mjs (`OKF_DELEGATE_URL` is the seam; it is read by
+// the worker process, which a browser-side test cannot set).
+//
+// So these records are written straight into the persisted store and the
+// service restarted — the same seam the reaper and job-control tests use —
+// and they assert the two things that are this item's: that `GET /jobs/<id>`
+// returns the captured array intact, and that the app renders it.
+
+const TRAJECTORY_FIXTURE = [
+  { type: "run_started", runId: "headless-okf-ingest-e2e", agent: "okf-ingest", at: "2026-10-12T09:00:00Z" },
+  { type: "tool", tool: "web_fetch", input: { url: "https://example.test/e2e-doc", output_path: "/workspace/okf-staged-e2e.md" } },
+  { type: "tool_result", result: { bytes: 4210, savedTo: "/workspace/okf-staged-e2e.md" } },
+  // captured like everything else, but NOT rendered: v1 omits the narration
+  // lines so the tool calls stay the debug surface (ADR-013)
+  { type: "reasoning_delta", text: "weighing the chapter boundaries" },
+  { type: "tool", tool: "okf_upsert_concept", input: { bundle: "e2e-okf-main", id: "e2e-doc/first-chapter", title: "First Chapter" } },
+  { type: "tool_result", result: { id: "e2e-doc/first-chapter", created: true } },
+  { type: "done", text: "Ingested: 2 chapters, 3 concepts, 0 assets, 0 refs skipped, 0 refs failed.", result: { endedReason: "completed" } },
+];
+
+let trajFixtures: { withTrajectory: string; noTrajectory: string } | null = null;
+
+async function seedTrajectoryFixtures(): Promise<{ withTrajectory: string; noTrajectory: string }> {
+  if (trajFixtures) return trajFixtures;
+
+  const shell = await request.newContext();
+  const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
+  const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
+  const jobsFile = `${bundleRoot}/.jobs/jobs.json`;
+
+  const existing = await shell.get(`${BASE}/api/fs?op=read&path=${encodeURIComponent(jobsFile)}`);
+  const store = existing.ok() ? JSON.parse((await existing.json()).content) : { jobs: [], seq: 1000 };
+
+  const stamp = Date.now();
+  const ids = { withTrajectory: `run-e2e-traj-${stamp}`, noTrajectory: `run-e2e-notraj-${stamp}` };
+  const now = new Date().toISOString();
+  const base = {
+    bundleId: B.main,
+    source: "https://example.test/e2e-doc",
+    maxDepth: 1,
+    maxWorkers: 3,
+    queuedAt: now,
+    startedAt: now,
+    endedAt: now,
+    durationMs: 4200,
+    progress: null as string | null,
+    summary: null as unknown,
+    error: null as string | null,
+    runId: "headless-okf-ingest-e2e",
+    cancelRequested: false,
+  };
+
+  store.jobs.unshift(
+    {
+      ...base,
+      id: ids.withTrajectory,
+      status: "completed",
+      summary: { chapters: 2, concepts: 3, assets: 0, refsSkipped: 0, refsFailed: 0, written: [], text: "2 chapters written.", toolCalls: 2 },
+      trajectory: TRAJECTORY_FIXTURE,
+    },
+    {
+      // the "crashed before producing events" case: zero events captured
+      ...base,
+      id: ids.noTrajectory,
+      status: "failed",
+      runId: null,
+      error: "the sub-agent stream ended without a terminal line — the run was interrupted",
+      trajectory: [],
+    },
+  );
+
+  const wrote = await shell.post(`${BASE}/api/fs`, {
+    data: { op: "write", path: jobsFile, content: JSON.stringify(store, null, 2) + "\n" },
+  });
+  expect(wrote.ok(), "could not seed the job store").toBeTruthy();
+
+  const restarted = await shell.post(`${BASE}/api/services/${SERVICE_ID}`, {
+    data: { action: "restart", reason: "e2e trajectory fixtures" },
+  });
+  expect(restarted.ok()).toBeTruthy();
+
+  // the port is OS-assigned, so a restart can move it — re-resolve, never reuse
+  await api.dispose();
+  serviceBase = await resolveServiceBase(shell);
+  api = await request.newContext({ baseURL: serviceBase });
+  await shell.dispose();
+
+  trajFixtures = ids;
+  return ids;
+}
+
+test("U4 (FR-057): GET /jobs/<id> returns the captured trajectory — every event, in order, verbatim", async () => {
+  const ids = await seedTrajectoryFixtures();
+
+  const res = await api.get(`jobs/${ids.withTrajectory}`);
+  expect(res.ok()).toBeTruthy();
+  const job = await res.json();
+
+  expect(Array.isArray(job.trajectory), "the detail read must carry the trajectory").toBe(true);
+  expect(job.trajectory).toEqual(TRAJECTORY_FIXTURE);
+  expect(job.trajectory.map((e: { type: string }) => e.type)).toEqual([
+    "run_started",
+    "tool",
+    "tool_result",
+    "reasoning_delta",
+    "tool",
+    "tool_result",
+    "done",
+  ]);
+
+  // the wire type for a tool call is `tool` — NOT `tool_call` (ADR-013), and
+  // the pairing with its result is POSITIONAL: no callId correlates them
+  expect(job.trajectory[1].type).toBe("tool");
+  expect(job.trajectory[1].tool).toBe("web_fetch");
+  expect(job.trajectory[1].input.url).toContain("example.test");
+  expect(job.trajectory[1].callId).toBeUndefined();
+  expect(job.trajectory[2].callId).toBeUndefined();
+  // the terminal `done` carries its endedReason
+  expect(job.trajectory[6].result.endedReason).toBe("completed");
+
+  // a run that produced nothing has an EMPTY array, not a missing field — the
+  // only case the app's "No trajectory captured" note describes
+  const empty = await (await api.get(`jobs/${ids.noTrajectory}`)).json();
+  expect(empty.trajectory).toEqual([]);
+
+  // the LIST reports the count instead: it is polled every few seconds, and a
+  // run's events are tens of kilobytes
+  const { jobs } = await (await api.get("jobs")).json();
+  const row = jobs.find((j: { id: string }) => j.id === ids.withTrajectory);
+  expect(row.trajectory, "a list row must not carry the events").toBeUndefined();
+  expect(row.trajectoryEvents).toBe(TRAJECTORY_FIXTURE.length);
+});
+
+test("U5 (FR-058/SC-018): the Jobs tab renders the trajectory as collapsible tool-call cards", async ({ page }) => {
+  const ids = await seedTrajectoryFixtures();
+  const app = await openApp(page);
+  await app.getByTestId("tab-jobs").click();
+
+  const row = app.getByTestId(`job-row-${ids.withTrajectory}`);
+  await expect(row).toBeVisible({ timeout: 15000 });
+  await row.click();
+  await expect(app.getByTestId(`job-detail-${ids.withTrajectory}`)).toBeVisible();
+
+  // the section, headed with the event count
+  const header = app.getByTestId(`traj-header-${ids.withTrajectory}`);
+  await expect(header).toBeVisible({ timeout: 15000 });
+  await expect(header).toContainText("Run trajectory");
+  await expect(header).toContainText(`${TRAJECTORY_FIXTURE.length} events`);
+
+  const list = app.getByTestId(`traj-list-${ids.withTrajectory}`);
+  await expect(list).toBeVisible();
+
+  // run_started is a static header card; the two tool/tool_result pairs are
+  // ONE card each (positional pairing), so the list holds 4 cards, not 6
+  await expect(app.getByTestId(`traj-card-${ids.withTrajectory}-run_started`)).toBeVisible();
+  await expect(list.locator('[data-testid^="traj-card-"]')).toHaveCount(4);
+  await expect(app.getByTestId(`traj-tool-${ids.withTrajectory}-1`)).toHaveText("web_fetch");
+  await expect(app.getByTestId(`traj-tool-${ids.withTrajectory}-2`)).toHaveText("okf_upsert_concept");
+
+  // collapsed: no body. Expanding shows the full input AND the paired result.
+  await expect(app.getByTestId(`traj-body-${ids.withTrajectory}-1`)).toHaveCount(0);
+  await app.getByTestId(`traj-toggle-${ids.withTrajectory}-1`).click();
+  await expect(app.getByTestId(`traj-body-${ids.withTrajectory}-1`)).toBeVisible();
+  await expect(app.getByTestId(`traj-input-${ids.withTrajectory}-1`)).toContainText("https://example.test/e2e-doc");
+  await expect(app.getByTestId(`traj-result-${ids.withTrajectory}-1`)).toContainText("savedTo");
+
+  // the terminal card, with its endedReason
+  await expect(app.getByTestId(`traj-card-${ids.withTrajectory}-done`)).toBeVisible();
+  await expect(app.getByTestId(`traj-endedreason-${ids.withTrajectory}`)).toHaveText("completed");
+
+  // reasoning_delta / final_text are CAPTURED (they are in the record, and in
+  // the event count above) but omitted from the v1 rendering
+  await expect(list).not.toContainText("weighing the chapter boundaries");
+});
+
+test("U5b (FR-058): a run that captured no events shows the 'No trajectory' note, not an empty list", async ({ page }) => {
+  const ids = await seedTrajectoryFixtures();
+  const app = await openApp(page);
+  await app.getByTestId("tab-jobs").click();
+
+  const row = app.getByTestId(`job-row-${ids.noTrajectory}`);
+  await expect(row).toBeVisible({ timeout: 15000 });
+  await row.click();
+
+  const note = app.getByTestId(`traj-empty-${ids.noTrajectory}`);
+  await expect(note).toBeVisible({ timeout: 15000 });
+  await expect(note).toContainText("No trajectory captured");
+  await expect(app.getByTestId(`traj-list-${ids.noTrajectory}`)).toHaveCount(0);
+});
+
+test("U6 (SC-007): neither scope-add touched the tool surface — it is still exactly 21", async () => {
+  const { count, tools } = await (await api.get("tools")).json();
+  expect(count).toBe(21);
+  expect(tools.length).toBe(21);
+  expect(tools.map((t: { name: string }) => t.name).sort()).toEqual(EXPECTED_TOOLS);
+
+  // chunking lives INSIDE okf_add_raw_source and trajectory is a job-record
+  // field — neither is a tool, and no okf_read_chunk / okf_get_trajectory was
+  // ever added (both were explicitly rejected: ADR-012 option (c), ADR-013
+  // option (c))
+  const names = new Set(tools.map((t: { name: string }) => t.name));
+  for (const rejected of ["okf_read_chunk", "okf_get_trajectory", "okf_chunk_source"]) {
+    expect(names.has(rejected), `${rejected} must not exist`).toBe(false);
+  }
+
+  // the declaration tells the agent about the chunks it now gets back
+  const addRaw = tools.find((t: { name: string }) => t.name === "okf_add_raw_source");
+  expect(addRaw.description).toContain("chunks");
+  expect(addRaw.parallelSafe, "okf_add_raw_source writes — it is not parallelSafe").toBe(false);
 });

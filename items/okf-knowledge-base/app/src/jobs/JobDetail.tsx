@@ -6,10 +6,58 @@
 // `cancelled` gets its OWN card rather than reusing the red error one: it is
 // an intentional stop and carries no error, so painting it as a failure would
 // misreport what happened (FR-050).
+//
+// Below all of that sits the RUN TRAJECTORY (FR-058, ADR-013) — what the agent
+// actually did, as a collapsible tool-call timeline. It is fetched here rather
+// than read off the polled job list: `GET /jobs` reports only an event COUNT,
+// because dragging every run's events through a 3-second poll to render a
+// section nobody has expanded would be tens of kilobytes per tick. One
+// expanded run, one `GET /jobs/<id>` — and while that run is still live, that
+// detail read repeats on the same cadence, so the timeline grows on screen as
+// the events arrive.
 
 import React from "react";
 import { Icon } from "../lib/icons";
-import type { Job } from "../lib/types";
+import { fetchJob } from "../lib/serviceClient";
+import type { Job, TrajectoryEvent } from "../lib/types";
+import Trajectory from "./Trajectory";
+
+/** Matches App.tsx's job poll — a live run's trajectory grows at the same rate
+ *  the rest of its row does. */
+const DETAIL_POLL_MS = 3000;
+
+function useTrajectory(job: Job): { events: TrajectoryEvent[] | null; failed: boolean } {
+  const [events, setEvents] = React.useState<TrajectoryEvent[] | null>(null);
+  const [failed, setFailed] = React.useState(false);
+  const live = job.status === "queued" || job.status === "running";
+
+  React.useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const detail = await fetchJob(job.id);
+        if (!alive) return;
+        setEvents(Array.isArray(detail.trajectory) ? detail.trajectory : []);
+        setFailed(false);
+      } catch {
+        // A failed detail read is NOT "the run produced no events" — saying so
+        // would blame the run for the reader's problem. Keep whatever is
+        // already on screen and say which of the two happened; a live run
+        // retries on the next tick anyway.
+        if (alive) setFailed(true);
+      }
+    };
+    void load();
+    if (!live) return () => { alive = false; };
+    const timer = setInterval(() => void load(), DETAIL_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [job.id, live]);
+
+  return { events, failed };
+}
 
 function SummaryCell({ icon, value, label }: { icon: string; value: number; label: string }) {
   return (
@@ -24,6 +72,7 @@ function SummaryCell({ icon, value, label }: { icon: string; value: number; labe
 }
 
 export default function JobDetail({ job }: { job: Job }) {
+  const { events: trajectory, failed: trajectoryFailed } = useTrajectory(job);
   return (
     <>
       <div className="jd-top">
@@ -128,6 +177,8 @@ export default function JobDetail({ job }: { job: Job }) {
           </div>
         </div>
       ) : null}
+
+      <Trajectory job={job} events={trajectory} failed={trajectoryFailed} />
     </>
   );
 }

@@ -1321,6 +1321,11 @@ async function exportBundle(bundleRoot, name) {
       const abs = path.join(dir, e.name);
       const relPath = rel ? `${rel}/${e.name}` : e.name;
       if (e.type === "dir") {
+        // .chunks/ is OPERATIONAL (ADR-012), like .jobs/: a mechanical
+        // pre-split of a source that is already in raw/ byte-exact. Exporting
+        // it would double the size of every export for nothing and would
+        // re-import as content.
+        if (!rel && e.name === CHUNKS_DIR) continue;
         await walk(abs, relPath);
         continue;
       }
@@ -1784,6 +1789,229 @@ async function recordSource(bDir, source, entry) {
   return ledger.sources[key];
 }
 
+// ── INGEST CHUNKING (FR-055/FR-056, ADR-012) ─────────────────────────────
+//
+// A large source kills a run before it starts: the agent `file_read`s the
+// whole staged document into its context and a 351KB source is ~1.4M tokens
+// against a 524K limit. The fix is MECHANICAL and lives here, on the worker
+// side of `okf_add_raw_source` — the one moment the service already holds the
+// acquired bytes (it is writing them into raw/). The agent then reads one
+// bounded chunk at a time via `file_read`, which it already has. No new tool
+// (the surface stays 21, SC-007), no LLM in the split.
+//
+// `chunkSource` is a PURE function: no VFS, no I/O, no clock. All the I/O is
+// in `writeChunks` and in `addRawSource` below it. That split is what makes
+// the algorithm testable without a running BOS.
+
+/** Default bound on one chunk, in characters (~8K tokens). Config: maxChunkSize. */
+const DEFAULT_MAX_CHUNK_SIZE = 32000;
+/** Operational staging for the mechanical pre-split — sibling of .jobs/, NOT raw/. */
+const CHUNKS_DIR = ".chunks";
+
+/**
+ * Sentence boundaries: `. ` / `! ` / `? ` (with any closing quote/bracket)
+ * followed by whitespace and then a capital, a digit, a markdown marker, or
+ * the end of the text. The lookahead is what keeps "v1.2 of the spec" and
+ * "e.g. this" from being read as two sentences.
+ */
+function splitSentences(text) {
+  const parts = [];
+  const re = /[.!?]["'’”)\]]*\s+/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const next = m.index + m[0].length;
+    const ch = text[next];
+    if (ch === undefined || /[A-Z0-9"'“([#*\-_>`]/.test(ch)) {
+      parts.push(text.slice(last, next));
+      last = next;
+    }
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts.length ? parts : [text];
+}
+
+/** Pack sentences up to `max`. A single sentence longer than `max` is hard-cut
+ *  — at that point there is no smaller boundary left to respect. */
+function packSentences(text, max) {
+  const out = [];
+  let cur = "";
+  for (const sentence of splitSentences(text)) {
+    if ((cur + sentence).length <= max) {
+      cur += sentence;
+      continue;
+    }
+    if (cur) {
+      out.push(cur);
+      cur = "";
+    }
+    if (sentence.length <= max) {
+      cur = sentence;
+      continue;
+    }
+    let rest = sentence;
+    while (rest.length > max) {
+      out.push(rest.slice(0, max));
+      rest = rest.slice(max);
+    }
+    cur = rest;
+  }
+  if (cur) out.push(cur);
+  return out.length ? out : [text];
+}
+
+/**
+ * Bound one heading-delimited section: paragraphs first (double newline),
+ * then sentences inside a paragraph that is itself oversized.
+ *
+ * Runs of blank lines collapse to exactly one in the rejoin. A chunk is
+ * DERIVED staging — `raw/<source>.md` is the byte-exact provenance — so
+ * normalising whitespace here costs nothing anyone can lose.
+ */
+function splitToSize(text, max) {
+  if (text.length <= max) return [text];
+  const out = [];
+  let cur = "";
+  const flush = () => {
+    if (cur) out.push(cur);
+    cur = "";
+  };
+  for (const para of text.split(/\n{2,}/)) {
+    if (!para) continue;
+    const candidate = cur ? `${cur}\n\n${para}` : para;
+    if (candidate.length <= max) {
+      cur = candidate;
+      continue;
+    }
+    if (para.length <= max) {
+      flush();
+      cur = para;
+      continue;
+    }
+    // The paragraph alone busts the bound — go down to sentences. Whatever is
+    // already in `cur` goes INTO that sentence packing rather than being
+    // flushed first: a section whose heading line is followed immediately by
+    // an oversized paragraph would otherwise emit the heading as a chunk of
+    // its own. The tail stays in `cur` so the next paragraph packs behind it.
+    const pieces = packSentences(cur ? `${cur}\n\n${para}` : para, max);
+    cur = "";
+    for (let i = 0; i < pieces.length - 1; i++) out.push(pieces[i]);
+    cur = pieces[pieces.length - 1];
+  }
+  flush();
+  return out.length ? out : [text];
+}
+
+/**
+ * Split a markdown source into bounded chunks (ADR-012). PURE — no I/O.
+ *
+ * 1. A source that already fits in `maxChunkSize` is ONE chunk, untouched,
+ *    with an empty `headingPath`: the small-source path must cost nothing and
+ *    must behave exactly as it did before chunking existed.
+ * 2. Otherwise split on heading boundaries (`/^#{1,6}\s/`) — one chunk per
+ *    heading-delimited section, each carrying the stack of headings open at
+ *    that point (deepest last). Content before the first heading, and a
+ *    source with no headings at all, carries an empty `headingPath`.
+ * 3. A section over the bound is split again at paragraph boundaries, and a
+ *    paragraph over the bound at sentence boundaries.
+ *
+ * @param {string} content
+ * @param {number} [maxChunkSize]
+ * @returns {{chunk:number,total:number,headingPath:string[],content:string}[]}
+ *          Always at least one chunk; `chunk` is 1-based and `total` is the
+ *          same on every element.
+ */
+function chunkSource(content, maxChunkSize) {
+  const text = String(content == null ? "" : content);
+  const max =
+    Number.isFinite(maxChunkSize) && maxChunkSize > 0 ? Math.floor(maxChunkSize) : DEFAULT_MAX_CHUNK_SIZE;
+
+  if (text.length <= max) return [{ chunk: 1, total: 1, headingPath: [], content: text }];
+
+  const sections = [];
+  const stack = []; // {level, text} — the headings open at this point
+  let sectionLines = [];
+  let sectionPath = [];
+  const closeSection = () => {
+    const body = sectionLines.join("\n");
+    if (body.trim()) sections.push({ headingPath: sectionPath.slice(), content: body });
+  };
+
+  for (const line of text.split("\n")) {
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (!heading) {
+      sectionLines.push(line);
+      continue;
+    }
+    closeSection();
+    const level = heading[1].length;
+    while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
+    stack.push({ level, text: heading[2].trim() });
+    sectionPath = stack.map((h) => h.text);
+    sectionLines = [line];
+  }
+  closeSection();
+  if (!sections.length) sections.push({ headingPath: [], content: text });
+
+  const pieces = [];
+  for (const section of sections) {
+    for (const piece of splitToSize(section.content, max)) {
+      pieces.push({ headingPath: section.headingPath, content: piece });
+    }
+  }
+  const total = pieces.length;
+  return pieces.map((p, i) => ({ chunk: i + 1, total, headingPath: p.headingPath, content: p.content }));
+}
+
+/**
+ * Write the chunks of one document to `.chunks/<docId>/NNN.md` and return the
+ * paths the tool response hands the agent.
+ *
+ * CLEAR-THEN-REWRITE. `.chunks/` is a derived cache, not provenance: the
+ * append-only rule (NFR-006) covers `raw/`, where the full source already
+ * lives byte-exact. Re-ingesting a changed source must not leave the tail of
+ * the previous, longer split lying around for the agent to read as part of
+ * the new document.
+ */
+async function writeChunks(bDir, docId, chunks) {
+  validateConceptId(docId);
+  const docDir = safeJoin(bDir, CHUNKS_DIR, docId);
+  if (await vfs.exists(docDir)) await vfs.remove(docDir);
+  await vfs.mkdir(safeJoin(bDir, CHUNKS_DIR)).catch(() => {});
+  await vfs.mkdir(docDir).catch(() => {});
+
+  const written = [];
+  for (const chunk of chunks) {
+    const name = `${String(chunk.chunk).padStart(3, "0")}.md`;
+    const frontmatter = {
+      chunk: chunk.chunk,
+      total: chunk.total,
+      headingPath: Array.isArray(chunk.headingPath) ? chunk.headingPath : [],
+    };
+    await vfs.writeText(safeJoin(docDir, name), stringifyDocument(frontmatter, chunk.content));
+    written.push({ path: `${CHUNKS_DIR}/${docId}/${name}`, ordinal: chunk.chunk, total: chunk.total });
+  }
+  return written;
+}
+
+/**
+ * The docId a source filename maps to — the ONE derivation, so the id the
+ * chunk directory is named for and the id the response reports are the same
+ * string by construction rather than by two copies of the same expression.
+ */
+function docIdForSource(source) {
+  const name = path.basename(String(source || "").replace(/[?#].*$/, "").replace(/\/+$/, ""));
+  const base = path.basename(name, path.extname(name));
+  const slug = base
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    // validateConceptId (and therefore .chunks/<docId>/) requires an
+    // alphanumeric first character — "_internal.md" must not fail the write
+    .replace(/^[^A-Za-z0-9]+/, "")
+    .toLowerCase();
+  return slug || "source";
+}
+
 /**
  * Register bytes into raw/ (FR-017). Content arrives EITHER inline
  * (`content`, for short already-in-context text) OR by reference
@@ -1795,7 +2023,7 @@ async function recordSource(bDir, source, entry) {
  * `<base>.v2.<ext>`, never overwritten — a changed source gets a new version
  * and the old bytes stay exactly as they were.
  */
-async function addRawSource(bundleRoot, bundleName, { filename, content, sourcePath, conceptId, title, originUrl } = {}) {
+async function addRawSource(bundleRoot, bundleName, { filename, content, sourcePath, conceptId, title, originUrl, maxChunkSize } = {}) {
   const bDir = bundleDir(bundleRoot, bundleName);
   if (!(await vfs.exists(bDir))) throw new Error(`bundle not found: ${bundleName} — create it first with okf_init_bundle({name: "${bundleName}"})`);
 
@@ -1816,7 +2044,7 @@ async function addRawSource(bundleRoot, bundleName, { filename, content, sourceP
   }
   await vfs.writeText(safeJoin(bDir, "raw", finalName), content);
 
-  const docId = conceptId || base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "source";
+  const docId = conceptId || docIdForSource(safeName);
   const ledgerEntry = await recordSource(bDir, originUrl || sourcePath || `raw/${finalName}`, {
     rawFile: `raw/${finalName}`,
     docId,
@@ -1824,6 +2052,26 @@ async function addRawSource(bundleRoot, bundleName, { filename, content, sourceP
     ingestedAt: nowIso(),
   });
   await appendLog(bundleRoot, bundleName, { event: "raw_add", message: `added raw source "${finalName}"` });
+
+  // ── the mechanical pre-split (ADR-012, FR-055) ─────────────────────────
+  //
+  // THIS is where chunking happens — not in `okf_ingest`. The worker is a
+  // plain Node thread outside Next.js: it has no `web_fetch`, so it cannot
+  // stage a URL source itself and cannot chunk one before the run. By the
+  // time the run calls `okf_add_raw_source` the bytes are here, which is why
+  // a URL source is chunkable at all.
+  //
+  // Best-effort: a chunking failure must NOT fail a registration that already
+  // succeeded. raw/ holds the source either way, and the agent's fallback is
+  // the pre-chunking path (read rawFile directly).
+  const chunkBound = Number.isFinite(maxChunkSize) && maxChunkSize > 0 ? Math.floor(maxChunkSize) : DEFAULT_MAX_CHUNK_SIZE;
+  let chunks = [];
+  let chunkError = null;
+  try {
+    chunks = await writeChunks(bDir, docId, chunkSource(content, chunkBound));
+  } catch (err) {
+    chunkError = err.message;
+  }
 
   let concept = null;
   if (conceptId) {
@@ -1842,6 +2090,15 @@ async function addRawSource(bundleRoot, bundleName, { filename, content, sourceP
   // A bare `{rawFile, concept: null}` reads as a partial failure: an agent once
   // took it to mean the content had not been saved, "fixed" that by overwriting
   // raw/ with a placeholder, and destroyed the correct state it had just made.
+  const chunkNote =
+    chunks.length > 1
+      ? ` The source was split into ${chunks.length} chunks of at most ${chunkBound} chars under .chunks/${docId}/ — read them ONE AT A TIME with file_read, in order (chunks[0].path first), and decompose each into chapters before reading the next. Never file_read the whole rawFile.`
+      : chunks.length === 1
+        ? ` It fits in one chunk (${chunks[0].path}) — read the chunk or the rawFile, either is the whole source.`
+        : chunkError
+          ? ` Chunking did not run (${chunkError}) — read rawFile directly.`
+          : "";
+
   return {
     rawFile: `raw/${finalName}`,
     bytes: content.length,
@@ -1849,9 +2106,15 @@ async function addRawSource(bundleRoot, bundleName, { filename, content, sourceP
     docId,
     provenance: ledgerEntry,
     concept,
+    // ADR-012 / FR-055. A source within maxChunkSize yields exactly one entry,
+    // so the agent's protocol is identical either way — there is no "chunked"
+    // and "unchunked" branch for it to get wrong.
+    chunks,
+    maxChunkSize: chunkBound,
+    ...(chunkError ? { chunkError } : {}),
     note: concept
-      ? `Source stored (${content.length} chars) and the document stub "${concept.id}" created. Next: okf_ingest({bundle, source: "raw/${finalName}"}).`
-      : `Source stored (${content.length} chars). concept:null is expected — no conceptId was requested, and chapters are written later by the okf-ingest agent. Do NOT re-import the content. Next: okf_ingest({bundle, source: "raw/${finalName}"}).`,
+      ? `Source stored (${content.length} chars) and the document stub "${concept.id}" created.${chunkNote} Next: okf_ingest({bundle, source: "raw/${finalName}"}).`
+      : `Source stored (${content.length} chars). concept:null is expected — no conceptId was requested, and chapters are written later by the okf-ingest agent. Do NOT re-import the content.${chunkNote} Next: okf_ingest({bundle, source: "raw/${finalName}"}).`,
   };
 }
 
@@ -2114,6 +2377,13 @@ async function loadJobs(bundleRoot) {
     try {
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.jobs)) {
+        // `trajectory` round-trips as a plain JSON array (FR-057). A record
+        // written before the field existed — or by a service that failed
+        // mid-write — comes back without it, and every reader downstream
+        // (GET /jobs/<id>, the app) is entitled to an array, not undefined.
+        for (const job of parsed.jobs) {
+          if (!Array.isArray(job.trajectory)) job.trajectory = [];
+        }
         jobsState = { jobs: parsed.jobs, seq: Number(parsed.seq) || parsed.jobs.length };
         return jobsState;
       }
@@ -2131,6 +2401,35 @@ async function persistJobs(bundleRoot) {
   await vfs.writeText(jobsPath(bundleRoot), JSON.stringify(jobsState, null, 2) + "\n").catch(() => {
     /* best effort — a job record must never fail the ingest it describes */
   });
+}
+
+// Trajectory events arrive one per NDJSON line and `persistJobs` rewrites the
+// whole store, so the two together would mean a full-file write per line of a
+// live run. These coalesce instead: write immediately when the store has been
+// quiet, otherwise schedule ONE trailing write for the end of the window. A
+// restart can therefore lose at most the last quarter-second of a trajectory,
+// which is the point of persisting incrementally in the first place — the
+// terminal transition always persists synchronously through updateJob.
+const TRAJECTORY_PERSIST_MS = 250;
+let persistPending = null;
+let lastPersistAt = 0;
+
+function schedulePersistJobs(bundleRoot) {
+  const now = Date.now();
+  const waited = now - lastPersistAt;
+  if (waited >= TRAJECTORY_PERSIST_MS) {
+    lastPersistAt = now;
+    return persistJobs(bundleRoot);
+  }
+  if (persistPending) return persistPending;
+  persistPending = new Promise((resolve) => {
+    setTimeout(() => {
+      persistPending = null;
+      lastPersistAt = Date.now();
+      void persistJobs(bundleRoot).then(resolve, resolve);
+    }, TRAJECTORY_PERSIST_MS - waited);
+  });
+  return persistPending;
 }
 
 async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers }) {
@@ -2157,23 +2456,67 @@ async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers })
     // fires the abort the moment it learns the id (ADR-010 S4).
     runId: null,
     cancelRequested: false,
+    // The run's NDJSON stream, captured verbatim and in order by the launcher
+    // (FR-057, ADR-013). Empty for a run that produced no events at all —
+    // which is the ONLY case the app's "No trajectory captured" note covers.
+    trajectory: [],
   };
   state.jobs.unshift(job);
   await persistJobs(bundleRoot);
   return job;
 }
 
-async function listJobs(bundleRoot, { bundleId, status, limit } = {}) {
+/**
+ * A job as a LIST row: the whole record except the trajectory, which is
+ * replaced by its length.
+ *
+ * The trajectory is per-run debug detail measured in tens of kilobytes. The
+ * list is polled by the app every few seconds and returned wholesale by
+ * `okf_list_jobs`, so shipping every run's events on every list call would
+ * put megabytes through a 3-second poll and through an agent's context, to
+ * render a column nobody asked for. `GET /jobs/<id>` — the detail read, one
+ * run at a time — is where the full trajectory lives (ADR-013).
+ */
+function jobListView(job) {
+  const { trajectory, ...rest } = job;
+  return { ...rest, trajectoryEvents: Array.isArray(trajectory) ? trajectory.length : 0 };
+}
+
+async function listJobs(bundleRoot, { bundleId, status, limit, includeTrajectory = false } = {}) {
   const state = await loadJobs(bundleRoot);
   let jobs = state.jobs;
   if (bundleId) jobs = jobs.filter((j) => j.bundleId === bundleId);
   if (status) jobs = jobs.filter((j) => j.status === status);
-  return Number.isFinite(limit) && limit > 0 ? jobs.slice(0, limit) : jobs;
+  if (Number.isFinite(limit) && limit > 0) jobs = jobs.slice(0, limit);
+  return includeTrajectory ? jobs : jobs.map(jobListView);
 }
 
 async function getJob(bundleRoot, id) {
   const state = await loadJobs(bundleRoot);
   return state.jobs.find((j) => j.id === id) || null;
+}
+
+/**
+ * Append ONE captured stream event to a job's trajectory (FR-057, ADR-013).
+ *
+ * The event is stored exactly as it came off the wire — `{type:"tool", tool,
+ * input}`, `{type:"tool_result", …}`, `{type:"done", result}` and the rest —
+ * because the whole value of an audit log is that nothing on the way in got
+ * to decide what mattered.
+ *
+ * It does NOT go through `updateJob`: a trajectory event is not a lifecycle
+ * transition, and a terminal job must still be allowed to record the `done`
+ * line that made it terminal.
+ */
+async function appendJobTrajectory(bundleRoot, id, event) {
+  if (!event || typeof event !== "object") return null;
+  const state = await loadJobs(bundleRoot);
+  const job = state.jobs.find((j) => j.id === id);
+  if (!job) return null;
+  if (!Array.isArray(job.trajectory)) job.trajectory = [];
+  job.trajectory.push(event);
+  await schedulePersistJobs(bundleRoot);
+  return job;
 }
 
 // `cancelled` is TERMINAL and is NOT a failure (FR-050): an intentional stop
@@ -2207,6 +2550,8 @@ async function updateJob(bundleRoot, id, patch = {}) {
   if (patch.error !== undefined) job.error = patch.error;
   if (patch.runId !== undefined) job.runId = patch.runId;
   if (patch.cancelRequested !== undefined) job.cancelRequested = !!patch.cancelRequested;
+  if (patch.trajectory !== undefined) job.trajectory = Array.isArray(patch.trajectory) ? patch.trajectory : [];
+  if (!Array.isArray(job.trajectory)) job.trajectory = [];
   // A cancellation is not an error — whatever a late stream signal would have
   // written, a cancelled job's `error` stays null (FR-050).
   if (patch.status === "cancelled") job.error = null;
@@ -2445,7 +2790,8 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
       `Run those calls verbatim. \`output_path\` is pinned on purpose: with it the source streams to disk and the tool ` +
       `returns a receipt, so the document never passes through your context. Do NOT drop it and paste the content into ` +
       `\`okf_add_raw_source({content})\` instead — that re-emits the entire document as output tokens for no benefit. ` +
-      `\`okf_add_raw_source\` returns the \`rawFile\` path; that file is what you decompose.\n\n`
+      `\`okf_add_raw_source\` returns the \`rawFile\` path AND a \`chunks\` array — see "Chunk processing" below; the ` +
+      `chunks are what you decompose, not the whole \`rawFile\`.\n\n`
     : `## Step 0 — the source is already in the bundle\n\nIt is at \`${source}\`. Read it from there with \`file_read\`; ` +
       `do not expect it inline and do not re-fetch it.\n\n`;
 
@@ -2453,6 +2799,15 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
     `Ingest \`${source}\` into the OKF bundle "${bundle}" as organized chapters.\n\n` +
     `jobId: ${jobId}\nbundle: ${bundle}\nsource: ${source}\nmaxDepth: ${maxDepth}\nmaxWorkers: ${maxWorkers}\n\n` +
     acquisition +
+    `## Chunk processing (ADR-012)\n\n` +
+    `\`okf_add_raw_source\`'s response carries \`chunks\`: \`[{path, ordinal, total}]\`, the source already split ` +
+    `mechanically into pieces of at most \`maxChunkSize\` characters. Process them SEQUENTIALLY — \`file_read\` ` +
+    `\`chunks[0].path\`, decompose THAT chunk into chapters and write them with \`okf_upsert_concept\`, then read ` +
+    `\`chunks[1].path\`, and so on to the last. Each chunk's \`headingPath\` frontmatter tells you where in the ` +
+    `document you are. Write the DOCUMENT STUB after the first chunk; write the TOC and let the index rebuild after ` +
+    `the LAST chunk. Do NOT \`file_read\` the whole \`rawFile\` when \`total > 1\` — reading a large source in one ` +
+    `call is what exhausts the context before anything is written. A chunk is a context window, not a chapter: a ` +
+    `section split across two chunks is still ONE chapter. With \`total: 1\` this is exactly the ordinary path.\n\n` +
     `## Then do the whole job\n\n` +
     `Decompose the source at its natural heading structure into chapters (\`concepts/<docId>/<chId>.md\`, ` +
     `\`type: section\`), each carrying \`parent\`, the \`concepts\` terms it covers and a one-line \`summary\` — those ` +
@@ -2570,6 +2925,12 @@ async function driveRun(bundleRoot, jobId, task) {
       task,
       onTool: ({ tool, index }) => {
         void updateJob(bundleRoot, jobId, { progress: progressFor(tool, index) }).catch(() => {});
+      },
+      // FR-057 / ADR-013: every line of the stream, verbatim and in order, on
+      // the job record. The launcher is the only thing that ever sees this
+      // stream, so if it does not capture it here nothing can.
+      onEvent: (event) => {
+        void appendJobTrajectory(bundleRoot, jobId, event).catch(() => {});
       },
       // FR-052: the run's own `run_started` line is the ONLY place the runId
       // exists — the delegate POST returns a stream, not an id. Storing it on
@@ -2751,6 +3112,11 @@ module.exports = {
   // raw / assets / provenance
   addRawSource,
   addRawAsset,
+  chunkSource,
+  writeChunks,
+  docIdForSource,
+  DEFAULT_MAX_CHUNK_SIZE,
+  CHUNKS_DIR,
   readAsset,
   findSource,
   normalizeSourceKey,
@@ -2762,8 +3128,10 @@ module.exports = {
   // jobs
   createJob,
   listJobs,
+  jobListView,
   getJob,
   updateJob,
+  appendJobTrajectory,
   cancelJob,
   deleteJob,
   reapStaleJobs,
@@ -2773,6 +3141,9 @@ module.exports = {
   buildIngestTask,
   // internals exposed for the bridge, the tools layer and tests
   appendLog,
+  // the launcher's prose->counts reader; tests/summary-from-output.test.mjs
+  // has always required it and the export was simply missing
+  summaryFromOutput,
   extractLinks,
   normalizeLinkTarget,
   parseFrontmatter,

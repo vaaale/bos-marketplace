@@ -15,7 +15,10 @@
 // (FR-036/SC-007). These routes are internal plumbing, not tool_declare'd.
 //
 // ── Routes (design.md §8.3) ──────────────────────────────────────────────
-//   GET    /config                              -> { httpPath, port, runtime }
+//   GET    /config                              -> { httpPath, port, runtime,
+//                                                  maxChunkSize } — runtime
+//                                                  carries bundleRoot and the
+//                                                  ingest bounds (FR-056)
 //   GET    /tools                               -> { count, tools: [declaration] }
 //   GET    /bundles                             -> [ health, ... ]
 //   POST   /bundles                             -> create { name, title?, description? }
@@ -30,13 +33,26 @@
 //   GET    /bundles/<b>/lint                    -> lint report
 //   GET    /bundles/<b>/stale                   -> stale report
 //   POST   /bundles/<b>/merge   {from, to}      -> consolidate two concept terms
+//   POST   /bundles/<b>/raw  {filename|sourcePath, content?, ...}
+//                                               -> core.addRawSource: register
+//                                                  into raw/ AND pre-split into
+//                                                  .chunks/ (ADR-012)
 //   POST   /bundles/<b>/import                  -> { files } | { sourcePath }
 //   GET    /bundles/<b>/export                  -> { name, files, assets }
 //   POST   /jobs  {bundle, source, maxDepth?, maxWorkers?}
 //                                               -> core.triggerIngest: starts
 //                                                  the run, returns {jobId}
 //   GET    /jobs[?bundleId=&status=&limit=]     -> [ job, ... ]
-//   GET    /jobs/<id>                           -> one job record
+//   GET    /jobs/<id>                           -> one job record, IN FULL —
+//                                                  including `trajectory`, the
+//                                                  captured NDJSON event array
+//                                                  the app's Jobs tab renders
+//                                                  (FR-057/FR-058, ADR-013).
+//                                                  Nothing here whitelists
+//                                                  fields: the record goes out
+//                                                  as the job store holds it,
+//                                                  so a new field needs no
+//                                                  change to this bridge.
 //   POST   /jobs/<id>  {progress}               -> OPTIONAL progress
 //                                                  enrichment only
 //   POST   /jobs/<id>/cancel                    -> core.cancelJob: abort the
@@ -335,6 +351,30 @@ function createRequestHandler(ctx) {
           const body = await readJsonBody(req);
           if (!body.from || !body.to) return sendJson(res, 400, { error: "both `from` and `to` concept terms are required" });
           return sendJson(res, 200, await core.mergeConcepts(bundleRoot, bundle, body.from, body.to));
+        }
+
+        // POST /bundles/<b>/raw — raw-source registration + the ADR-012
+        // mechanical pre-split, over the SAME core.addRawSource the
+        // okf_add_raw_source tool runs. One capability, two surfaces
+        // (ADR-003), and no addition to the 21-tool agent surface: these
+        // routes are not tool_declare'd.
+        //
+        // The okf_* tools have no HTTP face — they are IPC-dispatched through
+        // the worker's parentPort — so this is also how the e2e suite drives
+        // and asserts the chunking contract (FR-055/SC-017) without standing
+        // up a real agent run.
+        if (bundle && req.method === "POST" && section === "raw" && parts.length === 3) {
+          const body = await readJsonBody(req);
+          const defaults = ctx.getIngestDefaults ? ctx.getIngestDefaults() : undefined;
+          return sendJson(res, 201, await core.addRawSource(bundleRoot, bundle, {
+            filename: body.filename,
+            content: body.content,
+            sourcePath: body.sourcePath,
+            conceptId: body.conceptId,
+            title: body.title,
+            originUrl: body.originUrl,
+            maxChunkSize: Number.isFinite(body.maxChunkSize) ? body.maxChunkSize : defaults && defaults.maxChunkSize,
+          }));
         }
 
         if (bundle && req.method === "POST" && section === "import" && parts.length === 3) {

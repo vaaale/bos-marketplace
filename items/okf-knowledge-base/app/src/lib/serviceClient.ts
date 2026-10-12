@@ -269,6 +269,14 @@ export function fetchJobs(): Promise<{ jobs: Job[]; total: number; active: numbe
   return request("jobs");
 }
 
+/**
+ * One run's FULL record — including `trajectory`, the captured NDJSON event
+ * array the Jobs tab's detail view renders (FR-057/FR-058, ADR-013).
+ *
+ * This is the only surface that carries the events: `fetchJobs()` (the list
+ * the app polls) deliberately reports `trajectoryEvents` as a count instead,
+ * so a 3-second poll never drags every run's events across the wire.
+ */
 export function fetchJob(id: string): Promise<Job> {
   return request(`jobs/${encodeURIComponent(id)}`);
 }

@@ -164,6 +164,36 @@ export interface JobSummary {
   toolCalls?: number;
 }
 
+/**
+ * One line of the run's NDJSON stream, stored verbatim by the launcher
+ * (FR-057, ADR-013). The shape is open on purpose: the delegate endpoint is
+ * allowed to add event kinds, and the renderer matches on `type` and ignores
+ * what it does not know rather than failing on it.
+ *
+ * The wire type for a tool call is **`tool`** — not `tool_call` — and a
+ * `tool` line is paired with the `tool_result` that follows it POSITIONALLY:
+ * there is no `callId` to correlate them by.
+ */
+export interface TrajectoryEvent {
+  type: string;
+  /** `tool` events: the tool's name. */
+  tool?: string;
+  /** `tool` events: the arguments it was called with. */
+  input?: unknown;
+  /** `tool_result` events, and `done` (where it carries `endedReason`). */
+  result?: unknown;
+  /** `done` / `final_text`: the run's final output. */
+  text?: string;
+  /** `error`: the message the run threw. */
+  error?: unknown;
+  message?: unknown;
+  /** `run_started`. */
+  runId?: string;
+  agent?: string;
+  at?: string;
+  [key: string]: unknown;
+}
+
 export interface Job {
   id: string;
   status: JobStatus;
@@ -182,6 +212,17 @@ export interface Job {
   /** A cancel that arrived before the runId existed; the launcher fires the
    *  abort as soon as it has the handle. */
   cancelRequested?: boolean;
+  /** The run's captured NDJSON stream, in order (FR-057, ADR-013).
+   *
+   *  Present on the DETAIL read (`GET /jobs/<id>` / `fetchJob`) only. The
+   *  list (`GET /jobs`) projects it away and reports `trajectoryEvents`
+   *  instead, because the list is polled every few seconds and a run's events
+   *  are tens of kilobytes. An empty array means the run produced no events
+   *  at all — the one case the "No trajectory captured" note describes. */
+  trajectory?: TrajectoryEvent[];
+  /** How many events the run captured. On every list row; the array itself
+   *  comes from the detail read. */
+  trajectoryEvents?: number;
 }
 
 export interface LintReport {

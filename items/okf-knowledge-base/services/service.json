@@ -47,6 +47,11 @@
         "default": 3,
         "description": "How many references an ingest run ingests concurrently. Overridable per okf_ingest call."
       },
+      "maxChunkSize": {
+        "type": "number",
+        "default": 32000,
+        "description": "Maximum size, in characters, of one ingest chunk. When okf_add_raw_source registers a source larger than this it mechanically pre-splits it (heading \u2192 paragraph \u2192 sentence boundaries) into .chunks/<docId>/NNN.md and returns the chunk paths, so the ingest agent reads one bounded chunk at a time instead of the whole document. Default 32000 (~8K tokens)."
+      },
       "staleJobMs": {
         "type": "number",
         "default": 1800000,

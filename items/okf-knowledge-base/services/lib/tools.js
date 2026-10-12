@@ -213,7 +213,8 @@ const DECLARATIONS = [
       "MECHANICAL step: register a source document — or a downloaded non-HTML inline asset — into the bundle's raw/ store (append-only, versioned, never overwritten).\n\n" +
       "For a document: pass `sourcePath` (a VFS path something already staged, e.g. web_fetch or file_to_markdown output) rather than `content` whenever the source is large — with sourcePath the bytes go straight from disk into raw/ and never pass through your context. Use `content` only for short, already-in-context text.\n\n" +
       "For an inline asset (image/video): set asset:true and pass `docId` plus the `sourcePath` you web_fetch'd it to. The asset is registered under raw/assets/<docId>/ and the call returns the markdown block template to write into the owning chapter after you interpret it with view_image / video_keyframes.\n\n" +
-      "This does NOT decompose anything into chapters — follow it with okf_ingest for that.",
+      "This does NOT decompose anything into chapters — follow it with okf_ingest for that.\n\n" +
+      "CHUNKS: for a text source the response carries `chunks` — `[{path, ordinal, total}]`, the source mechanically pre-split at heading/paragraph/sentence boundaries into `.chunks/<docId>/NNN.md`, each at most `maxChunkSize` characters. Process them SEQUENTIALLY with file_read (chunks[0].path first, decompose it into chapters, then chunks[1].path, …) instead of reading the whole `rawFile` — that is what keeps a large document out of your context. Each chunk's frontmatter carries `chunk`/`total`/`headingPath` (the headings open at that point). A source that fits in one chunk returns exactly one entry, so the protocol is the same either way.",
     inputSchema: required(
       {
         bundle: STRING,
@@ -232,7 +233,7 @@ const DECLARATIONS = [
   readOnly({
     name: "okf_list_jobs",
     description:
-      "List ingest runs and how they went — the same records the app's Jobs tab shows. Each is `{id, status, bundleId, source, queuedAt, startedAt, endedAt, durationMs, progress, summary, error, runId}`, newest first.\n\n" +
+      "List ingest runs and how they went — the same records the app's Jobs tab shows. Each is `{id, status, bundleId, source, queuedAt, startedAt, endedAt, durationMs, progress, summary, error, runId, trajectoryEvents}`, newest first.\n\n" +
       "This is how you follow up on an okf_ingest you started: the run is asynchronous and okf_ingest returns only a jobId, so this is the only way to learn whether it completed (with a summary), was cancelled (an intentional stop — `error` is null), or failed (with a reason). Filter by `bundle`, by `status`, or pass the `jobId` you were given.",
     inputSchema: {
       type: "object",
@@ -358,6 +359,11 @@ function makeHandlers(core) {
           originUrl: args.originUrl,
         });
       }
+      // ADR-012 / FR-055: registering the source is ALSO where it is chunked.
+      // core.addRawSource writes raw/ and then mechanically pre-splits the
+      // same bytes into .chunks/<docId>/NNN.md, returning `chunks` so the
+      // agent can read one bounded chunk at a time. The bound comes from the
+      // service config (FR-056) — the handler supplies it, the core applies it.
       return core.addRawSource(ctx.bundleRoot, args.bundle, {
         filename: args.filename,
         content: args.content,
@@ -365,6 +371,7 @@ function makeHandlers(core) {
         conceptId: args.conceptId,
         title: args.title,
         originUrl: args.originUrl,
+        maxChunkSize: ctx.ingestDefaults && ctx.ingestDefaults.maxChunkSize,
       });
     },
 
@@ -389,7 +396,13 @@ function makeHandlers(core) {
       if (args.jobId) {
         const job = await core.getJob(ctx.bundleRoot, args.jobId);
         if (!job) throw new Error(`job not found: ${args.jobId}`);
-        return { jobs: [job], count: 1 };
+        // jobListView, not the raw record: the captured `trajectory`
+        // (FR-057) is the USER's debug surface, rendered by the app's Jobs
+        // tab from GET /jobs/<id>. Returning tens of kilobytes of the agent's
+        // own past tool calls back into its context would be a cost with no
+        // reader — ADR-013 rejected a trajectory TOOL for exactly this
+        // reason. The count still comes through.
+        return { jobs: [core.jobListView(job)], count: 1 };
       }
       const jobs = await core.listJobs(ctx.bundleRoot, {
         bundleId: args.bundle,

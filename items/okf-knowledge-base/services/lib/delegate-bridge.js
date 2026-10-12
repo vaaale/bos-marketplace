@@ -39,11 +39,16 @@
 //   {type:"done", result, text}         TERMINAL — result.{output, endedReason, error}
 //   {type:"error", error}               TERMINAL — the run threw before finishing
 //
-// We deliberately parse only what we act on (`run_started` for the runId the
+// We deliberately ACT on only part of that (`run_started` for the runId the
 // cancel path needs, `tool` for progress, `done` / `error` for the terminal
 // state) and ignore unknown line types rather than
 // failing on them: the endpoint is allowed to add event kinds, and a service
 // that crashed on an unrecognised line would be broken by an additive change.
+//
+// We nonetheless CAPTURE all of it. `onEvent` receives every parsed line, in
+// order, verbatim — that array is the job's `trajectory` (FR-057, ADR-013),
+// and an event this module has no use for is exactly the kind of event a user
+// debugging a surprising run does.
 
 const http = require("http");
 const vfs = require("./vfs-bridge");
@@ -113,13 +118,21 @@ function openDelegateStream({ task, agent }) {
  * @param {function} [opts.onRunStarted] ({runId}) => void — fired once, as
  *        soon as the run names itself (FR-052). The launcher stores the id on
  *        the job; it is the handle `okf_cancel_job` aborts by.
+ * @param {function} [opts.onEvent]    (event) => void — fired for EVERY parsed
+ *        NDJSON line, in stream order, with the object exactly as it came off
+ *        the wire. This is the job TRAJECTORY (FR-057, ADR-013): the launcher
+ *        appends each event to the job record, so the Jobs tab can show what
+ *        the agent actually did. No filtering and no transformation happen
+ *        here — a line this module does not act on is still a line the user
+ *        may need to debug a run, and deciding what matters is the renderer's
+ *        job, not the reader's.
  * @returns {Promise<{ok: boolean, output?: string, endedReason?: string, error?: string, runId?: string, toolCalls: number}>}
  *          Resolves with the run's own terminal signal. NEVER rejects for a
  *          run that failed — a failed run is a result, not an exception. It
  *          rejects only when the stream itself could not be established or
  *          read, which the launcher reports as a failed job all the same.
  */
-async function runIngestAgent({ task, agent, onTool, onRunStarted }) {
+async function runIngestAgent({ task, agent, onTool, onRunStarted, onEvent }) {
   const res = await openDelegateStream({ task, agent });
 
   if (res.statusCode && res.statusCode >= 400) {
@@ -142,6 +155,16 @@ async function runIngestAgent({ task, agent, onTool, onRunStarted }) {
 
   await consumeNdjson(res, (line) => {
     if (!line || typeof line !== "object") return;
+    // TRAJECTORY FIRST (ADR-013) — before any of the early returns below, so
+    // `run_started` and `tool` are captured too. A capture failure must never
+    // break the run it is describing.
+    if (onEvent) {
+      try {
+        onEvent(line);
+      } catch {
+        /* recording what happened is not allowed to change what happens */
+      }
+    }
     // The run's handle. `run_started` is where the endpoint announces it;
     // we also accept a runId riding on any earlier line rather than insisting
     // on one event name, because missing it costs the cancel path its only

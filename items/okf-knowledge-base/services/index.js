@@ -28,6 +28,10 @@ const DEFAULT_BUNDLE_ROOT = "/KnowledgeBase";
 // Bundle-level ingest crawl limits (per-call overridable on okf_ingest).
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_WORKERS = 3;
+// The ingest chunk bound (ADR-012 / FR-056): okf_add_raw_source pre-splits any
+// source larger than this so the agent never file_reads a whole document into
+// its context. ~8K tokens.
+const DEFAULT_MAX_CHUNK_SIZE = 32000;
 // How long a job may sit non-terminal before the reaper calls it lost.
 // 30 minutes: comfortably longer than a real ingest run (minutes), short
 // enough that a run orphaned by a restart does not spin for a whole day.
@@ -58,7 +62,7 @@ if (parentPort) {
   // service itself (and its app, which only ever talks to this same
   // service) looked like it was working fine.
   let bundleRoot = DEFAULT_BUNDLE_ROOT;
-  let ingestDefaults = { maxDepth: DEFAULT_MAX_DEPTH, maxWorkers: DEFAULT_MAX_WORKERS };
+  let ingestDefaults = { maxDepth: DEFAULT_MAX_DEPTH, maxWorkers: DEFAULT_MAX_WORKERS, maxChunkSize: DEFAULT_MAX_CHUNK_SIZE };
   let serviceId = "okf-knowledge-base";
   let staleJobMs = DEFAULT_STALE_JOB_MS;
   let reaperTimer = null;
@@ -76,7 +80,16 @@ if (parentPort) {
     return {
       httpPath: supervisorEnabled ? `/__supervisor/services/${serviceId}/` : null,
       port: boundPort,
-      runtime: { bundleRoot },
+      // `runtime` is the service's own effective configuration, and it is what
+      // GET /config reports. maxChunkSize rides here (FR-056) next to the
+      // bundleRoot the app already reads — one payload, no second route.
+      runtime: {
+        bundleRoot,
+        maxChunkSize: ingestDefaults.maxChunkSize,
+        maxDepth: ingestDefaults.maxDepth,
+        maxWorkers: ingestDefaults.maxWorkers,
+      },
+      maxChunkSize: ingestDefaults.maxChunkSize,
     };
   }
 
@@ -192,6 +205,10 @@ if (parentPort) {
         ingestDefaults = {
           maxDepth: Number.isFinite(userConfig.maxDepth) ? userConfig.maxDepth : DEFAULT_MAX_DEPTH,
           maxWorkers: Number.isFinite(userConfig.maxWorkers) ? userConfig.maxWorkers : DEFAULT_MAX_WORKERS,
+          maxChunkSize:
+            Number.isFinite(userConfig.maxChunkSize) && userConfig.maxChunkSize > 0
+              ? userConfig.maxChunkSize
+              : DEFAULT_MAX_CHUNK_SIZE,
         };
         staleJobMs = Number.isFinite(userConfig.staleJobMs) && userConfig.staleJobMs > 0 ? userConfig.staleJobMs : DEFAULT_STALE_JOB_MS;
         const port = typeof userConfig.port === "number" ? userConfig.port : 0;
