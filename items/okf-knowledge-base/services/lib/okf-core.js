@@ -1859,7 +1859,18 @@ async function addRawAsset(bundleRoot, bundleName, { docId, filename, sourcePath
         `asset not present at ${relPath} and no sourcePath given — have the ingest agent web_fetch it with output_path="${dest}" first`,
       );
     }
-    const staged = safeJoin("/", sourcePath);
+    // The SOURCE is a read, and reads are not scoped to the bundle: the
+    // agent stages assets to /workspace via web_fetch({output_path}), so a
+    // path outside the bundle root is the normal case, not an attack. Only
+    // `dest` — which is built from safeJoin(bDir, …) above — is guarded.
+    // This used to be safeJoin("/", sourcePath), which threw
+    // `path escapes root: /workspace/…` on every absolute path it was ever
+    // given: with a root of "/", safeJoin's containment test compares the
+    // target against the prefix "//", and no real path starts with that.
+    // path.resolve is what the line actually wanted — normalize to an
+    // absolute path so the "already staged at the destination" comparison
+    // below is comparing like with like.
+    const staged = path.resolve("/", sourcePath);
     if (staged !== dest) {
       const { buffer, contentType } = await vfs.readRaw(staged);
       await vfs.writeBinary(dest, buffer, contentType);
@@ -2587,21 +2598,58 @@ async function driveRun(bundleRoot, jobId, task) {
  * the counts are read out of the prose where they are stated plainly, and
  * anything not stated stays 0 rather than being guessed at. The full text is
  * always kept verbatim in `text`, which is what the detail view falls back to.
+ *
+ * Two passes, in this order. AGENT.md mandates a literal `Ingested: …` line
+ * as the last line of the final message, so that exact template is tried
+ * first and read positionally — no ambiguity about which number is which.
+ * Only when it is absent do the per-field prose patterns run, and those are
+ * WIDE on purpose: a run that reported "6 sections, 8 topics, 1 image" used
+ * to read as all zeros, because the narrow patterns only knew the words
+ * "chapters", "concepts" and "assets". A summary card of zeros next to a run
+ * that plainly did the work is worse than an approximate count, so each
+ * field carries the synonyms the agent actually reaches for, first match
+ * wins. A field with no match still stays 0 — guessing is not the fallback.
  */
 function summaryFromOutput(output, toolCalls) {
   const text = String(output || "").trim();
   if (!text) return { chapters: 0, concepts: 0, assets: 0, refsSkipped: 0, refsFailed: 0, written: [], text: "", toolCalls };
 
-  const num = (re) => {
-    const m = text.match(re);
-    return m ? Number(m[1]) : 0;
+  // Primary: the literal "Ingested:" template line (AGENT.md mandates it)
+  const ingested = text.match(/Ingested:\s*(\d+)\s+chapters?,\s*(\d+)\s+concepts?,\s*(\d+)\s+assets?,\s*(\d+)\s+refs?\s+skipped,\s*(\d+)\s+refs?\s+failed/i);
+  if (ingested) {
+    return {
+      chapters: Number(ingested[1]),
+      concepts: Number(ingested[2]),
+      assets: Number(ingested[3]),
+      refsSkipped: Number(ingested[4]),
+      refsFailed: Number(ingested[5]),
+      written: [],
+      text,
+      toolCalls,
+    };
+  }
+
+  // Fallback: widened prose patterns (per-field, first match wins)
+  const COUNT_PATTERNS = {
+    chapters: [/(\d+)\s+chapters?\b/i, /(\d+)\s+sections?\b/i, /(\d+)\s+parts?\b/i],
+    concepts: [/(\d+)\s+concepts?\s*(?:terms?)?\b/i, /(\d+)\s+topics?\b/i],
+    assets: [/(\d+)\s+assets?\b/i, /(\d+)\s+images?\b/i, /(\d+)\s+figures?\b/i, /(\d+)\s+videos?\b/i, /(\d+)\s+interpretations?\b/i],
+    refsSkipped: [/(\d+)\s+(?:references?|refs?)\s+skipped/i, /skipped\s+(\d+)\s+(?:references?|refs?)/i],
+    refsFailed: [/(\d+)\s+(?:references?|refs?)\s+failed/i, /failed\s+(\d+)\s+(?:references?|refs?)/i],
+  };
+  const num = (patterns) => {
+    for (const re of patterns) {
+      const m = text.match(re);
+      if (m) return Number(m[1]);
+    }
+    return 0;
   };
   return {
-    chapters: num(/(\d+)\s+chapters?\b/i),
-    concepts: num(/(\d+)\s+concepts?\s*(?:terms?)?\b/i),
-    assets: num(/(\d+)\s+assets?\b/i),
-    refsSkipped: num(/(\d+)\s+(?:references?|refs?)\s+skipped/i),
-    refsFailed: num(/(\d+)\s+(?:references?|refs?)\s+failed/i),
+    chapters: num(COUNT_PATTERNS.chapters),
+    concepts: num(COUNT_PATTERNS.concepts),
+    assets: num(COUNT_PATTERNS.assets),
+    refsSkipped: num(COUNT_PATTERNS.refsSkipped),
+    refsFailed: num(COUNT_PATTERNS.refsFailed),
     written: [],
     text,
     toolCalls,
