@@ -2803,25 +2803,29 @@ function acquisitionFirstSteps(bundle, source) {
   const isAbsPath = source.startsWith("/");
   if (!isUrl && !isAbsPath) return []; // a raw/ path — already in the bundle
 
-  const staged = `/workspace/okf-staged-${stagedName(source)}`;
   const steps = [];
   let sourcePath;
 
   if (isUrl) {
+    const convertible = CONVERTIBLE.test(stripUrlSuffix(source));
+    // A convertible URL (PDF, DOCX, …) downloads as BINARY. The download path
+    // must keep the source's REAL extension so file_to_markdown can detect the
+    // format from the file — a .pdf saved as .md is treated as already-markdown
+    // and returned unconverted (raw PDF bytes → garbage chunks). Non-convertible
+    // URLs (HTML/MD) keep the .md staging name.
+    const mdName = stagedName(source).replace(/\.md$/i, ""); // slug without .md
+    const ext = convertible ? stripUrlSuffix(source).match(CONVERTIBLE)[0].toLowerCase() : ".md";
+    const staged = `/workspace/okf-staged-${mdName}${ext}`;
     steps.push({ tool: "web_fetch", args: { url: source, output_path: staged } });
-    // A convertible URL (PDF, DOCX, …) downloads as BINARY. Registering that
-    // as the raw source is how chunkSource ends up splitting PDF bytes into
-    // garbage chunks — the CONVERTIBLE check used to guard only the local
-    // path branch. Convert it BEFORE it becomes the source, and point
-    // okf_add_raw_source at the converted markdown, not at the download.
-    if (CONVERTIBLE.test(stripUrlSuffix(source))) {
-      const converted = staged.replace(/\.[a-z0-9]+$/i, "") + "-converted.md";
+    if (convertible) {
+      const converted = `/workspace/okf-staged-${mdName}.md`;
       steps.push({ tool: "file_to_markdown", args: { path: staged, output_path: converted } });
       sourcePath = converted;
     } else {
       sourcePath = staged;
     }
   } else if (CONVERTIBLE.test(source)) {
+    const staged = `/workspace/okf-staged-${stagedName(source)}`;
     steps.push({ tool: "file_to_markdown", args: { path: source, output_path: staged } });
     sourcePath = staged;
   } else {
