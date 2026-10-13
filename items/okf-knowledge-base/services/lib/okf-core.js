@@ -1517,7 +1517,7 @@ async function deleteBundle(bundleRoot, name) {
  * Every successful write rebuilds the derived index + TOCs, so the routing
  * table can never lag the content that backs it (FR-015).
  */
-async function upsertConcept(bundleRoot, bundleName, id, { title, body, frontmatter } = {}) {
+async function upsertConcept(bundleRoot, bundleName, id, { title, body, frontmatter, sourceRange, interpretations } = {}) {
   const bDir = bundleDir(bundleRoot, bundleName);
   if (!(await vfs.exists(bDir))) throw new Error(`bundle not found: ${bundleName} — create it first with okf_init_bundle({name: "${bundleName}"})`);
   const existing = await readConceptRaw(bDir, id);
@@ -1546,7 +1546,24 @@ async function upsertConcept(bundleRoot, bundleName, id, { title, body, frontmat
   if (!merged.type) merged.type = merged.parent ? "section" : "document";
   if (merged.created_at === undefined) merged.created_at = base.created_at || now;
 
-  const finalBody = body !== undefined ? body : existing ? existing.body : `# ${merged.title || id}\n`;
+  // ── the body (ADR-014 D4 precedence) ─────────────────────────────────
+  //
+  //   sourceRange present -> the SERVICE extracts the body from raw/
+  //                          (FR-060: the agent never re-emits the source);
+  //   otherwise            -> `body` exactly as given (the original path,
+  //                          untouched and still the whole contract for
+  //                          every caller that does not pass a range).
+  //
+  // A range that cannot be resolved THROWS rather than falling back to the
+  // passed body: silently writing a half-right chapter is the one outcome
+  // worse than a failed write the agent can retry.
+  let extraction = null;
+  if (sourceRange) {
+    const docId = String(id).split("/")[0];
+    extraction = await chapterFromSourceRange(bDir, docId, sourceRange, interpretations, undefined);
+  }
+
+  const finalBody = extraction ? extraction.body : body !== undefined ? body : existing ? existing.body : `# ${merged.title || id}\n`;
   const raw = stringifyDocument(merged, finalBody);
   await vfs.writeText(conceptFilePath(bDir, id), raw);
   markGraphDirty(bDir);
@@ -1557,7 +1574,21 @@ async function upsertConcept(bundleRoot, bundleName, id, { title, body, frontmat
     message: `${existing ? "updated" : "created"} ${merged.type} "${id}"`,
     at: now,
   });
-  return readConcept(bundleRoot, bundleName, id);
+  const written = await readConcept(bundleRoot, bundleName, id);
+  // Say what was extracted, so the agent can SEE that the body it did not
+  // send is the body that got written (and the e2e can assert the slice).
+  return extraction
+    ? {
+        ...written,
+        extraction: {
+          sourceFile: extraction.sourceFile,
+          start: extraction.start,
+          end: extraction.end,
+          chars: extraction.end - extraction.start,
+          interpretations: extraction.placements,
+        },
+      }
+    : written;
 }
 
 /**
@@ -1827,6 +1858,17 @@ async function recordSource(bDir, source, entry) {
 const DEFAULT_MAX_CHUNK_SIZE = 32000;
 /** Operational staging for the mechanical pre-split — sibling of .jobs/, NOT raw/. */
 const CHUNKS_DIR = ".chunks";
+/**
+ * The chunk-time heading map (ADR-014 D1/D2): `{sourceFile, sourceLength,
+ * headings:[{index,level,text,start,end}]}`, written beside the chunks it
+ * was computed from. Char offsets into `raw/<sourceFile>` — the UN-chunked
+ * original — are what let the write path slice a chapter body verbatim
+ * instead of having the agent re-emit it (FR-060).
+ */
+const HEADINGS_FILE = "headings.json";
+
+/** A markdown ATX heading line: `#` to `######` followed by whitespace. */
+const HEADING_LINE = /^(#{1,6})\s+(.*)$/;
 
 /**
  * Sentence boundaries: `. ` / `! ` / `? ` (with any closing quote/bracket)
@@ -1923,6 +1965,36 @@ function splitToSize(text, max) {
 }
 
 /**
+ * Walk a source ONCE and record every heading with its char offset
+ * (ADR-014 D1). PURE — no I/O, no LLM, deterministic: the same bytes always
+ * produce the same map, which is the whole basis of the verbatim-slice
+ * invariant (SC-019).
+ *
+ * `start` is the offset of the heading's own `#` character; `end` is the
+ * start of the NEXT heading, or `sourceLength` for the last one. A chapter
+ * body is therefore a contiguous `[start, end)` slice of `raw/<source>.md` —
+ * the full original, never the chunk files, which are a read-cache for the
+ * agent and not the storage substrate (D2).
+ *
+ * @param {string} content
+ * @returns {{headings:{index:number,level:number,text:string,start:number,end:number}[], sourceLength:number}}
+ */
+function buildHeadingMap(content) {
+  const text = String(content == null ? "" : content);
+  const headings = [];
+  let offset = 0;
+  for (const line of text.split("\n")) {
+    const m = HEADING_LINE.exec(line);
+    if (m) headings.push({ index: headings.length, level: m[1].length, text: m[2].trim(), start: offset, end: 0 });
+    offset += line.length + 1; // + the "\n" that split() consumed
+  }
+  for (let i = 0; i < headings.length; i++) {
+    headings[i].end = i + 1 < headings.length ? headings[i + 1].start : text.length;
+  }
+  return { headings, sourceLength: text.length };
+}
+
+/**
  * Split a markdown source into bounded chunks (ADR-012). PURE — no I/O.
  *
  * 1. A source that already fits in `maxChunkSize` is ONE chunk, untouched,
@@ -1935,9 +2007,17 @@ function splitToSize(text, max) {
  * 3. A section over the bound is split again at paragraph boundaries, and a
  *    paragraph over the bound at sentence boundaries.
  *
+ * 4. Every chunk ALSO carries `headings` (ADR-014 D1): the GLOBAL indices
+ *    (into `buildHeadingMap(content).headings`) of the headings visible in
+ *    that chunk, PLUS the one heading that comes immediately after the
+ *    chunk's content — the boundary heading. The agent references a chapter
+ *    by one of those integers instead of re-typing heading text, and the
+ *    boundary entry is what makes a `toHeading` merge always expressible
+ *    from the chunk in hand.
+ *
  * @param {string} content
  * @param {number} [maxChunkSize]
- * @returns {{chunk:number,total:number,headingPath:string[],content:string}[]}
+ * @returns {{chunk:number,total:number,headingPath:string[],headings:number[],content:string}[]}
  *          Always at least one chunk; `chunk` is 1-based and `total` is the
  *          same on every element.
  */
@@ -1945,20 +2025,29 @@ function chunkSource(content, maxChunkSize) {
   const text = String(content == null ? "" : content);
   const max =
     Number.isFinite(maxChunkSize) && maxChunkSize > 0 ? Math.floor(maxChunkSize) : DEFAULT_MAX_CHUNK_SIZE;
+  const { headings: allHeadings } = buildHeadingMap(text);
 
-  if (text.length <= max) return [{ chunk: 1, total: 1, headingPath: [], content: text }];
+  // The whole source in one chunk: every heading in it is an in-chunk
+  // heading, and there is no heading after it to be a boundary.
+  if (text.length <= max) {
+    return [{ chunk: 1, total: 1, headingPath: [], headings: allHeadings.map((h) => h.index), content: text }];
+  }
 
   const sections = [];
   const stack = []; // {level, text} — the headings open at this point
   let sectionLines = [];
   let sectionPath = [];
+  // The GLOBAL index of the heading that opened the current section; -1
+  // while we are still in the headingless preamble.
+  let headingIndex = -1;
+  let headingsSeen = 0;
   const closeSection = () => {
     const body = sectionLines.join("\n");
-    if (body.trim()) sections.push({ headingPath: sectionPath.slice(), content: body });
+    if (body.trim()) sections.push({ headingPath: sectionPath.slice(), content: body, headingIndex });
   };
 
   for (const line of text.split("\n")) {
-    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    const heading = HEADING_LINE.exec(line);
     if (!heading) {
       sectionLines.push(line);
       continue;
@@ -1969,23 +2058,37 @@ function chunkSource(content, maxChunkSize) {
     stack.push({ level, text: heading[2].trim() });
     sectionPath = stack.map((h) => h.text);
     sectionLines = [line];
+    headingIndex = headingsSeen;
+    headingsSeen++;
   }
   closeSection();
-  if (!sections.length) sections.push({ headingPath: [], content: text });
+  if (!sections.length) sections.push({ headingPath: [], content: text, headingIndex: -1 });
 
   const pieces = [];
   for (const section of sections) {
-    for (const piece of splitToSize(section.content, max)) {
-      pieces.push({ headingPath: section.headingPath, content: piece });
-    }
+    const split = splitToSize(section.content, max);
+    split.forEach((piece, ordinal) => {
+      // Only the FIRST piece of a section carries that section's heading
+      // line (splitToSize packs it with the content that follows it); a
+      // continuation piece has no heading of its own, but its boundary is
+      // still the next heading after the section it belongs to.
+      const inChunk = ordinal === 0 && section.headingIndex >= 0 ? [section.headingIndex] : [];
+      const boundary = section.headingIndex + 1;
+      pieces.push({
+        headingPath: section.headingPath,
+        headings: boundary < allHeadings.length ? [...inChunk, boundary] : inChunk,
+        content: piece,
+      });
+    });
   }
   const total = pieces.length;
-  return pieces.map((p, i) => ({ chunk: i + 1, total, headingPath: p.headingPath, content: p.content }));
+  return pieces.map((p, i) => ({ chunk: i + 1, total, headingPath: p.headingPath, headings: p.headings, content: p.content }));
 }
 
 /**
- * Write the chunks of one document to `.chunks/<docId>/NNN.md` and return the
- * paths the tool response hands the agent.
+ * Write the chunks of one document to `.chunks/<docId>/NNN.md` — plus the
+ * heading map to `.chunks/<docId>/headings.json` (ADR-014 W2) — and return
+ * the chunk paths the tool response hands the agent.
  *
  * CLEAR-THEN-REWRITE. `.chunks/` is a derived cache, not provenance: the
  * append-only rule (NFR-006) covers `raw/`, where the full source already
@@ -1993,12 +2096,20 @@ function chunkSource(content, maxChunkSize) {
  * the previous, longer split lying around for the agent to read as part of
  * the new document.
  */
-async function writeChunks(bDir, docId, chunks) {
+async function writeChunks(bDir, docId, chunks, headingMap) {
   validateConceptId(docId);
   const docDir = safeJoin(bDir, CHUNKS_DIR, docId);
+  const headingsPath = safeJoin(docDir, HEADINGS_FILE);
+  // ONE clear-then-write window for the chunks AND the heading map they were
+  // computed from (ADR-014 Risk #2). Removing the directory already takes
+  // the old headings.json with it; the explicit unlink below is what keeps
+  // that true if the remove above is ever relaxed to a per-file clear — a
+  // stale map is worse than a missing one, because it mis-slices silently
+  // instead of failing loud.
   if (await vfs.exists(docDir)) await vfs.remove(docDir);
   await vfs.mkdir(safeJoin(bDir, CHUNKS_DIR)).catch(() => {});
   await vfs.mkdir(docDir).catch(() => {});
+  if (await vfs.exists(headingsPath)) await vfs.remove(headingsPath).catch(() => {});
 
   const written = [];
   for (const chunk of chunks) {
@@ -2007,11 +2118,304 @@ async function writeChunks(bDir, docId, chunks) {
       chunk: chunk.chunk,
       total: chunk.total,
       headingPath: Array.isArray(chunk.headingPath) ? chunk.headingPath : [],
+      // The global heading indices this chunk can reference (ADR-014 D1) —
+      // the agent's whole vocabulary for `sourceRange.startHeading`.
+      headings: Array.isArray(chunk.headings) ? chunk.headings : [],
     };
     await vfs.writeText(safeJoin(docDir, name), stringifyDocument(frontmatter, chunk.content));
     written.push({ path: `${CHUNKS_DIR}/${docId}/${name}`, ordinal: chunk.chunk, total: chunk.total });
   }
+
+  if (headingMap) {
+    await vfs.writeText(
+      headingsPath,
+      JSON.stringify(
+        {
+          sourceFile: headingMap.sourceFile,
+          sourceLength: headingMap.sourceLength,
+          headings: headingMap.headings,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  }
   return written;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  THE BODY-EXTRACTION WRITE PATH (FR-060 / SC-019, ADR-014 Part A)
+// ════════════════════════════════════════════════════════════════════════
+//
+// The agent used to re-emit each chapter's body as output tokens — bytes
+// that were already on disk at `raw/<source>.md`. Now it emits only what it
+// AUTHORS (frontmatter + asset interpretations) plus a `sourceRange` of
+// integers, and THIS code assembles the body: a verbatim char slice of the
+// un-chunked original, with the authored interpretations inserted at their
+// asset lines.
+//
+// THE INVARIANT (SC-019): the stored body, with the inserted interpretation
+// lines removed (`stripInterpretations`), is byte-for-byte the slice. Every
+// placement below — exact match, filename match, appended fallback — only
+// ADDS removable lines around the slice; nothing rewrites a byte of it.
+
+/** The one line shape every inserted interpretation has — and the one thing
+ *  `stripInterpretations` removes. Changing it changes both. */
+const INTERPRETATION_PREFIX = "> **Interpretation (LLM, at ingest):**";
+
+/** A markdown image/asset link anywhere in a line. */
+const ASSET_LINK = /!\[([^\]]*)\]\(\s*([^)]+?)\s*\)/;
+
+/** The marker that makes an inserted link REMOVABLE without guesswork. An
+ *  HTML comment renders as nothing, and no source can contain this line —
+ *  which is what lets `stripInterpretations` be exact rather than heuristic
+ *  about a `raw/assets/…` link that was in the source to begin with. */
+const INTERPRETATION_ASSET_MARK = "<!-- interpretation-asset -->";
+
+/** A line that is NOTHING BUT a link this module inserted to a stored asset. */
+const LOCAL_ASSET_LINE = new RegExp(`^!\\[[^\\]]*\\]\\(\\s*raw/assets/[^)\\s]+\\s*\\)\\s*${INTERPRETATION_ASSET_MARK}\\s*$`);
+
+/** The stored filename `addRawAsset` gives a downloaded asset. Shared, so a
+ *  rewritten link and the file it points at can never disagree. */
+function assetFileName(locator) {
+  return path.basename(String(locator || "")).split("?")[0].replace(/[^A-Za-z0-9._-]+/g, "-");
+}
+
+/** The asset's filename AS THE SOURCE SPELLS IT — percent-escapes and all.
+ *  This is the matching key, deliberately NOT `assetFileName`: the stored
+ *  name is sanitized (`canary%20run.mp4` -> `canary-20run.mp4`), so matching
+ *  on it would never find the source line it came from. */
+function sourceFileName(locator) {
+  return path.basename(String(locator || "").split(/[?#]/)[0]);
+}
+
+/** The target inside a markdown asset link, if the line has one. */
+function assetTargetOf(line) {
+  const m = ASSET_LINK.exec(String(line || ""));
+  return m ? { caption: m[1], target: String(m[2]).split(/\s+/)[0] } : null;
+}
+
+/** One line of prose — an interpretation is inserted as a single blockquote
+ *  line, so an embedded newline would silently end the quote. */
+function oneLine(text) {
+  return String(text == null ? "" : text).trim().replace(/\s*\n+\s*/g, " ");
+}
+
+/**
+ * Read + VALIDATE a document's chunk-time heading map.
+ *
+ * Fail loud, never silently mis-slice (ADR-014 Risk #2). A map that
+ * disagrees with the bytes it claims to describe would hand back a slice
+ * taken at the wrong offsets — a corrupted chapter that looks fine. Both
+ * disagreements it can detect (byte length, heading count) therefore throw,
+ * and `okf_lint` reports the same drift before a write ever hits it.
+ */
+async function readHeadingMap(bDir, docId, { sourceFile } = {}) {
+  validateConceptId(docId);
+  const mapPath = safeJoin(bDir, CHUNKS_DIR, docId, HEADINGS_FILE);
+  const raw = await vfs.readText(mapPath).catch(() => null);
+  if (raw == null) {
+    throw new Error(
+      `no heading map at ${CHUNKS_DIR}/${docId}/${HEADINGS_FILE} — a chapter can only be written from a sourceRange for a document registered by okf_add_raw_source (which writes it). Re-register the source, or pass the chapter body in \`body\`.`,
+    );
+  }
+  let map;
+  try {
+    map = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`heading map ${CHUNKS_DIR}/${docId}/${HEADINGS_FILE} is not valid JSON: ${err.message}`);
+  }
+  const file = sourceFile || (map && map.sourceFile);
+  if (!file) throw new Error(`heading map ${CHUNKS_DIR}/${docId}/${HEADINGS_FILE} names no sourceFile`);
+  if (!Array.isArray(map.headings)) throw new Error(`heading map ${CHUNKS_DIR}/${docId}/${HEADINGS_FILE} has no headings array`);
+  if (!Number.isFinite(map.sourceLength)) {
+    throw new Error(`heading map ${CHUNKS_DIR}/${docId}/${HEADINGS_FILE} records no sourceLength — it cannot be checked against ${file}`);
+  }
+
+  const text = await vfs.readText(safeJoin(bDir, file)).catch(() => null);
+  if (text == null) throw new Error(`heading map ${CHUNKS_DIR}/${docId}/${HEADINGS_FILE} points at ${file}, which is not in the bundle`);
+  if (text.length !== map.sourceLength) {
+    throw new Error(
+      `heading map drift: ${CHUNKS_DIR}/${docId}/${HEADINGS_FILE} was built for a ${map.sourceLength}-char ${file}, which is now ${text.length} chars. Re-register the source with okf_add_raw_source so the map and the bytes agree.`,
+    );
+  }
+  const fresh = buildHeadingMap(text);
+  if (fresh.headings.length !== map.headings.length) {
+    throw new Error(
+      `heading map drift: ${CHUNKS_DIR}/${docId}/${HEADINGS_FILE} records ${map.headings.length} heading(s), ${file} has ${fresh.headings.length}. Re-register the source with okf_add_raw_source.`,
+    );
+  }
+  return { ...map, sourceFile: file, text };
+}
+
+/**
+ * Resolve a `sourceRange` to a `[start, end)` char range (ADR-014 D1/D6).
+ * PURE — offsets in, offsets out.
+ *
+ * Accepts the flat shape the tool schema declares (`{startHeading,
+ * toHeading, whole}`) and the nested `endRule` spelling ADR-014 writes
+ * (`{startHeading, endRule:{toHeading}}`) — same semantics either way, so an
+ * agent that read the ADR and an agent that read the schema both work.
+ */
+function resolveSourceSlice(sourceRange, headings, sourceLength) {
+  const range = sourceRange || {};
+  const endRule = range.endRule && typeof range.endRule === "object" ? range.endRule : {};
+  if (range.whole === true || endRule.whole === true) return { start: 0, end: sourceLength };
+
+  const startHeading = range.startHeading;
+  if (!Number.isInteger(startHeading)) {
+    throw new Error("sourceRange needs an integer `startHeading` (or `whole: true`) — the global heading index from the chunk's `headings:` frontmatter");
+  }
+  // The headingless preamble: from the very start of the source to just
+  // before the first heading (D6). A source with no headings at all has no
+  // preamble boundary, so -1 means the whole thing.
+  if (startHeading === -1) return { start: 0, end: headings.length ? headings[0].start : sourceLength };
+
+  if (startHeading < 0 || startHeading >= headings.length) {
+    throw new Error(`sourceRange.startHeading ${startHeading} is out of range — the source has ${headings.length} heading(s) (0..${headings.length - 1})`);
+  }
+  const start = headings[startHeading].start;
+
+  const toHeading = Number.isInteger(range.toHeading) ? range.toHeading : Number.isInteger(endRule.toHeading) ? endRule.toHeading : null;
+  if (toHeading !== null) {
+    if (toHeading <= startHeading || toHeading > headings.length) {
+      throw new Error(`sourceRange.toHeading ${toHeading} must be a later heading than startHeading ${startHeading} (and at most ${headings.length})`);
+    }
+    // `toHeading === headings.length` is the legal "to the end" spelling.
+    return { start, end: toHeading === headings.length ? sourceLength : headings[toHeading].start };
+  }
+
+  // The default end rule: the next heading of the SAME or a HIGHER level —
+  // the natural "one heading = one chapter" boundary. Resolved globally, so
+  // it terminates a section whose content runs past the chunk it was read
+  // in (D2) without the agent knowing where the chunk boundary fell.
+  const level = headings[startHeading].level;
+  for (let i = startHeading + 1; i < headings.length; i++) {
+    if (headings[i].level <= level) return { start, end: headings[i].start };
+  }
+  return { start, end: sourceLength };
+}
+
+/**
+ * Insert the agent's authored interpretations into a verbatim body slice
+ * (ADR-014 D3). Three deterministic placements, tried in order:
+ *
+ *   1. the line containing `assetLine` as an exact substring;
+ *   2. the line containing the asset's FILENAME (whitespace/encoding drift
+ *      between the two readers of the same VFS file — Risk #1);
+ *   3. appended at the end behind an `<!-- interpretation: … -->` marker
+ *      `okf_lint` can flag.
+ *
+ * The asset-URL rewrite (ADR-008/§7.5) is ADDITIVE here, not in-place: the
+ * source's own asset line is left byte-exact and the stored local copy is
+ * referenced by an inserted `![…](raw/assets/<docId>/<name>)` line directly
+ * above the blockquote. Rewriting the URL in place would edit the slice and
+ * break SC-019 — the invariant the whole protocol exists to guarantee —
+ * while the inserted line renders the stored asset just the same, and
+ * `extractAssets` reads the pair exactly as it reads an agent-written block.
+ */
+function insertInterpretations(body, interpretations, docId) {
+  const list = Array.isArray(interpretations) ? interpretations : [];
+  if (!list.length) return { body, placements: [] };
+
+  const lines = String(body == null ? "" : body).split("\n");
+  const placements = [];
+
+  const blockFor = (matchedLine, interpretation) => {
+    const out = [];
+    const link = assetTargetOf(matchedLine);
+    // Already a stored `raw/…` path? Then there is nothing to rewrite and a
+    // second link would just be noise.
+    if (link && !normalizeAssetTarget(link.target)) {
+      const name = assetFileName(link.target);
+      if (name) out.push(`![${link.caption || name}](raw/assets/${docId}/${name}) ${INTERPRETATION_ASSET_MARK}`);
+    }
+    out.push(`${INTERPRETATION_PREFIX} ${oneLine(interpretation) || "Interpretation unavailable — the asset could not be downloaded or interpreted at ingest."}`);
+    return out;
+  };
+
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const assetLine = String(item.assetLine == null ? "" : item.assetLine).trim();
+    const interpretation = item.interpretation;
+
+    let at = -1;
+    let how = "exact";
+    if (assetLine) at = lines.findIndex((l) => l.includes(assetLine));
+    if (at === -1 && assetLine) {
+      // Fallback: the filename as the SOURCE spells it (Risk #1 — the agent
+      // read the line through one VFS reader, this matches it through
+      // another, and the two can differ by whitespace or a re-typed caption).
+      const link = assetTargetOf(assetLine);
+      const name = sourceFileName(link ? link.target : assetLine);
+      if (name) {
+        at = lines.findIndex((l) => ASSET_LINK.test(l) && l.includes(name));
+        how = "filename";
+      }
+    }
+
+    if (at === -1) {
+      // Appended, marked, and still removable — the slice underneath is
+      // untouched, so the invariant holds here too.
+      const marker = `<!-- interpretation: ${assetLine.replace(/\s+/g, " ").replace(/--+>/g, "--&gt;")} (appended — asset line not matched verbatim) -->`;
+      lines.push(marker, ...blockFor(assetLine, interpretation));
+      placements.push({ assetLine, placement: "appended" });
+      continue;
+    }
+    lines.splice(at + 1, 0, ...blockFor(lines[at], interpretation));
+    placements.push({ assetLine, placement: how, line: at });
+  }
+  return { body: lines.join("\n"), placements };
+}
+
+/**
+ * THE INVERSE of `insertInterpretations` — remove every line this module
+ * inserts, leaving the verbatim slice. Exported because it is how SC-019 is
+ * CHECKED (by the tests, and by anyone auditing a stored chapter against
+ * `raw/`): a chapter body that does not strip back to a byte-exact slice of
+ * its source is a bug in the write path, and the check needs the removal
+ * rule to live next to the insertion rule rather than be re-guessed.
+ *
+ * A `raw/assets/…` link is removed ONLY when it carries the
+ * `<!-- interpretation-asset -->` mark this module writes on the links IT
+ * inserts — never on a `raw/assets/…` link that was in the source to begin
+ * with (a re-ingested bundle export is exactly such a source).
+ */
+function stripInterpretations(body) {
+  const lines = String(body == null ? "" : body).split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith(INTERPRETATION_PREFIX)) continue;
+    if (/^<!--\s*interpretation:[\s\S]*-->\s*$/.test(line)) continue;
+    if (LOCAL_ASSET_LINE.test(line)) continue;
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+/**
+ * Assemble a chapter's body from the SOURCE (ADR-014 W3) — the write path
+ * `okf_upsert_concept({sourceRange})` runs instead of taking a body the
+ * agent re-typed.
+ *
+ * Reads `.chunks/<docId>/headings.json` + `raw/<sourceFile>` and returns the
+ * assembled string. Writes NOTHING: the caller (`upsertConcept`) owns the
+ * write, so this stays a pure, unit-testable function over the VFS reads.
+ *
+ * @param {string} bDir             the bundle directory
+ * @param {string} docId            the document id (front half of `<docId>/<chId>`)
+ * @param {object} sourceRange      {startHeading|whole, toHeading?}
+ * @param {object[]} [interpretations] [{assetLine, interpretation}]
+ * @param {string} [sourceFile]     overrides the map's own `sourceFile`
+ * @returns {Promise<{body:string, sourceFile:string, start:number, end:number, slice:string, placements:object[]}>}
+ */
+async function chapterFromSourceRange(bDir, docId, sourceRange, interpretations, sourceFile) {
+  const map = await readHeadingMap(bDir, docId, { sourceFile });
+  const { start, end } = resolveSourceSlice(sourceRange, map.headings, map.sourceLength);
+  const slice = map.text.slice(start, end);
+  const { body, placements } = insertInterpretations(slice, interpretations, docId);
+  return { body, slice, sourceFile: map.sourceFile, start, end, placements };
 }
 
 /** The pipeline's own staging prefix (see `acquisitionFirstSteps`) — never part of a document id. */
@@ -2140,7 +2544,13 @@ async function addRawSource(bundleRoot, bundleName, { filename, content, sourceP
   let chunks = [];
   let chunkError = null;
   try {
-    chunks = await writeChunks(bDir, docId, chunkSource(content, chunkBound));
+    // The heading map rides the SAME pass and the same write window as the
+    // chunks (ADR-014 D1/D2): the source is already in memory and already
+    // being walked for heading boundaries, so recording the char offsets
+    // costs nothing — and it is what lets the write path slice a chapter
+    // body out of raw/ instead of having the agent re-emit it (FR-060).
+    const headingMap = { sourceFile: `raw/${finalName}`, ...buildHeadingMap(content) };
+    chunks = await writeChunks(bDir, docId, chunkSource(content, chunkBound), headingMap);
   } catch (err) {
     chunkError = err.message;
   }
@@ -2212,7 +2622,7 @@ async function addRawAsset(bundleRoot, bundleName, { docId, filename, sourcePath
   const bDir = bundleDir(bundleRoot, bundleName);
   if (!(await vfs.exists(bDir))) throw new Error(`bundle not found: ${bundleName}`);
 
-  const name = path.basename(filename || sourcePath || originUrl || "asset").split("?")[0].replace(/[^A-Za-z0-9._-]+/g, "-");
+  const name = assetFileName(filename || sourcePath || originUrl || "asset");
   const relPath = `raw/assets/${docId}/${name}`;
   const dest = safeJoin(bDir, relPath);
 
@@ -2400,6 +2810,28 @@ async function lintBundle(bundleRoot, bundleName) {
     }
   }
 
+  // 5. heading-map drift (ADR-014 Risk #2). The extractor fails LOUD on a
+  //    map that disagrees with the bytes it describes — which is right at
+  //    write time, but means the first symptom is a failed chapter write in
+  //    the middle of a run. Lint reports it up front instead, per document.
+  let headingMapDrift = 0;
+  const chunkDocs = await vfs.list(safeJoin(bDir, CHUNKS_DIR)).catch(() => []);
+  for (const e of chunkDocs) {
+    if (e.type !== "dir") continue;
+    const probe = await readHeadingMap(bDir, e.name).then(() => null, (err) => err);
+    if (!probe) continue;
+    // A document whose chunks pre-date the heading map simply has no map —
+    // that is the pre-ADR-014 state, not drift, and the body path still
+    // works for it. Only a map that CONTRADICTS raw/ is a finding.
+    if (/^no heading map at /.test(probe.message)) continue;
+    headingMapDrift++;
+    warnings.push({
+      check: "heading-map",
+      docId: e.name,
+      issue: `${probe.message} Until it is rebuilt, okf_upsert_concept({sourceRange}) will refuse to write chapters for this document.`,
+    });
+  }
+
   if (indexDrift || tocDrift) await rebuildDerived(bundleRoot, bundleName);
 
   return {
@@ -2413,6 +2845,7 @@ async function lintBundle(bundleRoot, bundleName) {
       brokenInlineAssets: brokenAssets,
       orphanChapters: orphans,
       linksDrift: linkDrift,
+      headingMapDrift,
     },
     rebuilt: !!(indexDrift || tocDrift),
     indexNeedsRegeneration: model.needsRegeneration,
@@ -2449,6 +2882,18 @@ function jobsPath(bundleRoot) {
   return safeJoin(bundleRoot, JOBS_DIR, JOBS_FILE);
 }
 
+/**
+ * Drop the hot map so the next `loadJobs` reads from disk again.
+ *
+ * The cache is module-level and NOT keyed by bundleRoot, so it has to be
+ * dropped whenever the root it was loaded for stops being the current one —
+ * a config change, or a test that wants a cold store. Nothing is lost:
+ * every mutation persists through `persistJobs` before this can matter.
+ */
+function resetJobStore() {
+  jobsState = null;
+}
+
 async function loadJobs(bundleRoot) {
   if (jobsState) return jobsState;
   const raw = await vfs.readText(jobsPath(bundleRoot)).catch(() => null);
@@ -2462,6 +2907,11 @@ async function loadJobs(bundleRoot) {
         // (GET /jobs/<id>, the app) is entitled to an array, not undefined.
         for (const job of parsed.jobs) {
           if (!Array.isArray(job.trajectory)) job.trajectory = [];
+          // The reaper's inactivity clock (FR-059) must survive a restart —
+          // it is persisted with the rest of the record, but a record
+          // written before the field existed comes back without it. Null,
+          // not undefined: the reaper falls back to startedAt/queuedAt.
+          if (job.lastEventAt === undefined) job.lastEventAt = null;
         }
         jobsState = { jobs: parsed.jobs, seq: Number(parsed.seq) || parsed.jobs.length };
         return jobsState;
@@ -3173,52 +3623,94 @@ function summaryFromOutput(output, toolCalls) {
   };
 }
 
+/** 30 minutes of SILENCE (FR-059/ADR-014 B1) — not 30 minutes of running. */
+const DEFAULT_INACTIVITY_MS = 30 * 60 * 1000;
+/** 6 hours of total runtime, whatever the run is doing (ADR-014 B3). */
+const DEFAULT_MAX_TOTAL_MS = 6 * 60 * 60 * 1000;
+
+/** "90 minute(s)" / "6 hour(s)" — the bound, in the unit a human would say it in. */
+function humanBound(ms) {
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 90) return `${minutes} minute(s)`;
+  const hours = ms / 3600000;
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} hour(s)`;
+}
+
 /**
- * THE STALE REAPER (FR-049 / ADR-006).
+ * THE STALE REAPER (FR-049 / FR-059, ADR-006 + ADR-014 Part B).
  *
  * `driveRun` writes a terminal state on every path it controls. What it
- * cannot cover is the process dying mid-run: a worker restart, a BOS reload,
- * a killed Next.js. Those leave a job sitting in `queued`/`running` forever,
- * and a Jobs tab with a permanently-spinning row is worse than one that says
- * plainly that the run was lost.
+ * cannot cover is a run that stops reporting: the process dying mid-run (a
+ * worker restart, a BOS reload, a killed Next.js), a provider socket that
+ * went quiet, or a run that is alive but getting nowhere. Those leave a job
+ * sitting in `queued`/`running` forever, and a Jobs tab with a permanently-
+ * spinning row is worse than one that says plainly that the run was lost.
  *
- * So: any job still non-terminal that has been SILENT for `staleJobMs` — no
- * trajectory event in that window, not merely running that long — is marked
- * `failed` with an honest "stale" reason. Only `queued`/`running` jobs are
- * candidates — a `cancelled` job is already terminal and is never reaped
- * (nor re-described as a failure, which is the point of the state). Run on a timer AND as a sweep on
- * (re)start, because a restart is exactly the event that orphans jobs and
- * waiting a full interval to admit it is the wrong default.
+ * TWO bounds, because one cannot catch both failure shapes:
+ *
+ *   • INACTIVITY (`jobFinalizeTimeoutMs`/`staleJobMs`, default 30 min) —
+ *     `now - lastEventAt`. Catches a run that went SILENT. Measured from the
+ *     last trajectory event, never from `startedAt`: a 51-chunk ingest
+ *     legitimately runs for 60-100 minutes, and an age-based bound killed it
+ *     at 30 while it was still emitting tool calls.
+ *   • TOTAL RUNTIME (`maxTotalTimeoutMs`, default 6 h) — `now - startedAt`.
+ *     Catches the shape inactivity CANNOT see: a run that keeps emitting
+ *     events (so `lastEventAt` keeps refreshing) while making no progress —
+ *     a slow-repeating failure, two minutes per failed step, forever.
+ *
+ * Either bound tripping reaps the job, and the `error` says WHICH — the two
+ * observations are different facts about the run, and a message that guesses
+ * the wrong one sends the user looking in the wrong place.
+ *
+ * Only `queued`/`running` jobs are candidates — a `cancelled` job is already
+ * terminal and is never reaped (nor re-described as a failure, which is the
+ * point of the state). Run on a timer AND as a sweep on (re)start, because a
+ * restart is exactly the event that orphans jobs and waiting a full interval
+ * to admit it is the wrong default.
+ *
+ * @param {string} bundleRoot
+ * @param {number|{inactivityMs?:number,maxTotalMs?:number}} [bounds]
+ *        A bare number is the inactivity bound (the pre-ADR-014 signature,
+ *        still used by every existing caller).
  */
-async function reapStaleJobs(bundleRoot, staleJobMs) {
-  const cutoffMs = Number.isFinite(staleJobMs) && staleJobMs > 0 ? staleJobMs : 30 * 60 * 1000;
+async function reapStaleJobs(bundleRoot, bounds) {
+  const opts = typeof bounds === "object" && bounds !== null ? bounds : { inactivityMs: bounds };
+  const positive = (v, fallback) => (Number.isFinite(v) && v > 0 ? v : fallback);
+  const cutoffMs = positive(opts.inactivityMs, DEFAULT_INACTIVITY_MS);
+  const maxTotalMs = positive(opts.maxTotalMs, DEFAULT_MAX_TOTAL_MS);
   const state = await loadJobs(bundleRoot);
   const now = Date.now();
   const reaped = [];
 
   for (const job of state.jobs) {
     if (job.status !== "queued" && job.status !== "running") continue;
-    // INACTIVITY, not age. A 51-chunk ingest legitimately runs for 60-100
-    // minutes; measured from `startedAt` the reaper killed it at 30 while it
-    // was still emitting tool calls. `lastEventAt` is the liveness stamp
-    // `appendJobTrajectory` writes per captured event, so the window now
-    // means "has said nothing for 30 minutes" — which a live run never hits
-    // and a dead one (BOS restart, crashed agent) hits immediately.
+    // `lastEventAt` is the liveness stamp `appendJobTrajectory` writes per
+    // captured event; `startedAt` covers the window before the run's first
+    // event, and `queuedAt` the window before it started at all.
     const since = Date.parse(job.lastEventAt || job.startedAt || job.queuedAt || "");
-    if (Number.isNaN(since)) continue;
-    const idleMs = now - since;
-    if (idleMs < cutoffMs) continue;
-    const minutes = Math.round(idleMs / 60000);
-    await updateJob(bundleRoot, job.id, {
-      status: "failed",
-      error:
-        `stale: the run was still "${job.status}" but produced nothing for ${minutes} minute(s), past the ${Math.round(cutoffMs / 60000)}-minute ` +
-        `inactivity limit. The service did not see it finish — most likely BOS restarted while it was running. Anything it managed to write is ` +
-        `already in the bundle (writes are atomic and the derived index rebuilds from content); re-run okf_ingest to finish the job.`,
-    }).catch(() => {});
+    const began = Date.parse(job.startedAt || job.queuedAt || "");
+    const idleMs = Number.isNaN(since) ? null : now - since;
+    const totalMs = Number.isNaN(began) ? null : now - began;
+
+    let error = null;
+    if (idleMs !== null && idleMs >= cutoffMs) {
+      error =
+        `stale: the run was still "${job.status}" but made no progress (no trajectory event) for ${humanBound(idleMs)}, past the ` +
+        `${humanBound(cutoffMs)} inactivity limit. The run was alive but silent — a long model generation, a provider stall, or a BOS restart ` +
+        `that dropped the stream. The last captured event is in the trajectory; a run still producing events is not stale. Anything it managed ` +
+        `to write is already in the bundle (writes are atomic and the derived index rebuilds from content); re-run okf_ingest to finish the job.`;
+    } else if (totalMs !== null && totalMs >= maxTotalMs) {
+      error =
+        `stale: the run was still "${job.status}" after ${humanBound(totalMs)} — it exceeded the maximum total runtime (${humanBound(maxTotalMs)}) ` +
+        `without reaching a terminal state. The run was active but not progressing (likely a slow or repeating failure); its trajectory shows what ` +
+        `it kept doing. Anything it managed to write is already in the bundle; re-run okf_ingest to finish the job.`;
+    }
+    if (!error) continue;
+
+    await updateJob(bundleRoot, job.id, { status: "failed", error }).catch(() => {});
     reaped.push(job.id);
   }
-  return { reaped, count: reaped.length, cutoffMs };
+  return { reaped, count: reaped.length, cutoffMs, maxTotalMs };
 }
 
 module.exports = {
@@ -3258,6 +3750,17 @@ module.exports = {
   docIdForSource,
   DEFAULT_MAX_CHUNK_SIZE,
   CHUNKS_DIR,
+  // the body-extraction write path (FR-060/SC-019, ADR-014 Part A) —
+  // exported for the unit tests that hold the verbatim-slice invariant
+  buildHeadingMap,
+  readHeadingMap,
+  resolveSourceSlice,
+  insertInterpretations,
+  stripInterpretations,
+  chapterFromSourceRange,
+  HEADINGS_FILE,
+  INTERPRETATION_PREFIX,
+  INTERPRETATION_ASSET_MARK,
   readAsset,
   findSource,
   normalizeSourceKey,
@@ -3276,6 +3779,9 @@ module.exports = {
   cancelJob,
   deleteJob,
   reapStaleJobs,
+  resetJobStore,
+  DEFAULT_INACTIVITY_MS,
+  DEFAULT_MAX_TOTAL_MS,
   // the auto-trigger (THE single ingest path)
   triggerIngest,
   acquisitionFirstSteps,

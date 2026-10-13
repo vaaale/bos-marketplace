@@ -126,6 +126,14 @@ function openDelegateStream({ task, agent }) {
  *        here — a line this module does not act on is still a line the user
  *        may need to debug a run, and deciding what matters is the renderer's
  *        job, not the reader's.
+ *
+ *        It is ALSO the reaper's liveness signal (FR-059, ADR-014 Part B):
+ *        the launcher's onEvent stamps `job.lastEventAt` on every line that
+ *        comes through here and persists it with the record, so "stale"
+ *        means "has said nothing for the inactivity bound" rather than
+ *        "has been running that long". Every event counts — reasoning
+ *        deltas and tool results alike — which is why this fires before any
+ *        of the early returns below rather than per event KIND.
  * @returns {Promise<{ok: boolean, output?: string, endedReason?: string, error?: string, runId?: string, toolCalls: number}>}
  *          Resolves with the run's own terminal signal. NEVER rejects for a
  *          run that failed — a failed run is a result, not an exception. It

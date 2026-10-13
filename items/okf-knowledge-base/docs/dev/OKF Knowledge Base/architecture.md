@@ -142,7 +142,12 @@ That route is not OKF-specific — it is the HTTP face of BOS's in-process `abor
 
 `driveRun` writes a terminal state on every path it controls. It cannot cover the process dying under it — a service restart, a BOS reload, a killed Next.js. Those orphan a job in `queued`/`running` with nobody watching.
 
-`core.reapStaleJobs(bundleRoot, staleJobMs)` marks any non-terminal job older than `staleJobMs` (default 30 min) as `failed` with a "stale" reason that says what probably happened. It runs **on a timer** (every 5 minutes, `unref`'d so it never holds the worker open) **and as a sweep on every (re)start**.
+`core.reapStaleJobs(bundleRoot, {inactivityMs, maxTotalMs})` marks a non-terminal job `failed` with a "stale" reason when **either** bound trips (FR-059, ADR-014 Part B):
+
+- **inactivity** — `now - job.lastEventAt > staleJobMs` (a.k.a. `jobFinalizeTimeoutMs`, default 30 min). `lastEventAt` is stamped by `appendJobTrajectory` on every captured NDJSON event and persisted with the record, so the bound means "has said nothing for 30 minutes", never "has been running for 30 minutes" — a long ingest that keeps emitting tool calls is never reaped.
+- **total runtime** — `now - job.startedAt > maxTotalTimeoutMs` (default 6 h). The backstop inactivity cannot provide: a run that keeps emitting events while repeating the same failure refreshes `lastEventAt` forever.
+
+The `error` names the bound that actually tripped — the inactivity message lists a BOS restart as one possible cause among a long generation and a provider stall rather than asserting it. Terminal jobs (completed/cancelled/failed) are never candidates. It runs **on a timer** (every 5 minutes, `unref`'d so it never holds the worker open) **and as a sweep on every (re)start**.
 
 The startup sweep is the important half: a restart is precisely the event that orphans jobs, and the first thing a service should do about jobs it finds `running` — when it knows for a fact it is running none of them — is admit they are lost.
 

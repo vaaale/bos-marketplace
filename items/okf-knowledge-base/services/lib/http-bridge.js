@@ -37,6 +37,12 @@
 //                                               -> core.addRawSource: register
 //                                                  into raw/ AND pre-split into
 //                                                  .chunks/ (ADR-012)
+//   POST   /bundles/<b>/concept {id, title?, body?, frontmatter?,
+//          sourceRange?, interpretations?}      -> core.upsertConcept: the
+//                                                  REST face of the write
+//                                                  okf_upsert_concept runs,
+//                                                  including the ADR-014
+//                                                  body-extraction path
 //   POST   /bundles/<b>/import                  -> { files } | { sourcePath }
 //   GET    /bundles/<b>/export                  -> { name, files, assets }
 //   POST   /jobs  {bundle, source, maxDepth?, maxWorkers?}
@@ -374,6 +380,26 @@ function createRequestHandler(ctx) {
             title: body.title,
             originUrl: body.originUrl,
             maxChunkSize: Number.isFinite(body.maxChunkSize) ? body.maxChunkSize : defaults && defaults.maxChunkSize,
+          }));
+        }
+
+        // POST /bundles/<b>/concept — the REST face of core.upsertConcept,
+        // the SAME capability okf_upsert_concept dispatches (ADR-003: one
+        // capability, two surfaces). It adds nothing to the 21-tool agent
+        // surface, and it is how the e2e suite drives the body-extraction
+        // write path (FR-060/SC-019) end to end: the okf_* tools have no
+        // HTTP face, so without this the verbatim-slice invariant could only
+        // be asserted against the core in-process, never against the running
+        // service that actually writes the file.
+        if (bundle && req.method === "POST" && section === "concept" && parts.length === 3) {
+          const body = await readJsonBody(req);
+          if (!body.id) return sendJson(res, 400, { error: "id is required" });
+          return sendJson(res, 201, await core.upsertConcept(bundleRoot, bundle, body.id, {
+            title: body.title,
+            body: body.body,
+            frontmatter: body.frontmatter,
+            sourceRange: body.sourceRange,
+            interpretations: body.interpretations,
           }));
         }
 

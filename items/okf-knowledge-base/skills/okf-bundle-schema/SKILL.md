@@ -117,7 +117,7 @@ person_terms: [María Quispe]
 
 ## The inline-asset block
 
-For every **non-HTML** asset in a chapter's scope: download a local immutable copy into `raw/assets/<docId>/`, interpret it with `view_image` / `video_keyframes`, and write the link with the interpretation directly beneath:
+For every **non-HTML** asset in a chapter's scope: download a local immutable copy into `raw/assets/<docId>/`, interpret it with `view_image` / `video_keyframes`, and hand the interpretation to the chapter write as an `interpretations` entry (see *The chapter write protocol*). What ends up **stored** is the link with the interpretation directly beneath it:
 
 ```markdown
 ![Canary rollout console](raw/assets/deployment/canary-rollback-demo.mp4)
@@ -125,7 +125,7 @@ For every **non-HTML** asset in a chapter's scope: download a local immutable co
 > **Interpretation (LLM, at ingest):** Screen-capture of the deploy console: the canary pod set is bumped 0→5%, error-rate and p99 sparklines render live, and when the 5xx threshold trips an "Auto-rollback armed" banner appears and pods drain back to 0%. The clip demonstrates that rollback is automatic and threshold-gated, not a manual step.
 ```
 
-- The path is **bundle-relative** (`raw/assets/…`).
+- The path is **bundle-relative** (`raw/assets/…`) — and on an ingested chapter the **service** writes that line, from the `assetLine` you copied out of the chunk. You pass `{assetLine, interpretation}`; you never compose the block.
 - The blockquote's first line starts `**Interpretation` — that is what makes it parse as the asset's interpretation rather than an ordinary quote.
 - **Ordinary HTML hyperlinks stay remote references.** Only non-HTML artifacts become local copies.
 - A failed download or interpretation still gets a block, marked unavailable, and is counted in the run summary. It does not fail the document.
@@ -138,7 +138,7 @@ The point is that the interpretation is written **once, at ingest, as stored tex
 2. **Acquire the source with `output_path` pinned.** URL → `web_fetch({url, output_path})`; PDF/DOCX/PPTX/XLSX → `file_to_markdown({path, output_path})`; plain text → straight to `okf_add_raw_source({sourcePath})`. Then `okf_add_raw_source` registers it into `raw/`, which is append-only and never edited. Dropping `output_path` and passing the document back as `content` re-emits the whole thing as output tokens — it is the one mistake that makes this pipeline pointless.
 3. **Read the source one chunk at a time** — see *Chunks* below. `okf_add_raw_source`'s response carries `chunks`; read those, not the whole `rawFile`.
 4. Decide chapter boundaries at the source's headings. No headings = one chapter.
-5. Upsert the document stub (`type: document`, with the original URL in `sources`, and the **author** in `person_terms`), then each chapter with `parent` / `concepts` / `summary` — plus `person_terms` for any named key figure the chapter is about.
+5. Upsert the document stub (`type: document`, with the original URL in `sources`, and the **author** in `person_terms`), then each chapter with `parent` / `concepts` / `summary` — plus `person_terms` for any named key figure the chapter is about. A chapter that came from a source is written **metadata-only**, with a `sourceRange` instead of a body: see *The chapter write protocol*.
 6. Download, interpret and inline every non-HTML asset.
 7. Link new chapters to the existing ones they genuinely relate to.
 8. Finish with an honest summary (below).
@@ -166,6 +166,9 @@ total: 12
 headingPath:
   - "Part II: Numerical Methods"
   - "Section 4: Spectral Methods"
+headings:
+  - 11
+  - 12
 ---
 ## Section 4: Spectral Methods
 
@@ -179,9 +182,41 @@ headingPath:
 3. Write the **document stub after the first chunk** (by then the title, author and shape are known).
 4. Write the **TOC after the last chunk**, and let the index rebuild then — the whole-document work happens once, at the end, not once per chunk.
 
+**`headings` is the chunk's reference vocabulary.** It lists the **global** indices — into the document's heading map, `.chunks/<docId>/headings.json` — of the headings *in* this chunk plus the one immediately *after* it. Those integers are how a chapter write names its part of the source (*The chapter write protocol*). They are global, not chunk-local, so a `toHeading` merge and a section that runs past the chunk boundary both resolve correctly. Never count headings yourself and never re-type heading text: copy an index out of this list.
+
 **`headingPath` is positional context, not a chapter list.** It is the stack of headings open at that point in the document, deepest last, so you know where you are without having re-read what came before. A chunk is a **context window**: the chapter decomposition is still yours, one chunk may contain several chapters, and a section split across two chunks is still **one** chapter — carry it and write it once, when its last piece has been read.
 
 A source that fits inside `maxChunkSize` comes back as a **single chunk** with an empty `headingPath` — identical handling, no special case.
+
+### The chapter write protocol — metadata in, body assembled by the service
+
+A chapter extracted from an ingested source is written **without its body**. The body already exists, byte-for-byte, at `raw/<source>.md`; re-emitting it as output tokens is the dominant cost of an ingest run and the longest event-less generation in it. So the agent emits what it **authored** and the service assembles the file:
+
+> **authored frontmatter + verbatim body slice + inserted interpretations** — and removing the interpretations leaves a byte-exact slice of `raw/<source>.md`. That invariant is the contract; it is what makes "the service wrote the body" safe to trust.
+
+```json
+{"bundle": "kb", "id": "<docId>/<chId>",
+ "sourceRange": {"startHeading": 11},
+ "frontmatter": {"type": "section", "parent": "<docId>", "title": "…", "concepts": ["…"],
+                 "person_terms": ["…"], "summary": "one line", "status": "draft", "sources": [{"id": "…", "uri": "…"}]},
+ "interpretations": [{"assetLine": "![Canary rollout console](https://cdn.example.com/canary-rollback-demo.mp4)",
+                      "interpretation": "Screen-capture of the deploy console: …"}]}
+```
+
+**`sourceRange`** — integers and a rule, never heading text:
+
+| shape | means |
+| --- | --- |
+| `{startHeading: n}` | from heading `n` to just before the next heading of the **same or a higher level** (`nextSameOrHigher`, the default end rule) — the normal one-heading-one-chapter case |
+| `{startHeading: n, toHeading: m}` | from heading `n` up to (not including) heading `m` — how two or more short sections are **merged** into one chapter |
+| `{whole: true}` | the entire source — the **no-heading** single-chapter case |
+| `{startHeading: -1}` | the **preamble**, everything before the first heading |
+
+`n` and `m` are always copied from the reading chunk's `headings:` list. The end rule is resolved against the whole source, so a section split across chunks is still one chapter with one `startHeading`.
+
+**`interpretations`** — `[{assetLine, interpretation}]`, one entry per inline asset. `assetLine` is the asset's markdown line **verbatim from the source** (original URL included); the `blockTemplate` returned by `okf_add_raw_source` / `addRawAsset` is the reference for that string, not body to compose. The service matches it in the slice, links the stored local copy at `raw/assets/<docId>/<name>`, and inserts the interpretation blockquote beneath it. If the line cannot be matched the interpretation is appended behind an `<!-- interpretation: … -->` marker that `okf_lint` reports — it is never dropped.
+
+**One `okf_upsert_concept` call per chapter**, never batched: each call is both a bounded output and a liveness event for the run's inactivity timer. `body` stays available for a chapter genuinely **authored** rather than extracted; when `sourceRange` is present the body is extracted and any `body` passed alongside it is ignored. No tool is added for any of this — `okf_upsert_concept` simply accepts two more optional fields.
 
 ### Dedup — do not ingest the same thing twice
 

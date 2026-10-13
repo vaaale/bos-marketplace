@@ -119,16 +119,60 @@ const DECLARATIONS = [
     name: "okf_upsert_concept",
     description:
       "Create or update a concept file — a document stub (`type: document`) or a chapter (`type: section`). Frontmatter is MERGED ON FIELDS and unknown keys are preserved verbatim, so this is also how you set every lifecycle/trust/provenance field: `status` (draft/stable/deprecated), `stale_after`, `verified`, `sources`, `attestations`, and anything else the bundle uses. There are no separate field-setter tools.\n\n" +
-      "A chapter MUST carry `parent` (its document id), `concepts` (the terms it covers) and `summary` (one line) — those three are what the concept index and the document TOC are derived from, so a chapter missing them is written but unreachable by okf_search. Both derived artifacts are rebuilt automatically after every write.",
+      "A chapter MUST carry `parent` (its document id), `concepts` (the terms it covers) and `summary` (one line) — those three are what the concept index and the document TOC are derived from, so a chapter missing them is written but unreachable by okf_search. Both derived artifacts are rebuilt automatically after every write.\n\n" +
+      "WRITING A CHAPTER FROM AN INGESTED SOURCE: do NOT re-type the chapter's body. Pass `sourceRange` instead — the service slices the body verbatim out of `raw/<source>.md` using the heading map okf_add_raw_source built, and you emit only what you authored (the frontmatter, and `interpretations` for any inline asset). `startHeading` is a GLOBAL heading index, taken from the `headings:` frontmatter list of the chunk you are reading — you never count or re-type heading text. One call per chapter.",
     inputSchema: required(
       {
         bundle: STRING,
         id: { type: "string", description: "`<docId>` for a document stub, `<docId>/<chId>` for a chapter." },
         title: STRING,
-        body: { type: "string", description: "The full markdown body. Inline assets go in as a `![caption](raw/assets/<docId>/<file>)` link followed by a `> **Interpretation (LLM, at ingest):** …` blockquote." },
+        body: {
+          type: "string",
+          description:
+            "The full markdown body — for a chapter you are AUTHORING. Ignored when `sourceRange` is given: a chapter extracted from an ingested source must not be re-typed (that is the output-token cost FR-060 removes).",
+        },
+        // ADR-014 D4: ADDITIVE optional fields on the existing write tool —
+        // not a 22nd tool. A call without them behaves exactly as before.
+        sourceRange: {
+          type: "object",
+          description:
+            "Extract this chapter's body verbatim from the registered source instead of passing it in `body`. The document is resolved from the concept id's `<docId>` — there is no source id to pass.",
+          properties: {
+            startHeading: {
+              type: "integer",
+              description:
+                "The GLOBAL heading index this chapter starts at, copied from the `headings:` list in the chunk's frontmatter. Use -1 for the headingless preamble before the first heading. Omit only when `whole` is true.",
+            },
+            toHeading: {
+              type: "integer",
+              description:
+                "End the chapter just before THIS heading index (exclusive) — how you merge two or more short sections into one chapter. Omitted, the chapter ends at the next heading of the same or a higher level.",
+            },
+            whole: {
+              type: "boolean",
+              description: "Take the ENTIRE source as one chapter — the no-heading / single-chapter case.",
+            },
+          },
+        },
+        interpretations: {
+          type: "array",
+          description:
+            "The inline-asset interpretations YOU authored. The service inserts each one beneath its asset line in the extracted body and links the stored local copy — you do not write the body around it.",
+          items: required(
+            {
+              assetLine: {
+                type: "string",
+                description:
+                  "The asset's markdown line copied VERBATIM from the chunk you read (e.g. `![Canary console](https://…/canary.mp4)`) — it is matched as an exact substring of the source. The `blockTemplate` okf_add_raw_source/addRawAsset returned is the reference for this string.",
+              },
+              interpretation: { type: "string", description: "Your interpretation of the asset, as one line of prose." },
+            },
+            ["assetLine", "interpretation"],
+          ),
+        },
         frontmatter: {
           type: "object",
-          description: "Merged over the existing frontmatter. For a chapter: {type:'section', parent, concepts:[…], summary, status, stale_after?, sources:[…]}.",
+          description: "Merged over the existing frontmatter. For a chapter: {type:'section', parent, concepts:[…], summary, person_terms:[…], status, stale_after?, sources:[…]}.",
         },
       },
       ["bundle", "id"],
@@ -338,8 +382,18 @@ function makeHandlers(core) {
       core.listConcepts(ctx.bundleRoot, args.bundle, { type: args.type, status: args.status, kind: args.kind }),
 
     // ── Concepts ─────────────────────────────────────────────────────────
+    // ADR-014 D4 PRECEDENCE: `sourceRange` present -> the service extracts
+    // the body from raw/<source>.md via core.chapterFromSourceRange (the
+    // agent emitted no body at all); otherwise `body` is used exactly as
+    // given — the original path, unchanged for every existing caller.
     okf_upsert_concept: (args, ctx) =>
-      core.upsertConcept(ctx.bundleRoot, args.bundle, args.id, { title: args.title, body: args.body, frontmatter: args.frontmatter }),
+      core.upsertConcept(ctx.bundleRoot, args.bundle, args.id, {
+        title: args.title,
+        body: args.body,
+        frontmatter: args.frontmatter,
+        sourceRange: args.sourceRange,
+        interpretations: args.interpretations,
+      }),
     okf_delete_concept: (args, ctx) => core.deleteConcept(ctx.bundleRoot, args.bundle, args.id, { rewriteBacklinks: !!args.rewrite_backlinks }),
     okf_merge_concepts: (args, ctx) => core.mergeConcepts(ctx.bundleRoot, args.bundle, args.from, args.to),
 

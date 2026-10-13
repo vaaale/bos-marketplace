@@ -73,7 +73,7 @@ Process them **sequentially**:
 
 - **Write the document stub after the first chunk** — by then you know the document's title, author and shape.
 - **Write the TOC and rebuild the index after the last chunk** — i.e. do the whole-document work once, at the end, not once per chunk.
-- Each chunk file carries `chunk` / `total` / `headingPath` frontmatter. `headingPath` is the stack of headings open at that point in the document (deepest last), so you always know *where* you are without having read what came before.
+- Each chunk file carries `chunk` / `total` / `headingPath` / `headings` frontmatter. `headingPath` is the stack of headings open at that point in the document (deepest last), so you always know *where* you are without having read what came before. **`headings` is the list of GLOBAL heading indices you may reference** — the headings inside this chunk, plus the one immediately after it — and it is how you tell the service which part of the source a chapter is (see "The chapter write protocol").
 - **Never `file_read` the whole `rawFile` when `total > 1`.** That is the one move this entire mechanism exists to prevent: a large source read in one call is what kills the run on context before a single chapter is written.
 - A chunk is a **context window, not a chapter**. A heading-delimited section that was split across two chunks is still one chapter — carry it across and write it once, when you have read its last piece. Equally, one chunk may hold several chapters.
 - **For a source with a single chunk (`total: 1`) the process is identical to the non-chunked path** — read it, decompose it, write. There is no separate branch to take.
@@ -93,9 +93,48 @@ The chunk boundaries are **mechanical**, not editorial: never treat "one chunk" 
 `<docId>` here is always the `docId` from the `okf_add_raw_source` response (§1b) — never one you made up.
 
 - Stub: `okf_upsert_concept({bundle, id: "<docId>", frontmatter: {type: "document", title, summary, person_terms: ["<the author>"], sources: [{id, uri}]}})`.
-- Each chapter: `okf_upsert_concept({bundle, id: "<docId>/<chId>", title, body, frontmatter: {type: "section", parent: "<docId>", concepts: [...], person_terms: [...], summary: "one line", status, sources: [...]}})`.
+- Each chapter: `okf_upsert_concept({bundle, id: "<docId>/<chId>", sourceRange: {...}, frontmatter: {...}, interpretations: [...]})` — **the chapter write protocol below. You do not write the body.**
 
 **`parent`, `concepts` and `summary` are what make a chapter findable.** The concept index and the document TOC are derived from exactly those three fields; a chapter missing them is stored and invisible to `okf_search`. Write a summary someone searching would actually phrase — it is the text the deterministic match runs against.
+
+### 4b. The chapter write protocol — you write METADATA, the service writes the body
+
+**Do NOT pass the chapter's body text in `body`.** The body is already on disk, byte-for-byte, at `raw/<source>.md`. Re-typing it is the single most expensive thing you can do in this job: it is thousands of output tokens per chapter, it is most of the run's cost and most of its wall-clock, and it is the one generation long enough to look like a stalled run to the reaper. You emit what you **authored**; the service slices the body out of the source.
+
+For each chapter, **one** `okf_upsert_concept` call carrying:
+
+| field | what you pass |
+| --- | --- |
+| `id` | `"<docId>/<chId>"` |
+| `sourceRange` | which part of the source this chapter is — see below |
+| `frontmatter` | what you authored: `type: "section"`, `parent`, `concepts`, `person_terms`, `summary`, `title`, `status`, `sources` |
+| `interpretations` | `[{assetLine, interpretation}]`, one per inline asset you interpreted (omit when there are none) |
+
+**`sourceRange`** — integers and a rule, never heading text:
+
+- `{startHeading: <n>}` — the chapter starts at global heading `<n>` and ends just before the next heading of the **same or a higher level**. This is the normal case: one heading, one chapter. `<n>` comes from the `headings` list in the frontmatter of the chunk you are reading — **copy it, never count it yourself**.
+- `{startHeading: <n>, toHeading: <m>}` — **merging** two or more short sections into one chapter: the body runs from heading `<n>` up to (not including) heading `<m>`. `<m>` is also from your chunk's `headings` list — the boundary heading at the end of that list is there precisely so a merge is always expressible.
+- `{whole: true}` — the **entire source** as one chapter. This is the no-heading source.
+- `{startHeading: -1}` — the **preamble**: everything before the first heading.
+
+A section split across several chunks is still **one** chapter with **one** `startHeading`: the end rule is resolved against the whole source, so you never need to know where the chunk boundary fell. Write it when you have read its last piece.
+
+**`interpretations`** — for each inline asset in this chapter: `assetLine` is the asset's markdown line **copied verbatim from the chunk you read** (the original line, with its original URL — the `blockTemplate` from `okf_add_raw_source` is your reference for that string, not body you compose), and `interpretation` is the text you wrote after looking at the asset. The service finds that line in the extracted body, links the stored local copy, and puts your interpretation beneath it. You do not write the surrounding body.
+
+**One call per chapter.** Never batch several chapters into one call: each call is a small, bounded output *and* a liveness heartbeat for the run — batching trades both away for nothing.
+
+```json
+{"bundle": "kb", "id": "handbook/rollouts",
+ "sourceRange": {"startHeading": 7},
+ "frontmatter": {"type": "section", "parent": "handbook", "title": "Rollouts",
+                 "concepts": ["canary release", "rollback"], "person_terms": ["Diego Córdoba"],
+                 "summary": "How a change reaches production: canary, bake, promote or roll back.",
+                 "status": "draft"},
+ "interpretations": [{"assetLine": "![Canary console](https://cdn.example.com/canary.png)",
+                      "interpretation": "The rollout console mid-canary: 5% of traffic on build 4821, error rate flat against the baseline, promote gated on a 30-minute bake."}]}
+```
+
+Pass `body` only for a chapter you are genuinely **authoring** (a synthesis you wrote yourself) — never for one that came out of a source.
 
 ### 5. Assign concept terms — extend before you create
 
@@ -141,21 +180,20 @@ For every **non-HTML** asset in a chapter's scope (an image, a diagram, a video)
    `output_path` is not optional here either: the bytes stream to disk and you get a receipt.
 2. **Register it**: `okf_add_raw_source({bundle, asset: true, docId, sourcePath: "<that path>", originUrl: "<asset url>"})`. The call returns the exact block template to write.
 3. **Interpret it**: `view_image` for an image, `video_keyframes` for a video. You *see* it — write what the diagram actually says or what the clip actually demonstrates. A caption restating the filename is worthless.
-4. **Write the link and the interpretation into the chapter body**, the interpretation directly beneath the link:
+4. **Hand the interpretation to the chapter write as DATA** — an entry in that chapter's `interpretations` array (§4b), not body text you compose:
 
-   ```markdown
-   ![Request lifecycle & correlation-ID propagation](raw/assets/error-handling/correlation-flow.png)
-
-   > **Interpretation (LLM, at ingest):** Flow diagram: an inbound request enters the gateway where a req_id is minted, then injected into the X-Request-Id header, the structured-log context, the downstream RPC context, and the queue envelope. Every log line and child span carries the same req_id, so one grep reconstructs the cross-service trace.
+   ```json
+   {"assetLine": "![Request lifecycle & correlation-ID propagation](https://docs.example.com/img/correlation-flow.png)",
+    "interpretation": "Flow diagram: an inbound request enters the gateway where a req_id is minted, then injected into the X-Request-Id header, the structured-log context, the downstream RPC context, and the queue envelope. Every log line and child span carries the same req_id, so one grep reconstructs the cross-service trace."}
    ```
 
-   The path is **bundle-relative** (`raw/assets/…`), not `../../raw/…`.
+   `assetLine` is the line **as the source wrote it** — copy it verbatim from the chunk, original URL and all. The service matches it in the extracted body, inserts your interpretation beneath it, and links the local copy at `raw/assets/<docId>/<name>` itself. You never write the `![…](…)` line or the blockquote yourself, and you never rewrite the path.
 
 **Why this matters:** the interpretation is written ONCE, here, and stored as text. When an agent later reads this chapter it gets the diagram's knowledge without re-running vision. Skip it and that knowledge is gone from retrieval entirely.
 
 **Ordinary hyperlinks to HTML pages stay remote references** — do not download them. Only non-HTML artifacts become local copies.
 
-**A failed asset does not fail the document.** If the download or the interpretation fails, still write the block with the interpretation marked *unavailable*, count it, and carry on. `okf_lint` surfaces it later.
+**A failed asset does not fail the document.** If the download or the interpretation fails, still pass the `interpretations` entry with the interpretation text saying plainly that it is unavailable and why, count it, and carry on. `okf_lint` surfaces it later.
 
 ## Report back — honestly
 

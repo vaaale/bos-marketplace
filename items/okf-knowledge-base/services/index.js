@@ -36,6 +36,8 @@ const DEFAULT_MAX_CHUNK_SIZE = 32000;
 // 30 minutes: comfortably longer than a real ingest run (minutes), short
 // enough that a run orphaned by a restart does not spin for a whole day.
 const DEFAULT_STALE_JOB_MS = 30 * 60 * 1000;
+// FR-059 / ADR-014 B3 — the total-runtime backstop, independent of activity.
+const DEFAULT_MAX_TOTAL_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 // How often the reaper sweeps. A fifth of the default staleness window, so
 // a lost run is admitted to within a few minutes of actually being lost.
 const REAPER_INTERVAL_MS = 5 * 60 * 1000;
@@ -64,7 +66,11 @@ if (parentPort) {
   let bundleRoot = DEFAULT_BUNDLE_ROOT;
   let ingestDefaults = { maxDepth: DEFAULT_MAX_DEPTH, maxWorkers: DEFAULT_MAX_WORKERS, maxChunkSize: DEFAULT_MAX_CHUNK_SIZE };
   let serviceId = "okf-knowledge-base";
+  // The reaper's two bounds (FR-059, ADR-014 Part B): inactivity (silence
+  // since the last trajectory event) and total runtime (the backstop for a
+  // run that is alive but not progressing).
   let staleJobMs = DEFAULT_STALE_JOB_MS;
+  let maxTotalTimeoutMs = DEFAULT_MAX_TOTAL_TIMEOUT_MS;
   let reaperTimer = null;
 
   function log(level, message) {
@@ -88,8 +94,17 @@ if (parentPort) {
         maxChunkSize: ingestDefaults.maxChunkSize,
         maxDepth: ingestDefaults.maxDepth,
         maxWorkers: ingestDefaults.maxWorkers,
+        // The reaper's bounds (FR-059/US13 acceptance 3): what the service is
+        // ACTUALLY using, so a changed setting can be confirmed from here
+        // rather than inferred from a run that did or did not get reaped.
+        staleJobMs,
+        jobFinalizeTimeoutMs: staleJobMs,
+        maxTotalTimeoutMs,
       },
       maxChunkSize: ingestDefaults.maxChunkSize,
+      staleJobMs,
+      jobFinalizeTimeoutMs: staleJobMs,
+      maxTotalTimeoutMs,
     };
   }
 
@@ -119,7 +134,10 @@ if (parentPort) {
   // any of them — is admit they are lost.
   async function reapOnce(reason) {
     try {
-      const { count, reaped } = await core.reapStaleJobs(bundleRoot, staleJobMs);
+      const { count, reaped } = await core.reapStaleJobs(bundleRoot, {
+        inactivityMs: staleJobMs,
+        maxTotalMs: maxTotalTimeoutMs,
+      });
       if (count) {
         log("info", `job reaper (${reason}): marked ${count} stale run(s) failed — ${reaped.join(", ")}`);
       }
@@ -210,7 +228,17 @@ if (parentPort) {
               ? userConfig.maxChunkSize
               : DEFAULT_MAX_CHUNK_SIZE,
         };
-        staleJobMs = Number.isFinite(userConfig.staleJobMs) && userConfig.staleJobMs > 0 ? userConfig.staleJobMs : DEFAULT_STALE_JOB_MS;
+        // `staleJobMs` is the installed name for the inactivity bound;
+        // `jobFinalizeTimeoutMs` is the spec's name for the SAME bound, so
+        // both are accepted and neither config spelling is a silent no-op.
+        const inactivity = Number.isFinite(userConfig.staleJobMs)
+          ? userConfig.staleJobMs
+          : userConfig.jobFinalizeTimeoutMs;
+        staleJobMs = Number.isFinite(inactivity) && inactivity > 0 ? inactivity : DEFAULT_STALE_JOB_MS;
+        maxTotalTimeoutMs =
+          Number.isFinite(userConfig.maxTotalTimeoutMs) && userConfig.maxTotalTimeoutMs > 0
+            ? userConfig.maxTotalTimeoutMs
+            : DEFAULT_MAX_TOTAL_TIMEOUT_MS;
         const port = typeof userConfig.port === "number" ? userConfig.port : 0;
 
         // Bind + send initialized/bound/tool_declare FIRST, before touching the
@@ -307,7 +335,7 @@ if (parentPort) {
           return;
         }
         try {
-          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, staleJobMs, getRuntime, serviceId });
+          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, staleJobMs, maxTotalTimeoutMs, getRuntime, serviceId });
           parentPort.postMessage({ type: "tool_result", payload: { callId, result } });
         } catch (err) {
           parentPort.postMessage({

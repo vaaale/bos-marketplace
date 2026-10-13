@@ -31,13 +31,27 @@ The concept **vocabulary** — each term with its chapter count and the (documen
 ## Concepts
 
 ### `okf_upsert_concept`
-`{bundle, id, title?, body?, frontmatter?}` → the merged concept (same shape as `okf_read_concept`)
+`{bundle, id, title?, body?, frontmatter?, sourceRange?, interpretations?}` → the merged concept (same shape as `okf_read_concept`, plus `extraction` when a `sourceRange` was used)
 
 Create or update a document stub or a chapter. Frontmatter is **merged on fields** and unknown keys are preserved verbatim. `sources` and `attestations` merge by identity rather than being replaced, so history isn't silently dropped.
 
 This is also the **only** way to set lifecycle, trust and provenance — `status`, `stale_after`, `verified`, `sources`, `attestations` are ordinary frontmatter here. The six former field-setter tools were folded into this call.
 
 A chapter needs `parent`, `concepts` and `summary`: the two derived index levels are built from exactly those three fields, so a chapter missing them is stored but unreachable by `okf_search`. Both derived artifacts rebuild after every write.
+
+**The body-extraction write path (FR-060, ADR-014).** A chapter that came from an ingested source is written WITHOUT a body: the agent passes `sourceRange` and the service slices the body out of `raw/<source>.md` using the heading map `okf_add_raw_source` wrote at chunk time (`.chunks/<docId>/headings.json`). The source document is resolved from the concept id's `<docId>` — there is no source id to pass.
+
+| field | shape | means |
+| --- | --- | --- |
+| `sourceRange` | `{startHeading: n}` | heading `n` to just before the next heading of the same or a higher level (the default end rule) |
+| | `{startHeading: n, toHeading: m}` | heading `n` up to (not including) heading `m` — merging sections into one chapter |
+| | `{whole: true}` | the entire source — the no-heading case |
+| | `{startHeading: -1}` | the preamble before the first heading |
+| `interpretations` | `[{assetLine, interpretation}]` | one per inline asset; `assetLine` is the asset's markdown line verbatim from the source |
+
+`n`/`m` are **global** heading indices, taken from the `headings:` frontmatter list of the chunk the agent read. Precedence: `sourceRange` present → the body is extracted (any `body` passed alongside is ignored); otherwise `body` is used as-is, exactly as before. A range that cannot be resolved — or a heading map that disagrees with `raw/`'s byte length or heading count — **throws**; it never mis-slices silently, and `okf_lint`'s `headingMapDrift` check reports the same drift up front.
+
+**The invariant (SC-019):** the stored body, with the inserted interpretation lines removed, is byte-for-byte a contiguous slice of `raw/<source>.md`. The service's insertions are additive and removable: the source's own asset line is left untouched, and the link to the stored local copy is added beneath it carrying an `<!-- interpretation-asset -->` mark (`core.stripInterpretations` is the exact inverse, exported for that check).
 
 ### `okf_delete_concept`
 `{bundle, id, rewrite_backlinks?}` → `{id, deleted, rewroteBacklinks, backlinksRewritten}`

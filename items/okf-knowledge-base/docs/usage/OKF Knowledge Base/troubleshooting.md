@@ -33,11 +33,11 @@ Stale does not mean wrong — it means *nobody has vouched for it lately*. The c
 
 First, give it a minute: a long document with assets and references genuinely takes a while, and the elapsed clock is live.
 
-If it really is stuck — the usual cause is BOS or the service restarting while the run was in flight, which orphans it — the **reaper** handles it. Any run still queued or running past the staleness limit (30 minutes by default) is marked **failed** with a "stale" reason explaining what happened. (You can also stop it yourself with the row's **Cancel** button — that ends it as **cancelled**, which is not a failure.) The reaper also sweeps immediately whenever the service starts, because a restart is exactly the event that orphans runs: it doesn't wait out the interval to admit a run it knows it isn't running.
+If it really is stuck, the **reaper** handles it. It watches two things: a run that has gone **silent** — no progress of any kind for 30 minutes by default — and a run that has been going for more than 6 hours whatever it is doing. Either one marks the run **failed** with a "stale" reason that says which of the two it was. Silence is measured from the run's last activity, not from when it started, so a long ingest that is still working is never cut off; when it is reaped, the message names the honest possibilities (a long model generation, a provider stall, or BOS restarting and dropping the stream) rather than guessing one. (You can also stop it yourself with the row's **Cancel** button — that ends it as **cancelled**, which is not a failure.) The reaper also sweeps immediately whenever the service starts, because a restart is exactly the event that orphans runs: it doesn't wait out the interval to admit a run it knows it isn't running.
 
 A reaped run is not destructive. Every write is atomic and the derived index rebuilds from content, so a half-finished run leaves a smaller bundle, not a broken one. Re-run the ingest to finish the job.
 
-You can change the limit (`staleJobMs`) in the service's settings. Raise it if you routinely ingest very large documents; don't lower it below a realistic run time or healthy runs will be killed off as stale.
+Both limits are in the service's settings (Settings → Plugins → OKF Knowledge Base): the **inactivity timeout** (`staleJobMs`) and the **maximum total runtime** (`maxTotalTimeoutMs`). Raise the inactivity timeout if you ingest asset-heavy documents whose single interpretation steps run long; don't lower it below a realistic quiet gap or healthy runs will be killed off as stale. Changes apply to subsequent runs.
 
 ## A run failed — now what?
 

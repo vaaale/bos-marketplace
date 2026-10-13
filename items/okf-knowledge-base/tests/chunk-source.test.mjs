@@ -22,7 +22,9 @@ test("a source within maxChunkSize is ONE chunk, untouched, with no headingPath"
   const src = "# Title\n\nShort enough to need nothing.\n";
   const chunks = core.chunkSource(src, 32000);
   assert.equal(chunks.length, 1);
-  assert.deepEqual(chunks[0], { chunk: 1, total: 1, headingPath: [], content: src });
+  // `headings` is the ADR-014 addition: the GLOBAL heading indices this
+  // chunk can reference. A one-chunk source holds every heading in it.
+  assert.deepEqual(chunks[0], { chunk: 1, total: 1, headingPath: [], headings: [0], content: src });
 });
 
 test("an empty source is still one chunk", () => {

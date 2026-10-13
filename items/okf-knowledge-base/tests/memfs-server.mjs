@@ -103,6 +103,14 @@ export async function startMemFs() {
     port: server.address().port,
     files,
     read: (p) => files.get(norm(p)),
+    // Direct writes, bypassing the service — how a test simulates a file
+    // changing UNDER the service (e.g. raw/ drifting away from the heading
+    // map that was built for it).
+    write: (p, content) => {
+      mkdirp(norm(p).split("/").slice(0, -1).join("/") || "/");
+      files.set(norm(p), String(content));
+    },
+    remove: (p) => files.delete(norm(p)),
     paths: () => [...files.keys()].sort(),
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };

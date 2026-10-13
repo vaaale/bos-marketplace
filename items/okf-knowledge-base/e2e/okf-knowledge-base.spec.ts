@@ -142,6 +142,10 @@ const B = {
   // the ingest-chunking scope-add (ADR-012): raw sources get registered and
   // pre-split here, so nothing else's raw/ or .chunks/ is disturbed
   chunk: "e2e-okf-chunk",
+  // the ingest-efficiency scope-add (ADR-014): sources registered here are
+  // sliced into chapters by the service, and the verbatim-slice invariant
+  // (SC-019) is asserted against their raw/ bytes
+  efficiency: "e2e-okf-efficiency",
 };
 
 async function del(bundle: string): Promise<void> {
@@ -2134,4 +2138,406 @@ test("U6 (SC-007): neither scope-add touched the tool surface — it is still ex
   const addRaw = tools.find((t: { name: string }) => t.name === "okf_add_raw_source");
   expect(addRaw.description).toContain("chunks");
   expect(addRaw.parallelSafe, "okf_add_raw_source writes — it is not parallelSafe").toBe(false);
+});
+
+// ════════════════════════════════════════════════════════════════════════
+//  INGEST EFFICIENCY — FR-059 / FR-060 / SC-019 (ADR-014)
+// ════════════════════════════════════════════════════════════════════════
+//
+// Two contracts, one root cause (the model re-emitting source it could have
+// left on disk):
+//
+//   FR-060 — the agent writes METADATA; the SERVICE slices the body out of
+//            raw/. The invariant: the stored body, with the inserted
+//            interpretations removed, is byte-for-byte a contiguous slice of
+//            `raw/<source>.md` (SC-019).
+//   FR-059 — the reaper is an INACTIVITY bound (plus a total-runtime
+//            backstop), both configurable and both honestly reported.
+//
+// The okf_* tools have no HTTP face (they are IPC-dispatched through the
+// worker's parentPort), so the write is driven through `POST
+// /bundles/<b>/concept` — the REST face of the SAME core.upsertConcept the
+// tool handler calls (ADR-003). What is asserted is the bytes the running
+// service actually wrote into the bundle.
+
+/** The source the slices are taken from — structure, nesting and an asset. */
+const EFF_SOURCE =
+  "Preamble before any heading.\n" +
+  "\n" +
+  "# Rollout Handbook\n" +
+  "\n" +
+  "Written for service owners.\n" +
+  "\n" +
+  "## Canary\n" +
+  "\n" +
+  "Ship to a 5% canary for at least 30 minutes.\n" +
+  "\n" +
+  "![Canary rollout console](https://cdn.example.test/media/canary-demo.mp4)\n" +
+  "\n" +
+  "Watch error rate and p99 against the baseline.\n" +
+  "\n" +
+  "### Thresholds\n" +
+  "\n" +
+  "Auto-rollback trips at 1% 5xx or a 2x p99 regression.\n" +
+  "\n" +
+  "## Promote\n" +
+  "\n" +
+  "Promote only after a clean bake window.\n" +
+  "\n" +
+  "## Rollback\n" +
+  "\n" +
+  "Drain the canary pods and re-point the router.\n";
+
+// index: 0 "# Rollout Handbook"(1) 1 "## Canary"(2) 2 "### Thresholds"(3)
+//        3 "## Promote"(2)         4 "## Rollback"(2)
+
+const INTERP_PREFIX = "> **Interpretation (LLM, at ingest):**";
+const INTERP_ASSET_MARK = "<!-- interpretation-asset -->";
+
+/**
+ * The INVERSE of what the service inserts: drop the interpretation
+ * blockquote, the local asset link the service added beneath the source's
+ * own line, and the unmatched-asset marker. What is left must be the
+ * verbatim slice — that is the whole of SC-019.
+ */
+function stripInterpretations(body: string): string {
+  return body
+    .split("\n")
+    .filter(
+      (line) =>
+        !line.startsWith(INTERP_PREFIX) &&
+        !/^<!--\s*interpretation:[\s\S]*-->\s*$/.test(line) &&
+        !(line.includes(INTERP_ASSET_MARK) && /^!\[[^\]]*\]\(\s*raw\/assets\//.test(line)),
+    )
+    .join("\n");
+}
+
+type Heading = { index: number; level: number; text: string; start: number; end: number };
+type HeadingMap = { sourceFile: string; sourceLength: number; headings: Heading[] };
+
+let effFixture: { docId: string; rawFile: string; map: HeadingMap; bundleRoot: string } | null = null;
+
+/** Register EFF_SOURCE once; every slice test reads back the same raw/ bytes. */
+async function seedEfficiencySource(): Promise<NonNullable<typeof effFixture>> {
+  if (effFixture) return effFixture;
+  const shell = await request.newContext();
+  const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
+  const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
+
+  expect((await api.post("bundles", { data: { name: B.efficiency, title: "Efficiency" } })).ok()).toBeTruthy();
+  const reg = await (
+    await api.post(`bundles/${B.efficiency}/raw`, {
+      data: { filename: "rollout.md", conceptId: "rollout", content: EFF_SOURCE, maxChunkSize: 180 },
+    })
+  ).json();
+  expect(reg.stored).toBe(true);
+  expect(reg.chunks.length, "the fixture must actually be chunked").toBeGreaterThan(1);
+
+  const mapRaw = await readVfs(shell, `${bundleRoot}/${B.efficiency}/.chunks/${reg.docId}/headings.json`);
+  expect(mapRaw, "okf_add_raw_source must write the heading map beside the chunks").toBeTruthy();
+  await shell.dispose();
+
+  effFixture = { docId: reg.docId, rawFile: reg.rawFile, map: JSON.parse(mapRaw as string) as HeadingMap, bundleRoot };
+  return effFixture;
+}
+
+test("AA1 (FR-060/SC-019): the heading map is written at chunk time, with global indices on every chunk", async () => {
+  const { docId, map, bundleRoot } = await seedEfficiencySource();
+  const shell = await request.newContext();
+
+  expect(map.sourceFile).toBe("raw/rollout.md");
+  expect(map.sourceLength).toBe(EFF_SOURCE.length);
+  expect(map.headings.map((h) => h.text)).toEqual(["Rollout Handbook", "Canary", "Thresholds", "Promote", "Rollback"]);
+  expect(map.headings.map((h) => h.level)).toEqual([1, 2, 3, 2, 2]);
+  // every offset really is that heading's own "#"
+  for (const h of map.headings) {
+    expect(EFF_SOURCE.slice(h.start, h.start + h.level + 1)).toBe(`${"#".repeat(h.level)} `);
+  }
+  // the raw/ bytes are untouched by any of it
+  expect(await readVfs(shell, `${bundleRoot}/${B.efficiency}/${map.sourceFile}`)).toBe(EFF_SOURCE);
+
+  // and every chunk can name the headings it is allowed to reference
+  const chunk1 = await readVfs(shell, `${bundleRoot}/${B.efficiency}/.chunks/${docId}/001.md`);
+  expect(chunkFrontmatter(chunk1 as string)).toMatch(/headings:/);
+  await shell.dispose();
+});
+
+test("AA1 (FR-060/SC-019): nextSameOrHigher — the stored body minus interpretations is a BYTE-IDENTICAL slice of raw/", async () => {
+  const { docId, map } = await seedEfficiencySource();
+
+  // "## Canary" (1) — ends at "## Promote" (3); the nested "### Thresholds"
+  // stays inside, and the asset's interpretation is inserted, not authored.
+  const res = await api.post(`bundles/${B.efficiency}/concept`, {
+    data: {
+      id: `${docId}/canary`,
+      sourceRange: { startHeading: 1 },
+      interpretations: [
+        {
+          assetLine: "![Canary rollout console](https://cdn.example.test/media/canary-demo.mp4)",
+          interpretation: "Deploy console mid-canary: 5% of traffic on the new build, error rate flat against the baseline.",
+        },
+      ],
+      frontmatter: { type: "section", parent: docId, title: "Canary", concepts: ["canary release"], summary: "The 5% canary window." },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+
+  const stored = await (await api.get(`bundles/${B.efficiency}/concept/${docId}/canary`)).json();
+  const expected = EFF_SOURCE.slice(map.headings[1].start, map.headings[3].start);
+
+  expect(stripInterpretations(stored.body)).toBe(expected);
+  expect(stored.body).toContain("### Thresholds");
+  expect(stored.body).not.toContain("## Promote");
+  // the interpretation IS there — it is added, never substituted for the slice
+  expect(stored.body).toContain(`${INTERP_PREFIX} Deploy console mid-canary`);
+  expect(stored.body).toContain(`raw/assets/${docId}/canary-demo.mp4`);
+  expect(stored.frontmatter.summary).toBe("The 5% canary window.");
+});
+
+test("AA1 (FR-060/SC-019): toHeading merges two sections into one chapter — still one contiguous slice", async () => {
+  const { docId, map } = await seedEfficiencySource();
+
+  const res = await api.post(`bundles/${B.efficiency}/concept`, {
+    data: {
+      id: `${docId}/promote-and-rollback`,
+      sourceRange: { startHeading: 3, toHeading: 5 },
+      frontmatter: { type: "section", parent: docId, title: "Promote and Rollback", concepts: ["rollback"], summary: "Promoting, and backing out." },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+
+  const stored = await (await api.get(`bundles/${B.efficiency}/concept/${docId}/promote-and-rollback`)).json();
+  expect(stored.body).toBe(EFF_SOURCE.slice(map.headings[3].start));
+  expect(stored.body).toContain("## Promote");
+  expect(stored.body).toContain("## Rollback");
+});
+
+test("AA1 (FR-060/SC-019): whole:true and startHeading:-1 — the no-heading source and the preamble", async () => {
+  const { docId, map } = await seedEfficiencySource();
+
+  // the preamble: everything before the first heading
+  await api.post(`bundles/${B.efficiency}/concept`, {
+    data: {
+      id: `${docId}/preamble`,
+      sourceRange: { startHeading: -1 },
+      frontmatter: { type: "section", parent: docId, title: "Preamble", concepts: ["rollback"], summary: "The front matter." },
+    },
+  });
+  const preamble = await (await api.get(`bundles/${B.efficiency}/concept/${docId}/preamble`)).json();
+  expect(preamble.body).toBe(EFF_SOURCE.slice(0, map.headings[0].start));
+
+  // a source with NO headings at all is one chapter, whole:true
+  const plain = "A note with no headings at all.\n\nTwo paragraphs, one chapter.\n";
+  const reg = await (
+    await api.post(`bundles/${B.efficiency}/raw`, { data: { filename: "note.md", conceptId: "note", content: plain } })
+  ).json();
+  expect(reg.chunks).toHaveLength(1);
+
+  await api.post(`bundles/${B.efficiency}/concept`, {
+    data: {
+      id: `${reg.docId}/all`,
+      sourceRange: { whole: true },
+      frontmatter: { type: "section", parent: reg.docId, title: "The Note", concepts: ["rollback"], summary: "The whole note." },
+    },
+  });
+  const whole = await (await api.get(`bundles/${B.efficiency}/concept/${reg.docId}/all`)).json();
+  expect(whole.body).toBe(plain);
+});
+
+test("AA1 (FR-060): an unresolvable sourceRange fails the write loudly — it never mis-slices", async () => {
+  const { docId } = await seedEfficiencySource();
+
+  const bad = await api.post(`bundles/${B.efficiency}/concept`, {
+    data: { id: `${docId}/nope`, sourceRange: { startHeading: 99 }, frontmatter: { type: "section", parent: docId } },
+  });
+  expect(bad.ok()).toBeFalsy();
+  expect(JSON.stringify(await bad.json())).toMatch(/out of range/);
+  expect((await api.get(`bundles/${B.efficiency}/concept/${docId}/nope`)).ok(), "nothing was written").toBeFalsy();
+});
+
+test("AA2 (FR-060): a chapter written from a sourceRange carries NO source body in the call", async () => {
+  const { docId, map } = await seedEfficiencySource();
+
+  // The call the ingest agent makes: metadata only. No `body` key at all —
+  // the source text is never an output token.
+  const call = {
+    id: `${docId}/thresholds`,
+    sourceRange: { startHeading: 2 },
+    frontmatter: { type: "section", parent: docId, title: "Thresholds", concepts: ["monitoring"], summary: "When auto-rollback trips." },
+  };
+  expect(Object.keys(call), "the per-chapter call carries no body").not.toContain("body");
+  expect(JSON.stringify(call)).not.toContain("Auto-rollback trips at");
+
+  const res = await api.post(`bundles/${B.efficiency}/concept`, { data: call });
+  expect(res.ok()).toBeTruthy();
+  const written = await res.json();
+
+  // ...and the service reports exactly which bytes it took
+  expect(written.extraction.sourceFile).toBe("raw/rollout.md");
+  expect(written.extraction.start).toBe(map.headings[2].start);
+  expect(written.extraction.end).toBe(map.headings[3].start);
+
+  const stored = await (await api.get(`bundles/${B.efficiency}/concept/${docId}/thresholds`)).json();
+  expect(stored.body).toBe(EFF_SOURCE.slice(map.headings[2].start, map.headings[3].start));
+  expect(stored.body).toContain("Auto-rollback trips at");
+
+  // the tool the agent calls advertises the protocol it must follow
+  const { tools } = await (await api.get("tools")).json();
+  const upsert = tools.find((t: { name: string }) => t.name === "okf_upsert_concept");
+  expect(Object.keys(upsert.inputSchema.properties)).toEqual(expect.arrayContaining(["sourceRange", "interpretations"]));
+  expect(upsert.inputSchema.properties.sourceRange.properties.startHeading).toBeTruthy();
+  expect(upsert.inputSchema.properties.sourceRange.properties.toHeading).toBeTruthy();
+  expect(upsert.inputSchema.properties.sourceRange.properties.whole).toBeTruthy();
+  expect(upsert.inputSchema.properties.sourceId, "the service resolves the source itself — it is not an agent input").toBeUndefined();
+  expect(upsert.description).toMatch(/do NOT re-type the chapter's body|One call per chapter/i);
+});
+
+test("AA2 (FR-060): a body passed WITHOUT a sourceRange is still written verbatim — the old path is untouched", async () => {
+  const { docId } = await seedEfficiencySource();
+  const authored = "# Synthesis\n\nA chapter the agent genuinely wrote itself.\n";
+  await api.post(`bundles/${B.efficiency}/concept`, {
+    data: {
+      id: `${docId}/synthesis`,
+      body: authored,
+      frontmatter: { type: "section", parent: docId, title: "Synthesis", concepts: ["rollback"], summary: "Authored, not extracted." },
+    },
+  });
+  const stored = await (await api.get(`bundles/${B.efficiency}/concept/${docId}/synthesis`)).json();
+  expect(stored.body).toBe(authored);
+});
+
+test("AA4 (FR-059/US13 AS3): GET /config exposes BOTH reaper bounds", async () => {
+  const cfg = await (await api.get("config")).json();
+  for (const source of [cfg, cfg.runtime]) {
+    expect(typeof source.jobFinalizeTimeoutMs, "the inactivity bound is reported").toBe("number");
+    expect(typeof source.maxTotalTimeoutMs, "the total-runtime backstop is reported").toBe("number");
+  }
+  // the inactivity bound is the one the reaper actually uses, under either name
+  expect(cfg.runtime.jobFinalizeTimeoutMs).toBe(cfg.runtime.staleJobMs);
+  expect(cfg.runtime.maxTotalTimeoutMs).toBeGreaterThan(cfg.runtime.jobFinalizeTimeoutMs);
+});
+
+test("AA3 (FR-059/US13 AS2): the reaper fires on INACTIVITY and on the TOTAL backstop — and spares a live run", async () => {
+  // Same seam as the FR-049 reaper test: write the records straight into the
+  // persisted store and restart, because the startup sweep is the half of the
+  // reaper this models (and waiting out a real 30-minute window is not a test).
+  const shell = await request.newContext();
+  const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
+  const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
+  const inactivityMs = cfg.runtime.jobFinalizeTimeoutMs as number;
+  const jobsFile = `${bundleRoot}/.jobs/jobs.json`;
+
+  const existing = await shell.get(`${BASE}/api/fs?op=read&path=${encodeURIComponent(jobsFile)}`);
+  const store = existing.ok() ? JSON.parse((await existing.json()).content) : { jobs: [], seq: 1000 };
+
+  const stamp = Date.now();
+  const ago = (ms: number) => new Date(stamp - ms).toISOString();
+  const base = {
+    status: "running",
+    bundleId: B.efficiency,
+    source: "raw/rollout.md",
+    maxDepth: 1,
+    maxWorkers: 3,
+    endedAt: null,
+    durationMs: null,
+    progress: "writing 4 of 11 chapters",
+    summary: null,
+    error: null,
+    trajectory: [],
+  };
+  const ids = {
+    silent: `run-e2e-silent-${stamp}`,
+    live: `run-e2e-live-${stamp}`,
+    endless: `run-e2e-endless-${stamp}`,
+  };
+  store.jobs.unshift(
+    // went quiet an hour ago, but only started 70 minutes ago -> INACTIVITY
+    { ...base, id: ids.silent, queuedAt: ago(70 * 60_000), startedAt: ago(70 * 60_000), lastEventAt: ago(inactivityMs + 10 * 60_000) },
+    // running far longer than the inactivity bound but still talking -> LIVE
+    { ...base, id: ids.live, queuedAt: ago(5 * 60 * 60_000), startedAt: ago(5 * 60 * 60_000), lastEventAt: ago(30_000) },
+    // talking, but 8 hours in -> the TOTAL backstop
+    { ...base, id: ids.endless, queuedAt: ago(8 * 60 * 60_000), startedAt: ago(8 * 60 * 60_000), lastEventAt: ago(60_000) },
+  );
+  expect((await shell.post(`${BASE}/api/fs`, { data: { op: "write", path: jobsFile, content: JSON.stringify(store, null, 2) + "\n" } })).ok()).toBeTruthy();
+
+  expect((await shell.post(`${BASE}/api/services/${SERVICE_ID}`, { data: { action: "restart", reason: "e2e inactivity reaper" } })).ok()).toBeTruthy();
+  await api.dispose();
+  serviceBase = await resolveServiceBase(shell);
+  api = await request.newContext({ baseURL: serviceBase });
+
+  const statusOf = async (id: string) => {
+    const res = await api.get(`jobs/${id}`);
+    return res.ok() ? ((await res.json()).status as string) : "unreachable";
+  };
+
+  await expect
+    .poll(() => statusOf(ids.silent), { message: "the silent run was never reaped", timeout: 60_000, intervals: [1000] })
+    .toBe("failed");
+
+  const silent = await (await api.get(`jobs/${ids.silent}`)).json();
+  expect(String(silent.error)).toMatch(/no progress \(no trajectory event\)/);
+  expect(String(silent.error)).toMatch(/alive but silent/);
+  // the restart is listed as ONE possible cause, not asserted as the cause
+  expect(String(silent.error)).toMatch(/a long model generation, a provider stall, or a BOS restart/);
+  expect(String(silent.error)).not.toMatch(/most likely BOS restarted/);
+
+  await expect
+    .poll(() => statusOf(ids.endless), { message: "the endless run was never reaped", timeout: 60_000, intervals: [1000] })
+    .toBe("failed");
+  const endless = await (await api.get(`jobs/${ids.endless}`)).json();
+  expect(String(endless.error)).toMatch(/exceeded the maximum total runtime/);
+  expect(String(endless.error)).toMatch(/active but not progressing/);
+
+  // and the run that kept talking is left alone, 5 hours in
+  expect(await statusOf(ids.live), "a run still producing events is not stale").toBe("running");
+
+  await shell.dispose();
+});
+
+test("AA5 (SC-007): the efficiency scope-add adds NO tools — the surface is still exactly 21", async () => {
+  const { count, tools } = await (await api.get("tools")).json();
+  expect(count).toBe(21);
+  expect(tools.map((t: { name: string }) => t.name).sort()).toEqual(EXPECTED_TOOLS);
+
+  // the body extraction lives INSIDE okf_upsert_concept as optional fields —
+  // no okf_write_chapter, no batched variant (ADR-014 D4/D5 rejected both)
+  const names = new Set(tools.map((t: { name: string }) => t.name));
+  for (const rejected of ["okf_write_chapter", "okf_write_chapters", "okf_extract_body", "okf_heading_map"]) {
+    expect(names.has(rejected), `${rejected} must not exist`).toBe(false);
+  }
+});
+
+test("AA6: every prior scope-add still stands — chunking, trajectory, cancel/delete, person-kind", async () => {
+  const { docId } = await seedEfficiencySource();
+
+  // chunking (ADR-012): the source was split, and the heading map rides with it
+  const reg = await (
+    await api.post(`bundles/${B.efficiency}/raw`, {
+      data: { filename: "still-chunks.md", conceptId: "still-chunks", content: EFF_SOURCE, maxChunkSize: 200 },
+    })
+  ).json();
+  expect(reg.chunks.length).toBeGreaterThan(1);
+
+  // person-kind (ADR-011): person_terms still rides through a write untouched
+  await api.post(`bundles/${B.efficiency}/concept`, {
+    data: {
+      id: `${docId}/owners`,
+      sourceRange: { startHeading: 0, toHeading: 1 },
+      frontmatter: { type: "section", parent: docId, title: "Owners", concepts: ["rollback"], person_terms: ["Diego Córdoba"], summary: "Who owns the rollout." },
+    },
+  });
+  const owners = await (await api.get(`bundles/${B.efficiency}/concept/${docId}/owners`)).json();
+  expect(owners.frontmatter.person_terms).toEqual(["Diego Córdoba"]);
+  const persons = await (await api.get(`bundles/${B.efficiency}`)).json();
+  expect(JSON.stringify(persons)).toContain("Diego Córdoba");
+
+  // trajectory + job control (ADR-013/ADR-010): the routes still answer
+  expect((await api.get("jobs")).ok()).toBeTruthy();
+  expect((await api.post("jobs/run-does-not-exist/cancel")).status()).toBe(404);
+  expect((await api.delete("jobs/run-does-not-exist")).status()).toBe(404);
+
+  // and the derived layer still rebuilds from the extracted chapters
+  const lint = await (await api.get(`bundles/${B.efficiency}/lint`)).json();
+  expect(lint.checks.headingMapDrift, "no document's heading map disagrees with its raw/ bytes").toBe(0);
+  expect(lint.chapters).toBeGreaterThan(3);
 });

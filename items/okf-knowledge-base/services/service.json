@@ -54,8 +54,20 @@
       },
       "staleJobMs": {
         "type": "number",
+        "title": "Ingest inactivity timeout (ms)",
         "default": 1800000,
-        "description": "How long (ms) an ingest job may sit queued or running before the reaper marks it failed(stale). The launcher writes a terminal state for every run it watches, so this only catches runs orphaned by a service or BOS restart. Default 1800000 (30 minutes) \u2014 comfortably longer than a real run."
+        "description": "INACTIVITY timeout, not total duration: an ingest run is marked failed(stale) when no trajectory event (tool call, result, model output) has arrived for this long. Measured from the run's last progress event, so a legitimately long ingest that keeps working is never reaped \u2014 only one that has gone silent (a provider stall, a crashed agent, or a BOS restart that dropped the stream). Default 1800000 (30 minutes). Raise it if you ingest asset-heavy documents whose single vision turns run long."
+      },
+      "jobFinalizeTimeoutMs": {
+        "type": "number",
+        "title": "Ingest inactivity timeout (ms) \u2014 alias",
+        "description": "Alias for staleJobMs (the inactivity timeout), accepted under the spec's name for the same bound. Leave unset unless you prefer this spelling; staleJobMs wins if both are set."
+      },
+      "maxTotalTimeoutMs": {
+        "type": "number",
+        "title": "Ingest maximum total runtime (ms)",
+        "default": 21600000,
+        "description": "Maximum TOTAL runtime \u2014 a backstop against an alive-but-not-progressing run. An ingest run is marked failed(stale) once it has been running this long without reaching a terminal state, regardless of how active it looks: inactivity cannot catch a run that keeps emitting events while repeating the same failure. Default 21600000 (6 hours), far beyond any legitimate single-document run."
       }
     }
   },
