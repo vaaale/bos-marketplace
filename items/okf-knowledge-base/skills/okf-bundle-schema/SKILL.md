@@ -35,7 +35,7 @@ These are the defaults for every OKF bundle. A bundle may carry its own `schema.
 
 One chapter = one section a human would look up on its own.
 
-- **Split at the source's own heading structure.** The author already decided where the ideas divide; respect that rather than imposing your own outline. A source with no headings is one chapter.
+- **Split at the source's own section structure.** The author already decided where the ideas divide; respect that rather than imposing your own outline. The service has already found those sections — the `headings` list in each chunk — including the numbered and conventional section titles of a document with no Markdown `#` headings (a converted PDF). If what it found does not match the document, merge or use `whole`; never rebuild or re-type the source to add headings.
 - A fragment that only makes sense inside its neighbour isn't its own chapter — fold it in.
 - Match the granularity the bundle already uses. Read an existing TOC before deciding.
 - **Extend before you create.** `okf_list_concepts` first. Two chapters covering the same idea under two near-identical terms is the single most damaging thing you can do to a bundle's routing, and only `okf_merge_concepts` can undo it.
@@ -137,7 +137,7 @@ The point is that the interpretation is written **once, at ingest, as stored tex
 1. Read the conventions (this skill; the bundle's `schema.md` if it has one) and `okf_list_concepts` to see the existing vocabulary.
 2. **Acquire the source with `output_path` pinned.** URL → `web_fetch({url, output_path})`; PDF/DOCX/PPTX/XLSX → `file_to_markdown({path, output_path})`; plain text → straight to `okf_add_raw_source({sourcePath})`. Then `okf_add_raw_source` registers it into `raw/`, which is append-only and never edited. Dropping `output_path` and passing the document back as `content` re-emits the whole thing as output tokens — it is the one mistake that makes this pipeline pointless.
 3. **Read the source one chunk at a time** — see *Chunks* below. `okf_add_raw_source`'s response carries `chunks`; read those, not the whole `rawFile`.
-4. Decide chapter boundaries at the source's headings. No headings = one chapter.
+4. Decide chapter boundaries at the sections the service found — each chunk's `headings` list. Only a source where it found none is one chapter (`{whole: true}`).
 5. Upsert the document stub (`type: document`, with the original URL in `sources`, and the **author** in `person_terms`), then each chapter with `parent` / `concepts` / `summary` — plus `person_terms` for any named key figure the chapter is about. A chapter that came from a source is written **metadata-only**, with a `sourceRange` instead of a body: see *The chapter write protocol*.
 6. Download, interpret and inline every non-HTML asset.
 7. Link new chapters to the existing ones they genuinely relate to.

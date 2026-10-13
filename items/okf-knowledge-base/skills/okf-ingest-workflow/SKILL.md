@@ -5,22 +5,22 @@ when_to_use: When the user asks to ingest, add, save, or import something into a
 created_by: seed
 ---
 
-You are the *orchestrating* agent. You do not write concepts yourself — a dedicated `okf-ingest` sub-agent does. Your job is to get the source into the bundle and hand off.
+You are the *orchestrating* agent. You do not write concepts yourself — a dedicated `okf-ingest` sub-agent does, and the service starts it for you. Your job is one call.
 
 ## Do this
 
-**Call `okf_ingest` first, with whatever the user gave you** — a URL, a file path, anything:
+**Call `okf_ingest` with whatever the user gave you** — a URL, a file path, a `raw/` path:
 
 ```
 okf_ingest({bundle: "<name>", source: "https://example.com/article"})
 ```
 
-It never fetches or decomposes anything itself. It replies with the next calls to make:
+It returns at once with one of:
 
-- **`status: "acquisition_required"`** → run the `steps` array **in order, exactly as written**, then call `okf_ingest` again with the `rawFile` you got back.
-- **`status: "delegation_required"`** → call `agent_delegate` with the `delegate` block verbatim. That is the last thing you do; the sub-agent takes it from there and reports back a summary.
+- **`status: "queued"`** + a `jobId` — the run is queued and the service starts it when a slot is free (at most the service's `maxConcurrentRuns` run at a time). Nothing else for you to call. Follow it with `okf_list_jobs({jobId})`, or point the user at the app's **Jobs** tab: it ends `completed` with a summary, or `failed` with a reason.
+- **`status: "already_ingested"`** + the existing `docId` — the source is already in the bundle; no run started. Read it with `okf_read_toc({bundle, docId})`. **Only if the user asks to re-ingest it**, call again with `reingest: true`: the document is re-acquired from its origin and rewritten under the same id (its chapters are cleared when the run starts; `raw/` keeps every version).
 
-That's the whole flow. Follow what it returns rather than composing your own equivalent — the arguments it specifies (particularly `output_path`) are what keep a long document out of your context.
+Several sources? Issue the `okf_ingest` calls together — the queue keeps them from all running at once. Re-ingesting a whole bundle is the app's **Re-ingest all** button (Overview → the bundle).
 
 ## The mistakes that cost the most
 
@@ -33,13 +33,13 @@ web_fetch({url}) → file_write({path, content: <30k chars>})  ❌ you just rety
 
 **`concept: null` is not a failure.** `okf_add_raw_source` returns `{rawFile, stored: true, concept: null}` when you didn't ask for a concept stub. The source *is* saved. Do not "fix" it by importing the content again — that overwrites a correct raw source with whatever you type, and the sub-agent then has nothing real to read.
 
-**Don't reach for `okf_import_bundle`.** It writes literal file contents and is for restoring an exported bundle, not for ingesting a source. If a bundle doesn't exist, `okf_ingest`'s steps already include `okf_init_bundle`.
+**Don't reach for `okf_import_bundle`.** It writes literal file contents and is for restoring an exported bundle, not for ingesting a source. If the bundle doesn't exist yet, create it with `okf_init_bundle` first.
 
 **Don't read the raw source yourself.** Once it's in `raw/`, its whole purpose is that the sub-agent reads it and you don't. Reading it back pulls the document into your context — the exact cost this flow exists to avoid.
 
 ## Multiple sources
 
-Ingest calls are independent, so issue them together in one turn rather than one at a time — parallel-safe tools genuinely run concurrently. Same for the reference crawl: the sub-agent handles that itself, bounded by the bundle's `maxDepth`/`maxWorkers`. Don't crawl references yourself.
+Ingest calls are independent, so issue them together in one turn rather than one at a time; the service queues the runs. Same for the reference crawl: the sub-agent handles that itself, one hop shallower per reference, bounded by `maxDepth`. Don't crawl references yourself.
 
 ## Reporting back
 
