@@ -417,6 +417,7 @@ The user ingests one or several large documents, and may ingest several simultan
 - **FR-065 (Ingest agent least privilege)**: The bundled `okf-ingest` agent MUST NOT hold any tool that writes or edits a file, nor any tool that deletes, merges, imports or exports bundle content; a skill it declares MUST come with `skill_load`/`skill_read_file`. Its instructions MUST NOT tell it a heading-less source is one chapter, and MUST forbid re-registering or re-typing a registered source.
 
 - **FR-066 (Rendered agent report)**: A completed job's detail MUST render the agent's report (its final message) as markdown — paragraphs, lists, tables, code, emphasis, links — through the app's one markdown renderer, the same one the chapter view uses; raw HTML in it MUST NOT be interpreted.
+- **FR-067 (Acquisition through the browser)**: When a URL source is a web page (not a binary download), the ingest task's Step 0 MUST name the route for a page a plain fetch is refused (an HTTP 403 or a bot check): `browser_navigate` to the URL, `browser_save_page` to the SAME staged path `web_fetch` would have written, `browser_close` — so the remaining steps run unchanged and the page never passes through the model. The ingest agent MUST hold exactly those browser tools, and MUST NOT fall back to third-party reader proxies or archives, which return another copy (often a paywall preview) rather than the page.
 
 ### Non-Functional Requirements
 

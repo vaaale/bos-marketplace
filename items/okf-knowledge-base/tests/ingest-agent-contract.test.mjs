@@ -16,11 +16,21 @@
 // An ingest also has no business deleting, merging, importing or exporting a
 // knowledge base: those are curation, and they belong to the user.
 //
+// And acquisition of a page a plain fetch is refused (prod, job run-1022): the
+// agent's web_fetch got Cloudflare's 403 on a Medium article, browser_navigate
+// loaded it — and the agent had no way to put the page in a file, so it tried
+// reader proxies that returned the paywall preview. The task now names the
+// browser path (navigate, then browser_save_page to the SAME staged path) and
+// the agent holds those tools.
+//
 //   node --test tests/ingest-agent-contract.test.mjs
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
+const core = createRequire(import.meta.url)("../services/lib/okf-core.js");
 
 const SRC = readFileSync(new URL("../agents/okf-ingest/AGENT.md", import.meta.url), "utf8");
 const FRONT = SRC.split(/^---$/m)[1];
@@ -30,6 +40,7 @@ const list = (key) => {
 };
 const tools = list("tools");
 const BODY = SRC.slice(SRC.indexOf("---", 4) + 3);
+const CALL = /`(okf_[a-z_]+|file_[a-z_]+|web_[a-z_]+|skill_[a-z_]+|browser_[a-z_]+|view_image|video_keyframes)\(/g;
 
 test("the ingest agent holds no tool that writes or edits a file", () => {
   for (const t of ["file_write", "file_edit", "file_patch", "file_mkdir", "file_delete", "run_command"]) {
@@ -56,7 +67,31 @@ test("the prompt never tells it to make a heading-less source one chapter, and s
 });
 
 test("every tool the prompt tells the agent to CALL is one it holds", () => {
-  const called = [...BODY.matchAll(/`(okf_[a-z_]+|file_[a-z_]+|web_[a-z_]+|skill_[a-z_]+|view_image|video_keyframes)\(/g)].map((m) => m[1]);
+  const called = [...BODY.matchAll(CALL)].map((m) => m[1]);
   const missing = [...new Set(called)].filter((t) => !tools.includes(t));
   assert.deepEqual(missing, [], "the prompt instructs calls to tools the agent does not hold");
+});
+
+const task = (source) =>
+  core.buildIngestTask({ jobId: "run-1", bundle: "b", source, maxDepth: 1, maxWorkers: 2 });
+
+test("every tool a generated task tells the agent to call is one it holds", () => {
+  for (const source of ["https://medium.com/@a/post-1", "https://x.test/report.pdf", "/Documents/a.pdf", "/Documents/a.md"]) {
+    const called = [...task(source).matchAll(CALL)].map((m) => m[1]);
+    const missing = [...new Set(called)].filter((t) => !tools.includes(t));
+    assert.deepEqual(missing, [], `the task for ${source} instructs calls to tools the agent does not hold`);
+  }
+});
+
+test("a web page's task names the browser path when web_fetch is refused — saved to the SAME staged path", () => {
+  const t = task("https://medium.com/@a/post-1");
+  const staged = JSON.parse(t.match(/`web_fetch\((\{.*?\})\)`/)[1]).output_path;
+  assert.match(t, /`browser_navigate\(\{"url":"https:\/\/medium\.com\/@a\/post-1"\}\)`/);
+  assert.ok(t.includes(`\`browser_save_page(${JSON.stringify({ output_path: staged })})\``), "saved where okf_add_raw_source reads it");
+  assert.match(t, /`browser_close\(\{\}\)`/);
+  assert.match(t, /403|bot check/i);
+});
+
+test("a binary download (a PDF URL) gets no browser path — a browser does not save a PDF as a page", () => {
+  assert.doesNotMatch(task("https://x.test/report.pdf"), /browser_/);
 });
