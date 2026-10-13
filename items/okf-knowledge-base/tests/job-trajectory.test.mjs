@@ -151,3 +151,38 @@ test("the LIST surfaces carry the event count, not the events — the detail rea
   assert.deepEqual((await core.getJob(ROOT, id)).trajectory, RUN);
   assert.equal(core.jobListView(await core.getJob(ROOT, id)).trajectory, undefined);
 });
+
+// The model's reasoning arrives ONE TOKEN PER LINE (BOS streams it that way so
+// a live consumer can show it as it is written). Stored verbatim, that made the
+// trajectory a token log: on production run-1007 held 33,186 events of which
+// 33,089 were `{"type":"reasoning_delta","delta":"."}`-sized lines and ~100 were
+// the tool calls the Jobs tab actually shows. Seven such runs pushed the job
+// store to 8.4 MB, re-serialised in full on every coalesced write, until the
+// service's worker hit its heap limit (2026-10-13 13:50:20) — after which every
+// Jobs-tab read was a 502.
+//
+// A run of consecutive reasoning lines is now ONE event carrying the joined
+// text: the same words, in the same place in the sequence; any other event ends
+// the run, so the tool / tool_result pairing the timeline depends on is exact.
+test("consecutive reasoning tokens are stored as ONE event per thought, not one per token", async () => {
+  const tokens = "Let me look at the heading structure first.".split(/(?<= )/);
+  const thought = (text) => text.split(/(?<= )/).map((delta) => ({ type: "reasoning_delta", delta }));
+  const events = [
+    { type: "run_started", runId: "headless-okf-ingest-thinky", agent: "okf-ingest" },
+    ...tokens.map((delta) => ({ type: "reasoning_delta", delta })),
+    { type: "tool", tool: "file_read", input: { path: ".chunks/doc/001.md" } },
+    { type: "tool_result", result: "# Doc" },
+    ...thought("Two sections, so two chapters."),
+    { type: "done", text: "Ingested.", result: { endedReason: "completed" } },
+  ];
+  const { job } = await runOnce("thinky", "https://example.test/thinky", events);
+
+  assert.deepEqual(job.trajectory.map((e) => e.type), [
+    "run_started", "reasoning_delta", "tool", "tool_result", "reasoning_delta", "done",
+  ]);
+  assert.equal(job.trajectory[1].delta, "Let me look at the heading structure first.");
+  assert.equal(job.trajectory[4].delta, "Two sections, so two chapters.");
+  // and on disk the same — the persisted store is what a restart reloads
+  const persisted = JSON.parse(fs.read(`${ROOT}/.jobs/jobs.json`)).jobs.find((j) => j.id === job.id);
+  assert.equal(persisted.trajectory.length, 6);
+});

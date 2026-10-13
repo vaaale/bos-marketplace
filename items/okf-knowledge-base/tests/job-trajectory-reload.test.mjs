@@ -23,6 +23,18 @@ const TRAJECTORY = [
   { type: "done", text: "done", result: { endedReason: "completed" } },
 ];
 
+// Written by a service from before reasoning was merged: one event per TOKEN,
+// the shape that took production's job store to 8.4 MB. A restart must not
+// load it back as-is — the cold load is where it gets compacted.
+const TOKEN_LOG = [
+  { type: "run_started", runId: "headless-okf-ingest-tokens", agent: "okf-ingest" },
+  ..."Reading the first chunk now.".split(/(?<= )/).map((delta) => ({ type: "reasoning_delta", delta })),
+  { type: "tool", tool: "file_read", input: { path: ".chunks/doc/001.md" } },
+  { type: "tool_result", result: "# Doc" },
+  ..."Done.".split("").map((delta) => ({ type: "reasoning_delta", delta })),
+  { type: "done", text: "done", result: { endedReason: "completed" } },
+];
+
 let fs;
 let previousPort;
 
@@ -42,6 +54,12 @@ before(async () => {
         endedAt: "2026-10-12T09:00:40.000Z", durationMs: 39000, progress: null,
         summary: null, error: null, runId: "headless-okf-ingest-restart", cancelRequested: false,
         trajectory: TRAJECTORY,
+      },
+      {
+        id: "run-1040", status: "completed", bundleId: "b", source: "https://x.test/tokens",
+        queuedAt: "2026-10-10T09:00:00.000Z", startedAt: null, endedAt: null, durationMs: null,
+        progress: null, summary: null, error: null, runId: "headless-okf-ingest-tokens", cancelRequested: false,
+        trajectory: TOKEN_LOG,
       },
       {
         id: "run-1041", status: "completed", bundleId: "b", source: "https://x.test/legacy",
@@ -75,6 +93,15 @@ test("a record written before the field existed loads with an empty trajectory, 
   const rows = await core.listJobs(ROOT);
   assert.equal(rows.find((j) => j.id === "run-1041").trajectoryEvents, 0);
   assert.equal(rows.find((j) => j.id === "run-1042").trajectoryEvents, TRAJECTORY.length);
+});
+
+test("a token-per-event trajectory from an older service is compacted on load", async () => {
+  const job = await core.getJob(ROOT, "run-1040");
+  assert.deepEqual(job.trajectory.map((e) => e.type), [
+    "run_started", "reasoning_delta", "tool", "tool_result", "reasoning_delta", "done",
+  ]);
+  assert.equal(job.trajectory[1].delta, "Reading the first chunk now.");
+  assert.equal(job.trajectory[4].delta, "Done.");
 });
 
 test("appendJobTrajectory grows a live job's array and persists it", async () => {

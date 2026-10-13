@@ -2907,6 +2907,13 @@ async function loadJobs(bundleRoot) {
         // (GET /jobs/<id>, the app) is entitled to an array, not undefined.
         for (const job of parsed.jobs) {
           if (!Array.isArray(job.trajectory)) job.trajectory = [];
+          // A store written before reasoning was merged holds one event per
+          // token (8.4 MB on production); compact it on the way in.
+          else if (job.trajectory.some((e) => e && e.type === "reasoning_delta")) {
+            const compacted = [];
+            for (const e of job.trajectory) pushTrajectoryEvent(compacted, e);
+            job.trajectory = compacted;
+          }
           // The reaper's inactivity clock (FR-059) must survive a restart —
           // it is persisted with the rest of the record, but a record
           // written before the field existed comes back without it. Null,
@@ -3044,13 +3051,37 @@ async function getJob(bundleRoot, id) {
  * transition, and a terminal job must still be allowed to record the `done`
  * line that made it terminal.
  */
+/**
+ * Append one stream event to a trajectory — THE rule for what a trajectory
+ * holds, shared by the live launcher (appendJobTrajectory) and the cold load
+ * (loadJobs), so a store written by an older service converges on it.
+ *
+ * Reasoning arrives one TOKEN per line. Stored as-is the trajectory became a
+ * token log — 33,089 of one run's 33,186 events — and the job store grew until
+ * the worker hit its heap limit. A run of consecutive reasoning lines is kept
+ * as ONE event with the joined text: the same words in the same place in the
+ * sequence, and any other event ends the run, so the tool / tool_result pairing
+ * the Jobs tab renders is untouched.
+ */
+function pushTrajectoryEvent(trajectory, event) {
+  const last = trajectory[trajectory.length - 1];
+  if (event && event.type === "reasoning_delta" && last && last.type === "reasoning_delta") {
+    for (const key of ["delta", "text"]) {
+      if (typeof event[key] === "string") last[key] = (typeof last[key] === "string" ? last[key] : "") + event[key];
+    }
+    return;
+  }
+  // a copy: a later merge must never write into the caller's event object
+  trajectory.push(event && event.type === "reasoning_delta" ? { ...event } : event);
+}
+
 async function appendJobTrajectory(bundleRoot, id, event) {
   if (!event || typeof event !== "object") return null;
   const state = await loadJobs(bundleRoot);
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return null;
   if (!Array.isArray(job.trajectory)) job.trajectory = [];
-  job.trajectory.push(event);
+  pushTrajectoryEvent(job.trajectory, event);
   // THE LIVENESS STAMP the stale reaper reads (FR-049). An event is the only
   // honest evidence that the run is still alive, so it is recorded here, at
   // the one place every event passes through. It rides the SAME coalesced
