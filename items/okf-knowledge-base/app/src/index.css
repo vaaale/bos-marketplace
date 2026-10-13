@@ -201,6 +201,20 @@
   .md-body blockquote.q { margin:0 0 12px; padding:8px 12px; border-left:2px solid var(--border); color:var(--muted); background: rgba(255,255,255,.02); }
   .md-body strong { font-weight:600; }
   .md-body a.mdlink { color: var(--accent); text-decoration:none; border-bottom:1px solid rgba(79,140,255,.4); }
+  .md-body h5 { margin:14px 0 6px; font-size:13px; color:var(--muted); text-transform:none; }
+  .md-body ol { margin:0 0 12px; padding-left:22px; }
+  .md-body li > ul, .md-body li > ol { margin:4px 0 0; }
+  .md-body li > p { margin:4px 0; }
+  .md-body hr { border:0; border-top:1px solid var(--border); margin:16px 0; }
+  .md-body del { color:var(--muted); }
+  .md-body pre.md-code { margin:0 0 12px; padding:10px 12px; background:#0b0e13; border:1px solid var(--border); border-radius:6px; overflow:auto; }
+  .md-body pre.md-code code { background:none; border:0; padding:0; font-size:12px; line-height:1.55; white-space:pre; }
+  .md-body .md-table { margin:0 0 12px; overflow-x:auto; }
+  .md-body .md-table table { width:auto; min-width:50%; font-size:12.5px; }
+  .md-body .md-table th { text-transform:none; letter-spacing:0; font-size:12px; }
+  .md-body .md-table th, .md-body .md-table td { padding:6px 10px; vertical-align:top; }
+  .md-body blockquote.q > :last-child { margin-bottom:0; }
+  .job-report { padding:12px 14px; margin:0 0 14px; background: var(--panel2); border:1px solid var(--border); border-radius:8px; font-size:13px; }
   .src-view { padding:14px 16px; }
   .src-view pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; line-height:1.6; color:var(--muted); white-space:pre-wrap; word-break:break-word; background:#0b0e13; border:1px solid var(--border); border-radius:6px; padding:14px; }
 

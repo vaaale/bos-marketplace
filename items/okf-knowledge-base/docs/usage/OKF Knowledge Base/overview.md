@@ -23,7 +23,7 @@ Lists every knowledge base with its health: documents, chapters, distinct concep
 
 ### Jobs — did the ingest finish?
 
-Every ingest is a tracked run: **queued → running → completed, cancelled or failed**. A completed run shows what it actually wrote (chapters, concept terms, assets interpreted, references skipped or failed) and lists the chapter titles. A failed run shows the error. A cancelled run shows that you stopped it — that is not a failure, and it carries no error. A running one shows live progress when the ingest agent reports it. **Cancel** stops a live run; **Delete** clears a finished one from the list.
+Every ingest is a tracked run: **queued → running → completed, cancelled or failed**. A completed run shows what it actually wrote (chapters, concept terms, assets interpreted, references skipped or failed), lists the chapter titles, and shows the agent's own report, rendered as formatted text (lists, tables, code). A failed run shows the error. A cancelled run shows that you stopped it — that is not a failure, and it carries no error. A running one shows live progress when the ingest agent reports it. **Cancel** stops a live run; **Delete** clears a finished one from the list.
 
 ### Query — explore it
 

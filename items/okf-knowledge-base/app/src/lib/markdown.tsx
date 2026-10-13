@@ -1,5 +1,5 @@
-// markdown.tsx — the mockup's tiny markdown renderer, ported to React, plus
-// the inline-asset block renderer (`assetBlock`/`.interp` in the mockup).
+// markdown.tsx — the app's markdown rendering (parsed by mdparse.mjs) plus the
+// inline-asset block renderer (`assetBlock`/`.interp` in the mockup).
 //
 // Why hand-rolled rather than a library: this renders ONE known shape — the
 // markdown an okf-ingest run writes (headings, lists, bold/italic/code, links
@@ -18,87 +18,134 @@
 import React from "react";
 import { Icon } from "./icons";
 import type { InlineAsset } from "./types";
+import { parseBlocks, parseInline } from "./mdparse.mjs";
+import type { Block, Inline } from "./mdparse.mjs";
 
-// ── inline span rendering ────────────────────────────────────────────────
+// ── rendering ────────────────────────────────────────────────────────────
+//
+// Parsing is mdparse.mjs (plain JS, unit-tested by the item's node tests);
+// this file only maps its tree to React. Raw HTML is never interpreted.
 
 let keySeq = 0;
 function k(): string {
   return `md-${keySeq++}`;
 }
 
-const INLINE_RE = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|!?\[[^\]]*\]\([^)]*\))/g;
-
-function renderInline(text: string): React.ReactNode[] {
-  const out: React.ReactNode[] = [];
-  let last = 0;
-  for (const m of text.matchAll(INLINE_RE)) {
-    const idx = m.index ?? 0;
-    if (idx > last) out.push(text.slice(last, idx));
-    const tok = m[0];
-    if (tok.startsWith("**")) out.push(<strong key={k()}>{tok.slice(2, -2)}</strong>);
-    else if (tok.startsWith("`")) out.push(<code key={k()}>{tok.slice(1, -1)}</code>);
-    else if (tok.startsWith("*")) out.push(<em key={k()}>{tok.slice(1, -1)}</em>);
-    else {
-      const lm = /!?\[([^\]]*)\]\(([^)]*)\)/.exec(tok);
-      const label = lm ? lm[1] : tok;
-      const href = lm ? lm[2].trim() : "";
-      const external = /^https?:\/\//i.test(href);
-      out.push(
-        external ? (
-          <a key={k()} className="mdlink" href={href} target="_blank" rel="noopener noreferrer">
-            {label || href}
+function renderNodes(nodes: Inline[]): React.ReactNode[] {
+  return nodes.map((n) => {
+    switch (n.t) {
+      case "text":
+        return n.v;
+      case "code":
+        return <code key={k()}>{n.v}</code>;
+      case "strong":
+        return <strong key={k()}>{renderNodes(n.children)}</strong>;
+      case "em":
+        return <em key={k()}>{renderNodes(n.children)}</em>;
+      case "del":
+        return <del key={k()}>{renderNodes(n.children)}</del>;
+      case "link":
+        // Only an http(s) target is a real link out of the sandboxed app; a
+        // relative one (a raw/ path, another concept) is shown, not followed.
+        return /^https?:\/\//i.test(n.href) ? (
+          <a key={k()} className="mdlink" href={n.href} target="_blank" rel="noopener noreferrer">
+            {renderNodes(n.children)}
           </a>
         ) : (
           <span key={k()} className="mdlink">
-            {label || href}
+            {renderNodes(n.children)}
           </span>
-        ),
-      );
+        );
+      case "image":
+        // A stored asset is rendered by AssetBlock (splitBody pulls it out
+        // first); an image left inside running text is named, not fetched.
+        return (
+          <span key={k()} className="mdlink">
+            {n.alt || n.src}
+          </span>
+        );
     }
-    last = idx + tok.length;
-  }
-  if (last < text.length) out.push(text.slice(last));
-  return out;
+  });
+}
+
+function renderInline(text: string): React.ReactNode[] {
+  return renderNodes(parseInline(text));
+}
+
+function renderBlocks(blocks: Block[]): React.ReactNode[] {
+  return blocks.map((b) => {
+    switch (b.type) {
+      case "paragraph":
+        return <p key={k()}>{renderInline(b.text)}</p>;
+      case "heading": {
+        // The chapter / report is a section of a page, so its top heading
+        // levels map below the app's own titles.
+        const Tag = b.level <= 2 ? "h3" : b.level === 3 ? "h4" : "h5";
+        return <Tag key={k()}>{renderInline(b.text)}</Tag>;
+      }
+      case "hr":
+        return <hr key={k()} />;
+      case "code":
+        return (
+          <pre key={k()} className="md-code" data-lang={b.lang || undefined}>
+            <code>{b.text}</code>
+          </pre>
+        );
+      case "blockquote":
+        return (
+          <blockquote key={k()} className="q">
+            {renderBlocks(b.children)}
+          </blockquote>
+        );
+      case "list": {
+        const items = b.items.map((it) => (
+          <li key={k()}>
+            {renderInline(it.text)}
+            {it.children.length ? renderBlocks(it.children) : null}
+          </li>
+        ));
+        return b.ordered ? (
+          <ol key={k()} start={b.start}>
+            {items}
+          </ol>
+        ) : (
+          <ul key={k()}>{items}</ul>
+        );
+      }
+      case "table":
+        return (
+          <div key={k()} className="md-table">
+            <table>
+              <thead>
+                <tr>
+                  {b.header.map((h, i) => (
+                    <th key={i} style={b.align[i] ? { textAlign: b.align[i]! } : undefined}>
+                      {renderInline(h)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {b.rows.map((r, ri) => (
+                  <tr key={ri}>
+                    {r.map((c, i) => (
+                      <td key={i} style={b.align[i] ? { textAlign: b.align[i]! } : undefined}>
+                        {renderInline(c)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+    }
+  });
 }
 
 /** Render a markdown run (no asset blocks — those are split out first). */
 export function Markdown({ source }: { source: string }) {
-  const nodes: React.ReactNode[] = [];
-  let list: React.ReactNode[] = [];
-  const flush = () => {
-    if (list.length) {
-      nodes.push(<ul key={k()}>{list}</ul>);
-      list = [];
-    }
-  };
-  for (const line of source.split("\n")) {
-    if (/^###\s/.test(line)) {
-      flush();
-      nodes.push(<h4 key={k()}>{renderInline(line.replace(/^###\s/, ""))}</h4>);
-    } else if (/^##\s/.test(line)) {
-      flush();
-      nodes.push(<h3 key={k()}>{renderInline(line.replace(/^##\s/, ""))}</h3>);
-    } else if (/^#\s/.test(line)) {
-      flush();
-      nodes.push(<h3 key={k()}>{renderInline(line.replace(/^#\s/, ""))}</h3>);
-    } else if (/^\s*>\s?/.test(line)) {
-      flush();
-      nodes.push(
-        <blockquote key={k()} className="q">
-          {renderInline(line.replace(/^\s*>\s?/, ""))}
-        </blockquote>,
-      );
-    } else if (/^[-*]\s/.test(line)) {
-      list.push(<li key={k()}>{renderInline(line.replace(/^[-*]\s/, ""))}</li>);
-    } else if (line.trim() === "") {
-      flush();
-    } else {
-      flush();
-      nodes.push(<p key={k()}>{renderInline(line)}</p>);
-    }
-  }
-  flush();
-  return <>{nodes}</>;
+  return <>{renderBlocks(parseBlocks(source))}</>;
 }
 
 // ── asset-block splitting ────────────────────────────────────────────────
