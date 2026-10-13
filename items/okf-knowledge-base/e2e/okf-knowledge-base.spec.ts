@@ -107,56 +107,51 @@ const READ_ONLY_TOOLS = [
   "okf_stale_report",
 ];
 
+// ── the branch pin ───────────────────────────────────────────────────────
+//
+// The Supervisor serves a request from the version its `bos_pin` cookie names,
+// and from BASE without one. buildstudio_run_tests passes the branch under
+// test as BOS_PIN_BRANCH; every request this suite makes carries it, or the
+// suite would exercise base's service while reporting on the branch.
+const PIN = process.env.BOS_PIN_BRANCH;
+const PIN_HEADERS: Record<string, string> = PIN ? { cookie: `bos_pin=${encodeURIComponent(PIN)}` } : {};
+
+// Two different "config" endpoints, and they are easy to confuse:
+//   ${BASE}/api/services/<id>/config  — BOS's: config FILES, the runtime.json
+//                                       port record, and `httpPath`. Used only
+//                                       to find the service (resolveServiceBase).
+//   api.get("config")                  — the SERVICE's own GET /config: its
+//                                       effective settings under `runtime`
+//                                       (bundleRoot, jobFinalizeTimeoutMs,
+//                                       maxConcurrentRuns, …).
+// Reading `runtime.bundleRoot` from BOS's endpoint always fell back to the
+// default, and `runtime.jobFinalizeTimeoutMs` was always undefined there.
+/** request.newContext, pinned to the branch under test. */
+function pinnedContext(opts: { baseURL?: string } = {}): Promise<APIRequestContext> {
+  return request.newContext({ ...opts, extraHTTPHeaders: PIN_HEADERS });
+}
+
 // ── service reachability (never a hardcoded port) ────────────────────────
 
 let api: APIRequestContext;
 let serviceBase: string;
+/** Set by the job-control fixtures, which pause the run queue; run in afterAll. */
+let restoreRunQueue: (() => Promise<void>) | null = null;
 
 async function resolveServiceBase(shell: APIRequestContext): Promise<string> {
-  // An explicit OKF_SERVICE_BASE pins the worker port, but a test that
-  // restarts the service (config PATCH / reaper test) reassigns the OS port —
-  // the pinned value goes stale and every later call 500s. Trust the pinned
-  // base only while it still answers; otherwise re-resolve from the live API.
-  if (process.env.OKF_SERVICE_BASE) {
-    const pinned = process.env.OKF_SERVICE_BASE;
-    try {
-      const probe = await shell.get(new URL("config", pinned).toString(), { timeout: 2000 });
-      if (probe.ok()) return pinned;
-    } catch { /* fall through to live resolution */ }
-  }
+  if (process.env.OKF_SERVICE_BASE) return process.env.OKF_SERVICE_BASE;
   for (let attempt = 0; attempt < 15; attempt++) {
-    // Prefer the direct loopback port from the detail endpoint — it always
-    // works. The httpPath (supervisor proxy) 404s in preview builds (known
-    // BOS gap: the preview's Next.js build doesn't register the proxy route).
-    const detail = await shell.get(`${BASE}/api/services/${SERVICE_ID}`);
-    if (detail.ok()) {
-      const d = await detail.json();
-      const port = d.service?.boundPort;
-      if (port) {
-        const cand = `http://127.0.0.1:${port}/`;
-        try { const p = await shell.get(new URL("config", cand).toString(), { timeout: 1500 }); if (p.ok()) return cand; } catch {}
-        // Don't return a dead port — loop and try again (the new worker
-        // may not have bound yet, or the detail endpoint reports a vacated port).
-      }
-    }
-    // Fallback: the config endpoint's direct port (not httpPath — the
-    // supervisor proxy 404s in preview builds).
     const res = await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`);
     if (res.ok()) {
       const cfg = await res.json();
-      if (cfg.port) {
-        const cand = `http://127.0.0.1:${cfg.port}/`;
-        try { const p = await shell.get(new URL("config", cand).toString(), { timeout: 1500 }); if (p.ok()) return cand; } catch {}
-      }
+      // The Supervisor's own route to the service. It resolves the service's
+      // CURRENT port on every request, so a restart mid-suite does not
+      // strand this base — and with the pin cookie it is the PINNED
+      // version's service, not base's.
+      if (cfg.httpPath) return new URL(cfg.httpPath, BASE).toString();
+      if (cfg.port) return `http://127.0.0.1:${cfg.port}/`;
     }
     await new Promise((r) => setTimeout(r, 1000));
-  }
-  // Last resort: httpPath (works in production, 404s in preview).
-  const res = await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`);
-  if (res.ok()) {
-    const cfg = await res.json();
-    if (cfg.httpPath) return new URL(cfg.httpPath, BASE).toString();
-    if (cfg.port) return `http://127.0.0.1:${cfg.port}/`;
   }
   throw new Error(
     `The ${SERVICE_ID} service never reported a bound port. Start it (Settings → Plugins) before running this suite.`,
@@ -248,10 +243,6 @@ async function seedMain(): Promise<void> {
     chapter("deployment", "pre-deploy", "Pre-Deploy Gate", "CI green, migrations reviewed, and a documented rollback plan.", ["deployment"]),
   ];
   const res = await api.post(`bundles/${B.main}/import`, { data: { files } });
-  if (!res.ok()) {
-    console.error("SEEDMAIN IMPORT FAIL status=", res.status(), "body=", (await res.text()).slice(0, 500));
-    console.error("files[0..2]=", JSON.stringify(files.slice(0, 3)).slice(0, 800));
-  }
   expect(res.ok()).toBeTruthy();
 }
 
@@ -268,6 +259,7 @@ async function seedRules(): Promise<void> {
 // ── app helpers ──────────────────────────────────────────────────────────
 
 async function openApp(page: Page): Promise<FrameLocator> {
+  if (PIN) await page.context().addCookies([{ name: "bos_pin", value: encodeURIComponent(PIN), url: BASE }]);
   await page.goto(BASE);
   // Launch from the DOCK, not the desktop icon. `getByText(name).first()`
   // resolves to the desktop icon's label, and a desktop icon only binds
@@ -286,22 +278,11 @@ async function openApp(page: Page): Promise<FrameLocator> {
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async () => {
-  const shell = await request.newContext();
+  const shell = await pinnedContext();
   serviceBase = await resolveServiceBase(shell);
   await shell.dispose();
-  api = await request.newContext({ baseURL: serviceBase });
+  api = await pinnedContext({ baseURL: serviceBase });
   for (const b of Object.values(B)) await del(b);
-  // VFS remove is async — the HTTP 200 returns before files are gone.
-  // Settle: wait until the listing no longer shows any of the deleted bundles.
-  for (let i = 0; i < 30; i++) {
-    const list = await api.get("bundles");
-    if (list.ok()) {
-      const body = await list.json();
-      const names = (Array.isArray(body) ? body : body.bundles || []).map((b: any) => b.name);
-      if (!Object.values(B).some((b) => names.includes(b))) break;
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
   await seedMain();
   await seedRules();
 });
@@ -309,6 +290,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   for (const b of Object.values(B)) await del(b);
   await api.dispose();
+  if (restoreRunQueue) await restoreRunQueue();
 });
 
 // ════════════════════════════════════════════════════════════════════════
@@ -895,8 +877,8 @@ test("FR-049: a run orphaned by a restart is reaper-marked failed(stale), not le
   // the service — the STARTUP SWEEP is the half of the reaper that exists
   // precisely for this event, and it runs before the service serves a
   // request.
-  const shell = await request.newContext();
-  const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
+  const shell = await pinnedContext();
+  const cfg = await (await api.get("config")).json();
   const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
   const jobsFile = `${bundleRoot}/.jobs/jobs.json`;
 
@@ -929,7 +911,7 @@ test("FR-049: a run orphaned by a restart is reaper-marked failed(stale), not le
   // the port is OS-assigned, so a restart can move it — re-resolve, never reuse
   await api.dispose();
   serviceBase = await resolveServiceBase(shell);
-  api = await request.newContext({ baseURL: serviceBase });
+  api = await pinnedContext({ baseURL: serviceBase });
 
   let reaped: Record<string, unknown> = {};
   await expect
@@ -1632,8 +1614,8 @@ let jobFixtures: { queued: string; completed: string; running: string } | null =
 async function seedJobControlFixtures(): Promise<{ queued: string; completed: string; running: string }> {
   if (jobFixtures) return jobFixtures;
 
-  const shell = await request.newContext();
-  const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
+  const shell = await pinnedContext();
+  const cfg = await (await api.get("config")).json();
   const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
   const jobsFile = `${bundleRoot}/.jobs/jobs.json`;
 
@@ -1682,6 +1664,25 @@ async function seedJobControlFixtures(): Promise<{ queued: string; completed: st
   });
   expect(wrote.ok(), "could not seed the job store").toBeTruthy();
 
+  // PAUSE the run queue (maxConcurrentRuns 0) across this restart. On startup
+  // the service starts every queued job — so the seeded `queued` fixture would
+  // otherwise launch a real ingest agent run instead of waiting to be
+  // cancelled. Restored in afterAll.
+  const cfgNow = await (await api.get("config")).json();
+  const priorCap = cfgNow.runtime && cfgNow.runtime.maxConcurrentRuns;
+  const paused = await shell.patch(`${BASE}/api/services/${SERVICE_ID}/config`, {
+    data: { file: SERVICE_ID, patch: { maxConcurrentRuns: 0 } },
+  });
+  expect(paused.ok(), "could not pause the run queue for the fixtures").toBeTruthy();
+  restoreRunQueue = async () => {
+    const s2 = await pinnedContext();
+    await s2.patch(`${BASE}/api/services/${SERVICE_ID}/config`, {
+      data: { file: SERVICE_ID, patch: { maxConcurrentRuns: Number.isFinite(priorCap) ? priorCap : 2 } },
+    });
+    await s2.post(`${BASE}/api/services/${SERVICE_ID}`, { data: { action: "restart", reason: "e2e: unpause the run queue" } });
+    await s2.dispose();
+  };
+
   const restarted = await shell.post(`${BASE}/api/services/${SERVICE_ID}`, {
     data: { action: "restart", reason: "e2e job-control fixtures" },
   });
@@ -1690,7 +1691,7 @@ async function seedJobControlFixtures(): Promise<{ queued: string; completed: st
   // the port is OS-assigned, so a restart can move it — re-resolve, never reuse
   await api.dispose();
   serviceBase = await resolveServiceBase(shell);
-  api = await request.newContext({ baseURL: serviceBase });
+  api = await pinnedContext({ baseURL: serviceBase });
   await shell.dispose();
 
   jobFixtures = ids;
@@ -1855,7 +1856,7 @@ test("U3 (FR-056): GET /config reports maxChunkSize, defaulting to 32000", async
 });
 
 test("U1 (FR-055/SC-017): a large source is pre-split into bounded chunks, on disk and in the response", async () => {
-  const shell = await request.newContext();
+  const shell = await pinnedContext();
   const cfg = await serviceConfig();
   const bundleRoot = cfg.runtime?.bundleRoot || "/KnowledgeBase";
   const maxChunkSize = (cfg.runtime?.maxChunkSize ?? cfg.maxChunkSize) as number;
@@ -1942,7 +1943,7 @@ test("U2 (FR-055): a source within maxChunkSize comes back as a single chunk —
 });
 
 test("U1b (FR-055): re-registering a changed source CLEARS the previous split (.chunks/ is a cache, raw/ is not)", async () => {
-  const shell = await request.newContext();
+  const shell = await pinnedContext();
   const cfg = await serviceConfig();
   const bundleRoot = cfg.runtime?.bundleRoot || "/KnowledgeBase";
 
@@ -2004,8 +2005,8 @@ let trajFixtures: { withTrajectory: string; noTrajectory: string } | null = null
 async function seedTrajectoryFixtures(): Promise<{ withTrajectory: string; noTrajectory: string }> {
   if (trajFixtures) return trajFixtures;
 
-  const shell = await request.newContext();
-  const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
+  const shell = await pinnedContext();
+  const cfg = await (await api.get("config")).json();
   const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
   const jobsFile = `${bundleRoot}/.jobs/jobs.json`;
 
@@ -2063,7 +2064,7 @@ async function seedTrajectoryFixtures(): Promise<{ withTrajectory: string; noTra
   // the port is OS-assigned, so a restart can move it — re-resolve, never reuse
   await api.dispose();
   serviceBase = await resolveServiceBase(shell);
-  api = await request.newContext({ baseURL: serviceBase });
+  api = await pinnedContext({ baseURL: serviceBase });
   await shell.dispose();
 
   trajFixtures = ids;
@@ -2270,8 +2271,8 @@ let effFixture: { docId: string; rawFile: string; map: HeadingMap; bundleRoot: s
 /** Register EFF_SOURCE once; every slice test reads back the same raw/ bytes. */
 async function seedEfficiencySource(): Promise<NonNullable<typeof effFixture>> {
   if (effFixture) return effFixture;
-  const shell = await request.newContext();
-  const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
+  const shell = await pinnedContext();
+  const cfg = await (await api.get("config")).json();
   const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
 
   expect((await api.post("bundles", { data: { name: B.efficiency, title: "Efficiency" } })).ok()).toBeTruthy();
@@ -2293,7 +2294,7 @@ async function seedEfficiencySource(): Promise<NonNullable<typeof effFixture>> {
 
 test("AA1 (FR-060/SC-019): the heading map is written at chunk time, with global indices on every chunk", async () => {
   const { docId, map, bundleRoot } = await seedEfficiencySource();
-  const shell = await request.newContext();
+  const shell = await pinnedContext();
 
   expect(map.sourceFile).toBe("raw/rollout.md");
   expect(map.sourceLength).toBe(EFF_SOURCE.length);
@@ -2471,10 +2472,10 @@ test("AA3 (FR-059/US13 AS2): the reaper fires on INACTIVITY and on the TOTAL bac
   // Same seam as the FR-049 reaper test: write the records straight into the
   // persisted store and restart, because the startup sweep is the half of the
   // reaper this models (and waiting out a real 30-minute window is not a test).
-  const shell = await request.newContext();
-  const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
+  const shell = await pinnedContext();
+  const cfg = await (await api.get("config")).json();
   const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
-  const inactivityMs = (cfg.runtime && (cfg.runtime as any).jobFinalizeTimeoutMs) || 1800_000;
+  const inactivityMs = cfg.runtime.jobFinalizeTimeoutMs as number;
   const jobsFile = `${bundleRoot}/.jobs/jobs.json`;
 
   const existing = await shell.get(`${BASE}/api/fs?op=read&path=${encodeURIComponent(jobsFile)}`);
@@ -2513,7 +2514,7 @@ test("AA3 (FR-059/US13 AS2): the reaper fires on INACTIVITY and on the TOTAL bac
   expect((await shell.post(`${BASE}/api/services/${SERVICE_ID}`, { data: { action: "restart", reason: "e2e inactivity reaper" } })).ok()).toBeTruthy();
   await api.dispose();
   serviceBase = await resolveServiceBase(shell);
-  api = await request.newContext({ baseURL: serviceBase });
+  api = await pinnedContext({ baseURL: serviceBase });
 
   const statusOf = async (id: string) => {
     const res = await api.get(`jobs/${id}`);
