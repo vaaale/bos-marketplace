@@ -206,3 +206,6 @@ The Query tab mounts only while visible: its force simulation sizes its viewBox 
 - [data-model.md](data-model.md) — bundle layout, frontmatter, index/TOC format, the job record.
 - [tool-surface.md](tool-surface.md) — the 21 tools (the additive `kind` on two of them, and the job-control pair).
 - [extension.md](extension.md) — where to add a convention, and why the skill is the seam.
+
+**Sections of a heading-less source.** `sourceHeadings` is the one heading reader behind both `buildHeadingMap` and `chunkSource`. A source with any Markdown heading is read from its `#` lines only; one with none (a converted PDF) is read from its numbered section titles — accepted only as the valid next entry of an outline, which is what rejects page numbers, figure labels and table values — and its conventional titles. Offsets stay into the untouched source, so chapter bodies remain verbatim slices (FR-062).
+

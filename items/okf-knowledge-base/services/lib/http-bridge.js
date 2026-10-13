@@ -33,6 +33,8 @@
 //   GET    /bundles/<b>/lint                    -> lint report
 //   GET    /bundles/<b>/stale                   -> stale report
 //   POST   /bundles/<b>/merge   {from, to}      -> consolidate two concept terms
+//   POST   /bundles/<b>/reingest                -> queue a re-ingest of every document
+//   POST   /bundles/<b>/documents/<docId>/reingest -> queue a re-ingest of one document
 //   POST   /bundles/<b>/raw  {filename|sourcePath, content?, ...}
 //                                               -> core.addRawSource: register
 //                                                  into raw/ AND pre-split into
@@ -45,7 +47,7 @@
 //                                                  body-extraction path
 //   POST   /bundles/<b>/import                  -> { files } | { sourcePath }
 //   GET    /bundles/<b>/export                  -> { name, files, assets }
-//   POST   /jobs  {bundle, source, maxDepth?, maxWorkers?}
+//   POST   /jobs  {bundle, source, maxDepth?, maxWorkers?, reingest?}
 //                                               -> core.triggerIngest: starts
 //                                                  the run, returns {jobId}
 //   GET    /jobs[?bundleId=&status=&limit=]     -> [ job, ... ]
@@ -234,6 +236,7 @@ function createRequestHandler(ctx) {
             source: body.source,
             maxDepth: body.maxDepth,
             maxWorkers: body.maxWorkers,
+            reingest: body.reingest === true,
             defaults: ctx.getIngestDefaults ? ctx.getIngestDefaults() : undefined,
           });
           return sendJson(res, result.status === "already_ingested" ? 200 : 202, result);
@@ -353,6 +356,23 @@ function createRequestHandler(ctx) {
         // core.mergeConcepts() the okf_merge_concepts tool calls, and adds no
         // tool. (Knowledge *authoring* stays agent-driven; this is curation
         // of the derived vocabulary, which is what the index view is for.)
+        // POST /bundles/<b>/reingest — re-ingest every document in the bundle:
+        // one queued re-ingest job per document in the provenance ledger, all
+        // through the run queue's concurrency cap. App-only, like merge: an
+        // agent re-ingests a document with okf_ingest({reingest: true}), and
+        // the tool surface stays what the spec pins it to.
+        if (bundle && req.method === "POST" && section === "reingest" && parts.length === 3) {
+          return sendJson(res, 202, await core.reingestBundle(bundleRoot, bundle, {
+            defaults: ctx.getIngestDefaults ? ctx.getIngestDefaults() : undefined,
+          }));
+        }
+        // POST /bundles/<b>/documents/<docId>/reingest — one document, by id;
+        // the service resolves its source from the provenance ledger.
+        if (bundle && req.method === "POST" && section === "documents" && parts.length === 5 && parts[4] === "reingest") {
+          return sendJson(res, 202, await core.reingestDocument(bundleRoot, bundle, parts[3], {
+            defaults: ctx.getIngestDefaults ? ctx.getIngestDefaults() : undefined,
+          }));
+        }
         if (bundle && req.method === "POST" && section === "merge" && parts.length === 3) {
           const body = await readJsonBody(req);
           if (!body.from || !body.to) return sendJson(res, 400, { error: "both `from` and `to` concept terms are required" });

@@ -3,6 +3,7 @@
   "port": 0,
   "maxDepth": 1,
   "maxWorkers": 3,
+  "maxConcurrentRuns": 2,
   "maxChunkSize": 32000,
   "staleJobMs": 1800000,
   "maxTotalTimeoutMs": 21600000

@@ -89,12 +89,12 @@ Regenerates the derived artifacts first, so the manifest always carries a correc
 ## Ingest
 
 ### `okf_ingest`
-`{bundle, source, maxDepth?, maxWorkers?}` → one of:
+`{bundle, source, maxDepth?, maxWorkers?, reingest?}` → one of:
 
 | `status` | Payload | Meaning |
 |---|---|---|
-| `queued` | `jobId`, `maxDepth`, `maxWorkers`, `job` | A job was recorded and the bundled `okf-ingest` agent launched; follow it with `okf_list_jobs`. |
-| `already_ingested` | `docId`, `rawFile`, `ingestedAt` | Deduplicated against `raw/sources.json`; no run started. |
+| `queued` | `jobId`, `maxDepth`, `maxWorkers`, `reingestOf?`, `job` | A job was queued; the run queue starts the bundled `okf-ingest` agent when a slot is free (at most `maxConcurrentRuns` at once). Follow it with `okf_list_jobs`. |
+| `already_ingested` | `docId`, `rawFile`, `ingestedAt` | Deduplicated against `raw/sources.json`; no run started. Pass `reingest: true` to replace that document. |
 | `over_depth` | `parentJobId` | Called from a run with no reference hops left; no run started. |
 
 **Nested ingests are bounded by the run that calls.** BOS passes the calling run
@@ -184,3 +184,12 @@ The app is a sandboxed iframe, not an agent: it cannot call the `okf_*` tools, w
 | `POST /jobs/<id>/{start,progress,complete,fail}` | job store | the sub-agent's lifecycle callbacks **and** the assistant's safety net |
 
 Knowledge *authoring* stays agent-driven throughout — the app never writes a chapter. What it can do is bundle lifecycle (create/import/export/delete), vocabulary curation (merge), and queueing a run.
+
+### Re-ingest and the run queue (FR-063 / FR-064)
+
+`reingest: true` re-ingests a source the ledger already holds: the job records `reingestDocId`, its source is the document's recorded **origin** (re-acquired, so the run gets fresh chunks and a fresh heading map), and when the job's turn comes `runJob` first calls `clearDocument` — stub, `concepts/<docId>/`, `.chunks/<docId>/`, then one index rebuild — and the run rewrites the document under the same id. `raw/` is never touched. A nested caller (FR-061) cannot re-ingest.
+
+Every run goes through `pumpQueue`: queued jobs start oldest-first while fewer than `maxConcurrentRuns` runs launched by this process are live; each finished run pumps again, and so does service startup (after the reaper's sweep, which only reaps `running` jobs). A run whose source is a `raw/` path gets its chunks and heading map from `prepareRawSource` before the agent starts — the task lists the chunk paths instead of telling the agent to read the source whole.
+
+Bundle-wide and per-document re-ingest are REST-only (`POST /bundles/<b>/reingest`, `POST /bundles/<b>/documents/<docId>/reingest`), resolved from the ledger by `reingestDocument`; no tool is added.
+

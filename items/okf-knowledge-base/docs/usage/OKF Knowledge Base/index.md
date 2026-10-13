@@ -70,4 +70,4 @@ The app talks to its own background service over a loopback port. For that it ne
 
 If the service itself isn't running, start it in **Settings → Plugins**. The assistant's 21 `okf_*` tools disappear when the service stops and come back when it starts; that is expected.
 
-Defaults you can change in the service's settings: the storage root (`/KnowledgeBase`), the ingest reference-crawl depth and concurrency, and how long a run may hang before it is declared lost.
+Defaults you can change in the service's settings: the storage root (`/KnowledgeBase`), the ingest reference-crawl depth and concurrency, how many ingest runs may run at once (the rest wait queued), and how long a run may hang before it is declared lost.

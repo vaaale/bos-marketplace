@@ -5,7 +5,7 @@
 
 import React from "react";
 import { Icon } from "../lib/icons";
-import type { BundleDetail } from "../lib/types";
+import type { BundleDetail, DocumentRow } from "../lib/types";
 import ConceptIndexView from "./ConceptIndexView";
 import DocumentsView from "./DocumentsView";
 import HealthView from "./HealthView";
@@ -21,9 +21,11 @@ interface Props {
   onImport: () => void;
   onDelete: () => void;
   onReload: () => void;
+  onReingestAll: () => void;
+  onReingestDoc: (doc: DocumentRow) => void;
 }
 
-export default function BundleDetailView({ bundleName, detail, onBack, onIngest, onImport, onDelete, onReload }: Props) {
+export default function BundleDetailView({ bundleName, detail, onBack, onIngest, onImport, onDelete, onReload, onReingestAll, onReingestDoc }: Props) {
   const [tab, setTab] = React.useState<DetailTab>("conceptIndex");
   const [docId, setDocId] = React.useState<string | null>(null);
   const [chId, setChId] = React.useState<string | null>(null);
@@ -54,6 +56,9 @@ export default function BundleDetailView({ bundleName, detail, onBack, onIngest,
         <div className="spacer" />
         <button className="btn primary" onClick={onIngest} data-testid="ingest-btn">
           <Icon name="import" size={15} /> Ingest
+        </button>
+        <button className="btn" onClick={onReingestAll} disabled={!h.docs} title="Re-ingest every document in this bundle" data-testid="reingest-all-btn">
+          <Icon name="refresh" size={15} /> Re-ingest all
         </button>
         <button className="btn" onClick={onReload} data-testid="detail-reload">
           <Icon name="refresh" size={15} /> Refresh
@@ -141,6 +146,7 @@ export default function BundleDetailView({ bundleName, detail, onBack, onIngest,
         <DocumentsView
           bundle={bundleName}
           documents={detail.documents}
+          onReingestDoc={onReingestDoc}
           docId={docId}
           chId={chId}
           onOpenDoc={(d) => {

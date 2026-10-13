@@ -81,3 +81,21 @@ okf_ingest({ bundle: "research", source: "https://…", maxDepth: 2, maxWorkers:
 ```
 
 or changed as bundle-wide defaults in the service's settings. Raising depth on a heavily-cited source can start a lot of runs — raise it deliberately.
+
+## Queued runs
+
+Ingest runs are **queued**: at most two run at the same time by default (setting: *Concurrent ingest runs*, `maxConcurrentRuns`). Further ingests — more requests, references a run follows, a bundle-wide re-ingest — show as **queued** in the Jobs tab and start, oldest first, as runs finish. Every run competes for the same model, so keeping this low keeps each run fast. A queued run can be cancelled before it starts. Set it to **0** to pause ingestion — runs are still accepted and wait queued until you raise it again (useful while the model server is down).
+
+## Re-ingesting
+
+A source that is already in a knowledge base is not ingested twice — the Ingest dialog tells you which document it already is. To replace it with a fresh ingest of the same source:
+
+- **One document** — in the bundle's **Documents** list, the ↻ button on its row; or **Re-ingest — replace it** in the Ingest dialog when it answers "Already ingested". The assistant can do the same with `okf_ingest({…, reingest: true})` when you ask it to.
+- **The whole knowledge base** — **Re-ingest all** in the bundle's toolbar. Every document is queued for re-ingest; the queue keeps them from all running at once.
+
+A re-ingest fetches the document again from its original source (its URL when it has one), and rewrites it under the **same id**. Its chapters are **cleared when its run starts** — while it is still queued, the old document is untouched — and `raw/` keeps every version of the source. If a re-ingest fails, the document stays empty until you re-ingest it again; the job says why.
+
+## PDFs and other documents without Markdown headings
+
+A PDF converted to markdown usually has no `#` headings. The service reads its section titles instead — numbered ones ("2 Model Architecture", "2.1 Attention") and conventional ones (Abstract, References) — so its chapters still follow the document's own sections, sliced verbatim from the source.
+

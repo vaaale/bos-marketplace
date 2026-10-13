@@ -22,10 +22,11 @@ interface Props {
   onBackToDocs: () => void;
   onBackToToc: () => void;
   onJumpToTerm: (term: string) => void;
+  onReingestDoc: (doc: DocumentRow) => void;
 }
 
 export default function DocumentsView(props: Props) {
-  const { bundle, documents, docId, chId, onOpenDoc, onOpenChapter, onBackToDocs, onBackToToc, onJumpToTerm } = props;
+  const { bundle, documents, docId, chId, onOpenDoc, onOpenChapter, onBackToDocs, onBackToToc, onJumpToTerm, onReingestDoc } = props;
 
   if (docId && chId) {
     return (
@@ -69,6 +70,17 @@ export default function DocumentsView(props: Props) {
                 </div>
               </div>
               <span className="d-upd">{d.updated ? d.updated.slice(0, 10) : "—"}</span>
+              <button
+                className="ibtn"
+                title="Re-ingest this document from its original source"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onReingestDoc(d);
+                }}
+                data-testid={`doc-reingest-${d.id}`}
+              >
+                <Icon name="refresh" size={15} />
+              </button>
               <span className="d-go">
                 View TOC <Icon name="back" size={12} />
               </span>

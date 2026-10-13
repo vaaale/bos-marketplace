@@ -94,6 +94,7 @@ if (parentPort) {
         maxChunkSize: ingestDefaults.maxChunkSize,
         maxDepth: ingestDefaults.maxDepth,
         maxWorkers: ingestDefaults.maxWorkers,
+        maxConcurrentRuns: core.getMaxConcurrentRuns(),
         // The reaper's bounds (FR-059/US13 acceptance 3): what the service is
         // ACTUALLY using, so a changed setting can be confirmed from here
         // rather than inferred from a run that did or did not get reaped.
@@ -228,6 +229,9 @@ if (parentPort) {
               ? userConfig.maxChunkSize
               : DEFAULT_MAX_CHUNK_SIZE,
         };
+        // How many ingest runs may run at once; the rest wait queued (the run
+        // queue in okf-core). A bundle-wide re-ingest goes through it too.
+        core.setMaxConcurrentRuns(userConfig.maxConcurrentRuns);
         // `staleJobMs` is the installed name for the inactivity bound;
         // `jobFinalizeTimeoutMs` is the spec's name for the SAME bound, so
         // both are accepted and neither config spelling is a silent no-op.
@@ -318,6 +322,9 @@ if (parentPort) {
             // Sweep first, then arm the timer. See startReaper's comment for
             // why the startup sweep is the half that matters.
             await reapOnce("startup sweep");
+            // Runs still QUEUED when the service last stopped are waiting, not
+            // lost — start them now that the slots are free again.
+            await core.pumpQueue(bundleRoot);
             startReaper();
           })();
         });
