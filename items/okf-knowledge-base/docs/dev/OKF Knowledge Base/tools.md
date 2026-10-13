@@ -107,6 +107,12 @@ raise it — and `maxWorkers` at most the parent's. At zero the call returns
 passes: before it, every child restarted at the default depth, and one PDF
 became seven concurrent runs.
 
+#### Acquiring a page a plain fetch is refused (FR-067)
+
+Step 0 of a web-page ingest is `web_fetch({url, output_path})` → `okf_add_raw_source({sourcePath})`. Some sites refuse every plain fetch — Medium sits behind Cloudflare, whose bot check answers `web_fetch` with a 403 — while a real browser gets the page, with the user's login if Settings → Browser Automation has a storage state. For that case `buildIngestTask` (`browserFallback`) writes the browser route into the same Step 0: `browser_navigate({url})`, `browser_save_page({output_path})` to the **same** staged path, `browser_close({})`, then step 2 unchanged. `browser_save_page` is a BOS tool: it writes the page open in the agent's session to the VFS as markdown and returns only a receipt, exactly like `web_fetch`'s `output_path`. A binary download (a PDF URL) gets no browser route.
+
+Before this (prod, job run-1022) the agent reached the article with `browser_navigate` and then had no way to put it in a file; it tried reader proxies, which returned the paywall preview.
+
 ### `okf_add_raw_source`
 `{bundle, filename?, content?, sourcePath?, conceptId?, title?, originUrl?, asset?, docId?}`
 

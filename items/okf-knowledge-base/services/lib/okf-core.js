@@ -3516,11 +3516,41 @@ function renderSteps(steps) {
   return steps.map((s, i) => `${i + 1}. \`${s.tool}(${JSON.stringify(s.args)})\``).join("\n");
 }
 
+const call = (tool, args) => `\`${tool}(${JSON.stringify(args)})\``;
+
+/**
+ * When the first step fetches a web PAGE, what to do if that fetch is refused.
+ * A site behind a bot check (Medium, behind Cloudflare) answers every plain
+ * fetch with a 403; a real browser gets the page — with the user's login, if
+ * Browser Automation has one. Production, job run-1022: the agent reached the
+ * article with browser_navigate and then had no way to put it in a file, so it
+ * tried reader proxies, which returned the paywall preview.
+ *
+ * The browser saves to the SAME path web_fetch would have, so the remaining
+ * steps run unchanged. A binary download (a PDF) gets no such path: a browser
+ * saves a page, not a file.
+ */
+function browserFallback(steps) {
+  const fetch = steps[0];
+  if (fetch?.tool !== "web_fetch" || steps[1]?.tool !== "okf_add_raw_source") return "";
+  return (
+    `If step 1 fails with an HTTP 403, a bot check, or a page that is only a "checking your browser" notice, the ` +
+    `site wants a real browser. Get the page there instead, then continue with step 2 as written:\n\n` +
+    `- ${call("browser_navigate", { url: fetch.args.url })}\n` +
+    `- ${call("browser_save_page", { output_path: fetch.args.output_path })}\n` +
+    `- ${call("browser_close", {})}\n\n` +
+    `Do not try reader proxies or archive sites: they return someone else's copy (often a paywall preview), not ` +
+    `the page. If browser_save_page says the bot check is still showing, \`browser_wait_for({"time":5})\` and save ` +
+    `again. If browser automation is off, stop and say so in your summary.\n\n`
+  );
+}
+
 /** The sub-agent task for one ingest run. Embeds jobId / bundle / source. */
 function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers, prepared }) {
   const steps = acquisitionFirstSteps(bundle, source);
   const acquisition = steps.length
     ? `## Step 0 — acquire the source (do this FIRST, exactly as written)\n\n${renderSteps(steps)}\n\n` +
+      browserFallback(steps) +
       `Run those calls verbatim. \`output_path\` is pinned on purpose: with it the source streams to disk and the tool ` +
       `returns a receipt, so the document never passes through your context. Do NOT drop it and paste the content into ` +
       `\`okf_add_raw_source({content})\` instead — that re-emits the entire document as output tokens for no benefit. ` +
