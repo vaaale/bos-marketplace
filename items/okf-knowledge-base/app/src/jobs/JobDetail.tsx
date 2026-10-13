@@ -18,6 +18,7 @@
 
 import React from "react";
 import { Icon } from "../lib/icons";
+import { Markdown } from "../lib/markdown";
 import { fetchJob } from "../lib/serviceClient";
 import type { Job, TrajectoryEvent } from "../lib/types";
 import Trajectory from "./Trajectory";
@@ -91,8 +92,8 @@ export default function JobDetail({ job }: { job: Job }) {
           {job.summary.text ? (
             <>
               <div className="jd-sub">Agent report</div>
-              <div className="jd-top" data-testid={`job-report-${job.id}`} style={{ whiteSpace: "pre-wrap" }}>
-                {job.summary.text}
+              <div className="md-body job-report" data-testid={`job-report-${job.id}`}>
+                <Markdown source={job.summary.text} />
               </div>
             </>
           ) : null}
