@@ -9,7 +9,7 @@
 
 import React from "react";
 import { Icon } from "../lib/icons";
-import { getBundleRoot, importBundle, triggerIngest } from "../lib/serviceClient";
+import { getBundleRoot, importBundle, triggerIngest, reingestBundle, reingestDocument } from "../lib/serviceClient";
 import type { BundleHealth } from "../lib/types";
 
 function Modal({ children, onClose, testid }: { children: React.ReactNode; onClose: () => void; testid: string }) {
@@ -140,11 +140,11 @@ export function IngestModal({ bundle, onClose, onStarted }: { bundle: string; on
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
-  const start = async () => {
+  const start = async (reingest = false) => {
     setError(null);
     setBusy(true);
     try {
-      const res = await triggerIngest(bundle, source);
+      const res = await triggerIngest(bundle, source, { reingest });
       setStarted(res);
       onStarted?.();
       // A started run is watched in the Jobs tab, not in here — the dialog has
@@ -184,7 +184,9 @@ export function IngestModal({ bundle, onClose, onStarted }: { bundle: string; on
             {started.status === "already_ingested" ? (
               <>
                 <b>Already ingested.</b> This source is in the bundle&apos;s provenance as <code>{started.docId}</code> —
-                no run was started, and no duplicate document was created.
+                no run was started, and no duplicate document was created. <b>Re-ingest</b> replaces it with a fresh
+                ingest of the same source: its chapters are cleared when the run starts, and <code>raw/</code> keeps
+                every version.
               </>
             ) : (
               <>
@@ -207,8 +209,72 @@ export function IngestModal({ bundle, onClose, onStarted }: { bundle: string; on
         <button className="btn" onClick={onClose}>
           Close
         </button>
-        <button className="btn primary" disabled={!source || busy} onClick={() => void start()} data-testid="start-ingest">
-          <Icon name="import" size={14} /> {busy ? "Starting…" : "Start ingest"}
+        {started?.status === "already_ingested" ? (
+          <button className="btn primary" disabled={busy} onClick={() => void start(true)} data-testid="ingest-reingest">
+            <Icon name="refresh" size={14} /> {busy ? "Starting…" : "Re-ingest — replace it"}
+          </button>
+        ) : (
+          <button className="btn primary" disabled={!source || busy} onClick={() => void start()} data-testid="start-ingest">
+            <Icon name="import" size={14} /> {busy ? "Starting…" : "Start ingest"}
+          </button>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Confirm a re-ingest — of one document (`docId`) or of the whole bundle. Both
+ * go through the service's run queue; the confirmation says exactly what is
+ * replaced, because a re-ingest clears a document when its run starts.
+ */
+export function ReingestModal({
+  bundle,
+  docId,
+  title,
+  docCount,
+  onClose,
+  onStarted,
+}: {
+  bundle: string;
+  docId?: string;
+  title?: string;
+  docCount?: number;
+  onClose: () => void;
+  onStarted?: () => void;
+}) {
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const confirm = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (docId) await reingestDocument(bundle, docId);
+      else await reingestBundle(bundle);
+      onStarted?.();
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal onClose={onClose} testid="modal-reingest">
+      <h3>{docId ? `Re-ingest “${title || docId}”?` : `Re-ingest all ${docCount ?? ""} document(s) in ${bundle}?`}</h3>
+      <div className="desc" style={{ marginTop: 6 }}>
+        {docId ? "The document is" : "Each document is"} fetched again from its original source and rewritten under the
+        same id. {docId ? "Its" : "A document's"} chapters, stub and chunk cache are <b>cleared when its run starts</b>;{" "}
+        <code>raw/</code> keeps every version. Runs are queued and start a few at a time — watch them in the{" "}
+        <b>Jobs</b> tab.
+      </div>
+      {error ? <div className="app-error" style={{ margin: "12px 0 0" }}>{error}</div> : null}
+      <div className="row">
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn primary" disabled={busy} onClick={() => void confirm()} data-testid="reingest-confirm">
+          <Icon name="refresh" size={14} /> {busy ? "Queuing…" : "Re-ingest"}
         </button>
       </div>
     </Modal>

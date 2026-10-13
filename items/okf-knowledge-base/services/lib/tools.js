@@ -237,7 +237,7 @@ const DECLARATIONS = [
       "Ingest a source into a knowledge base as organized chapters. ONE CALL — pass `source` as a URL, a VFS file path, or a raw/ path already in the bundle. You do not need to fetch, convert, stage or delegate anything first, and there is nothing for you to run afterwards.\n\n" +
       "The service starts the run itself: it records a job and launches the bundled least-privilege `okf-ingest` agent, which acquires the source (streaming it to disk, never through anyone's context), decomposes it at its heading structure into chapters with concept terms and one-line summaries, interprets inline assets, and maintains the document TOC and the concept index.\n\n" +
       "Returns IMMEDIATELY with `{jobId, status: 'queued'}` — your turn is not held open for the run. Check how it went with okf_list_jobs: it ends `completed` with a summary, or `failed` with an error.\n\n" +
-      "A source already in the bundle's provenance ledger returns `already_ingested` with the existing document id and starts no run.",
+      "A source already in the bundle's provenance ledger returns `already_ingested` with the existing document id and starts no run — unless you pass `reingest: true`, which replaces that document with a fresh ingest. Runs are queued: at most the service's `maxConcurrentRuns` run at once.",
     inputSchema: required(
       {
         bundle: STRING,
@@ -245,8 +245,12 @@ const DECLARATIONS = [
           type: "string",
           description: "What to ingest: an http(s) URL, an absolute VFS path (e.g. /workspace/report.pdf), or a raw/ path already in the bundle.",
         },
-        maxDepth: { type: "number", description: "Reference-crawl hops beyond the seed source (overrides the bundle default)." },
+        maxDepth: { type: "number", description: "Reference-crawl hops beyond the seed source (overrides the bundle default). Called from inside an ingest run, the new run gets one hop less than that run, and this can only lower it." },
         maxWorkers: { type: "number", description: "How many references to ingest concurrently (overrides the bundle default)." },
+        reingest: {
+          type: "boolean",
+          description: "Re-ingest a source that is ALREADY in the bundle: re-acquire it from its origin and rewrite the document under the same id (its chapters are cleared when the run starts; raw/ keeps every version). Only when the user asks for a re-ingest — never for a reference you are following.",
+        },
       },
       ["bundle", "source"],
     ),
@@ -441,7 +445,11 @@ function makeHandlers(core) {
         source: args.source,
         maxDepth: args.maxDepth,
         maxWorkers: args.maxWorkers,
+        reingest: args.reingest === true,
         defaults: ctx.ingestDefaults,
+        // Which run is calling (from BOS, not the model) — a reference followed
+        // from inside an ingest run inherits that run's remaining depth.
+        caller: ctx.caller,
       }),
 
     // The run observer. Reads the SAME core.listJobs() records the app's Jobs

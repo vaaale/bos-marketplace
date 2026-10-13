@@ -89,17 +89,23 @@ Regenerates the derived artifacts first, so the manifest always carries a correc
 ## Ingest
 
 ### `okf_ingest`
-`{bundle, source, maxDepth?, maxWorkers?}` → one of:
+`{bundle, source, maxDepth?, maxWorkers?, reingest?}` → one of:
 
 | `status` | Payload | Meaning |
 |---|---|---|
-| `acquisition_required` | `steps[]`, `jobId`, `job` | Run the steps verbatim — they pin `output_path` — then call again with the resulting `raw/` path. |
-| `delegation_required` | `delegate{agent, task}`, `jobId`, `callbacks`, `job` | `agent_delegate` with the block. The task embeds the `jobId` and the lifecycle URLs. |
-| `already_ingested` | `docId`, `rawFile`, `ingestedAt` | Deduplicated against `raw/sources.json`; no duplicate created. |
+| `queued` | `jobId`, `maxDepth`, `maxWorkers`, `reingestOf?`, `job` | A job was queued; the run queue starts the bundled `okf-ingest` agent when a slot is free (at most `maxConcurrentRuns` at once). Follow it with `okf_list_jobs`. |
+| `already_ingested` | `docId`, `rawFile`, `ingestedAt` | Deduplicated against `raw/sources.json`; no run started. Pass `reingest: true` to replace that document. |
+| `over_depth` | `parentJobId` | Called from a run with no reference hops left; no run started. |
 
-A **dispatcher, not a writer**: the worker has no `web_fetch` and cannot run an agent loop, so it returns the exact next calls instead. `output_path` is the mechanism that keeps a long document out of the calling model's context.
-
-After `agent_delegate` returns, the caller POSTs `callbacks.fail` if the result was an error or empty — the safety net for a sub-agent that dies without reporting.
+**Nested ingests are bounded by the run that calls.** BOS passes the calling run
+with every tool call (`tool_call.payload.caller.runId`) and each job records its
+run's `runId`, so a call from inside one of this service's own ingest runs is
+recognised as a reference being followed. Its job gets `parentJobId` and
+`maxDepth = parent.maxDepth - 1` — a `maxDepth` argument can lower that, never
+raise it — and `maxWorkers` at most the parent's. At zero the call returns
+`over_depth`. The bound deliberately does not depend on anything the model
+passes: before it, every child restarted at the default depth, and one PDF
+became seven concurrent runs.
 
 ### `okf_add_raw_source`
 `{bundle, filename?, content?, sourcePath?, conceptId?, title?, originUrl?, asset?, docId?}`
@@ -178,3 +184,12 @@ The app is a sandboxed iframe, not an agent: it cannot call the `okf_*` tools, w
 | `POST /jobs/<id>/{start,progress,complete,fail}` | job store | the sub-agent's lifecycle callbacks **and** the assistant's safety net |
 
 Knowledge *authoring* stays agent-driven throughout — the app never writes a chapter. What it can do is bundle lifecycle (create/import/export/delete), vocabulary curation (merge), and queueing a run.
+
+### Re-ingest and the run queue (FR-063 / FR-064)
+
+`reingest: true` re-ingests a source the ledger already holds: the job records `reingestDocId`, its source is the document's recorded **origin** (re-acquired, so the run gets fresh chunks and a fresh heading map), and when the job's turn comes `runJob` first calls `clearDocument` — stub, `concepts/<docId>/`, `.chunks/<docId>/`, then one index rebuild — and the run rewrites the document under the same id. `raw/` is never touched. A nested caller (FR-061) cannot re-ingest.
+
+Every run goes through `pumpQueue`: queued jobs start oldest-first while fewer than `maxConcurrentRuns` runs launched by this process are live; each finished run pumps again, and so does service startup (after the reaper's sweep, which only reaps `running` jobs). A run whose source is a `raw/` path gets its chunks and heading map from `prepareRawSource` before the agent starts — the task lists the chunk paths instead of telling the agent to read the source whole.
+
+Bundle-wide and per-document re-ingest are REST-only (`POST /bundles/<b>/reingest`, `POST /bundles/<b>/documents/<docId>/reingest`), resolved from the ledger by `reingestDocument`; no tool is added.
+

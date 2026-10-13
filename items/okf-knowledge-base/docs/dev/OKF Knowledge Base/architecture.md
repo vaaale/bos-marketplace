@@ -145,6 +145,8 @@ That route is not OKF-specific — it is the HTTP face of BOS's in-process `abor
 `core.reapStaleJobs(bundleRoot, {inactivityMs, maxTotalMs})` marks a non-terminal job `failed` with a "stale" reason when **either** bound trips (FR-059, ADR-014 Part B):
 
 - **inactivity** — `now - job.lastEventAt > staleJobMs` (a.k.a. `jobFinalizeTimeoutMs`, default 30 min). `lastEventAt` is stamped by `appendJobTrajectory` on every captured NDJSON event and persisted with the record, so the bound means "has said nothing for 30 minutes", never "has been running for 30 minutes" — a long ingest that keeps emitting tool calls is never reaped.
+
+**What a trajectory holds.** Every stream event in order — except that consecutive `reasoning_delta` lines, which BOS streams one token per line, are merged into one event with the joined text (`pushTrajectoryEvent`, used by both `appendJobTrajectory` and the cold load in `loadJobs`). Stored per token, one run reached 33,186 events and the job store, re-serialised in full on each coalesced write, took the worker past its heap limit.
 - **total runtime** — `now - job.startedAt > maxTotalTimeoutMs` (default 6 h). The backstop inactivity cannot provide: a run that keeps emitting events while repeating the same failure refreshes `lastEventAt` forever.
 
 The `error` names the bound that actually tripped — the inactivity message lists a BOS restart as one possible cause among a long generation and a provider stall rather than asserting it. Terminal jobs (completed/cancelled/failed) are never candidates. It runs **on a timer** (every 5 minutes, `unref`'d so it never holds the worker open) **and as a sweep on every (re)start**.
@@ -204,3 +206,6 @@ The Query tab mounts only while visible: its force simulation sizes its viewBox 
 - [data-model.md](data-model.md) — bundle layout, frontmatter, index/TOC format, the job record.
 - [tool-surface.md](tool-surface.md) — the 21 tools (the additive `kind` on two of them, and the job-control pair).
 - [extension.md](extension.md) — where to add a convention, and why the skill is the seam.
+
+**Sections of a heading-less source.** `sourceHeadings` is the one heading reader behind both `buildHeadingMap` and `chunkSource`. A source with any Markdown heading is read from its `#` lines only; one with none (a converted PDF) is read from its numbered section titles — accepted only as the valid next entry of an outline, which is what rejects page numbers, figure labels and table values — and its conventional titles. Offsets stay into the untouched source, so chapter bodies remain verbatim slices (FR-062).
+

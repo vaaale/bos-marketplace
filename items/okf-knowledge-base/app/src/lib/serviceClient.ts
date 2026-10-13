@@ -253,16 +253,30 @@ export function importBundle(
 export function triggerIngest(
   bundle: string,
   source: string,
-  maxDepth?: number,
+  opts: { maxDepth?: number; reingest?: boolean } = {},
 ): Promise<{
   status: "queued" | "already_ingested";
   jobId: string | null;
   bundle: string;
   source: string;
   docId?: string;
+  reingestOf?: string;
   note: string;
 }> {
-  return send("jobs", "POST", { bundle, source, maxDepth });
+  return send("jobs", "POST", { bundle, source, ...opts });
+}
+
+/** Re-ingest one document, by id — the service resolves its source from the
+ *  bundle's provenance ledger, clears the document when the run starts, and
+ *  queues the run like any other. */
+export function reingestDocument(bundle: string, docId: string): Promise<{ docId: string; jobId: string; source: string; status: string }> {
+  return send(`bundles/${encodeURIComponent(bundle)}/documents/${encodeURIComponent(docId)}/reingest`, "POST");
+}
+
+/** Re-ingest every document in a bundle — one queued re-ingest per document,
+ *  through the service's run queue (at most maxConcurrentRuns at once). */
+export function reingestBundle(bundle: string): Promise<{ bundle: string; jobs: { docId: string; jobId: string }[]; note: string }> {
+  return send(`bundles/${encodeURIComponent(bundle)}/reingest`, "POST");
 }
 
 export function fetchJobs(): Promise<{ jobs: Job[]; total: number; active: number }> {

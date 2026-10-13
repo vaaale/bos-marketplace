@@ -47,6 +47,12 @@
         "default": 3,
         "description": "How many references an ingest run ingests concurrently. Overridable per okf_ingest call."
       },
+      "maxConcurrentRuns": {
+        "type": "number",
+        "title": "Concurrent ingest runs",
+        "default": 2,
+        "description": "How many ingest runs may run at the same time. Further ingests — more requests, followed references, a bundle-wide re-ingest — wait in the queue (status queued) and start, oldest first, as runs finish. Every run competes for the same model, so keep this low. 0 pauses ingestion: runs are still accepted and wait queued until you raise it (e.g. while the model server is down). Default 2."
+      },
       "maxChunkSize": {
         "type": "number",
         "default": 32000,

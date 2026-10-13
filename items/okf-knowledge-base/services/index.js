@@ -94,6 +94,7 @@ if (parentPort) {
         maxChunkSize: ingestDefaults.maxChunkSize,
         maxDepth: ingestDefaults.maxDepth,
         maxWorkers: ingestDefaults.maxWorkers,
+        maxConcurrentRuns: core.getMaxConcurrentRuns(),
         // The reaper's bounds (FR-059/US13 acceptance 3): what the service is
         // ACTUALLY using, so a changed setting can be confirmed from here
         // rather than inferred from a run that did or did not get reaped.
@@ -228,6 +229,9 @@ if (parentPort) {
               ? userConfig.maxChunkSize
               : DEFAULT_MAX_CHUNK_SIZE,
         };
+        // How many ingest runs may run at once; the rest wait queued (the run
+        // queue in okf-core). A bundle-wide re-ingest goes through it too.
+        core.setMaxConcurrentRuns(userConfig.maxConcurrentRuns);
         // `staleJobMs` is the installed name for the inactivity bound;
         // `jobFinalizeTimeoutMs` is the spec's name for the SAME bound, so
         // both are accepted and neither config spelling is a silent no-op.
@@ -318,6 +322,9 @@ if (parentPort) {
             // Sweep first, then arm the timer. See startReaper's comment for
             // why the startup sweep is the half that matters.
             await reapOnce("startup sweep");
+            // Runs still QUEUED when the service last stopped are waiting, not
+            // lost — start them now that the slots are free again.
+            await core.pumpQueue(bundleRoot);
             startReaper();
           })();
         });
@@ -325,7 +332,9 @@ if (parentPort) {
         await closeServer();
         parentPort.postMessage({ type: "disposed" });
       } else if (msg.type === "tool_call") {
-        const { callId, name, args } = msg.payload;
+        // `caller` ({runId, agentId}) is which run made the call — BOS's
+        // answer, not the model's. Absent from a BOS that predates it.
+        const { callId, name, args, caller } = msg.payload;
         const handler = handlers[name];
         if (!handler) {
           parentPort.postMessage({
@@ -335,7 +344,7 @@ if (parentPort) {
           return;
         }
         try {
-          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, staleJobMs, maxTotalTimeoutMs, getRuntime, serviceId });
+          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, staleJobMs, maxTotalTimeoutMs, getRuntime, serviceId, caller });
           parentPort.postMessage({ type: "tool_result", payload: { callId, result } });
         } catch (err) {
           parentPort.postMessage({

@@ -1964,6 +1964,123 @@ function splitToSize(text, max) {
   return out.length ? out : [text];
 }
 
+// ── Headings of a source that has no Markdown headings ─────────────────────
+//
+// A PDF converted to markdown arrives with NO `#` lines — its section titles
+// are plain lines ("2 Model Architecture", "2.1 Attention") — so a heading map
+// built from Markdown headings alone is empty, `sourceRange` can express
+// nothing but `whole: true`, and the agent's only way to write chapters is to
+// re-type the document. On production it did exactly that: all 130K characters
+// of a technical report, with `#` markers inserted, after first reaching for
+// file_write to do it.
+//
+// So when a source has no Markdown heading at all, its structure is read from
+// the two conventions such documents actually use, and nothing else:
+//
+//   • a NUMBERED section title — "2", "2.1", "2.1.1" then a Capitalised title
+//     — accepted only as the valid NEXT entry of an outline (a child, a
+//     sibling, or the next sibling of an ancestor). The outline rule is what
+//     rejects the numbers that litter a converted PDF: page numbers ("9"),
+//     figure labels ("80 Block 16"), table values ("1"). pdfminer often puts
+//     the number and the title on separate lines ("1" / blank / "Introduction");
+//     that pair is one heading, starting at the number line.
+//   • a CONVENTIONAL unnumbered title (Abstract, References, …) alone on its
+//     line.
+//
+// Both must stand alone — the line before is blank or ends a sentence or a
+// table row, never a mid-sentence wrap — and be short, not ending like a
+// sentence or a table-of-contents entry (a trailing page number). Offsets are into the untouched source, so a chapter body is still a
+// verbatim slice of raw/ (SC-019). A source with ANY Markdown heading is read
+// exactly as before — the fallback never mixes in.
+
+const SECTION_NUMBER = /^(\d{1,2}(?:\.\d{1,2}){0,4})\.?$/;
+const NUMBERED_TITLE = /^(\d{1,2}(?:\.\d{1,2}){0,4})\.?\s+(\S.*)$/;
+const CONVENTIONAL_TITLES = new Set([
+  "abstract", "introduction", "background", "related work", "conclusion", "conclusions", "discussion",
+  "acknowledgements", "acknowledgments", "references", "bibliography", "appendix", "appendices", "summary",
+]);
+const MAX_TITLE_LENGTH = 90;
+const MAX_TITLE_WORDS = 14;
+
+/** A line that can be a section title's TEXT: capitalised, short, and not a
+ *  sentence or a TOC entry. */
+function isTitleText(text) {
+  const t = text.trim();
+  if (!t || t.length > MAX_TITLE_LENGTH || t.split(/\s+/).length > MAX_TITLE_WORDS) return false;
+  if (!/^[A-Z]/.test(t)) return false;
+  if (/[.;:,]$/.test(t)) return false; // a sentence or a run-in label, not a title
+  if (/\s\d+$/.test(t)) return false; // "Method 7" — a table-of-contents line
+  return true;
+}
+
+/** Is `next` (parts of a section number) the valid next entry after `prev`? */
+function isNextSection(prev, next) {
+  if (!prev.length) return next.length === 1 && next[0] === 1;
+  if (next.length === prev.length + 1 && next[next.length - 1] === 1 && prev.every((n, i) => next[i] === n)) return true;
+  if (next.length > prev.length) return false;
+  for (let i = 0; i < next.length - 1; i++) if (next[i] !== prev[i]) return false;
+  return next[next.length - 1] === prev[next.length - 1] + 1;
+}
+
+/**
+ * Every heading of a source as `{line, level, text}` (line = 0-based index) —
+ * THE one heading reader, shared by buildHeadingMap and chunkSource so the
+ * chunks the agent reads and the map its `sourceRange` resolves against can
+ * never disagree.
+ */
+function sourceHeadings(lines) {
+  const atx = [];
+  lines.forEach((line, i) => {
+    const m = HEADING_LINE.exec(line);
+    if (m) atx.push({ line: i, level: m[1].length, text: m[2].trim() });
+  });
+  if (atx.length) return atx;
+
+  const found = [];
+  let outline = [];
+  // A title starts its own line of thought: the line before it is blank, or
+  // ENDS something — a sentence, a table row, a parenthetical. pdfminer often
+  // sets a title directly under the last line of the previous paragraph, but a
+  // line that merely wraps mid-sentence ("…trained on" / "2 Trillion Tokens")
+  // never qualifies.
+  const standsAlone = (i) => i === 0 || !lines[i - 1].trim() || /[.!?:|)\]]\s*$/.test(lines[i - 1]);
+  const consumed = new Set(); // title lines already used by a split "1" / "Introduction" heading
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || consumed.has(i) || !standsAlone(i)) continue;
+
+    if (CONVENTIONAL_TITLES.has(line.toLowerCase()) && /^[A-Z]/.test(line)) {
+      found.push({ line: i, level: 1, text: line });
+      continue;
+    }
+
+    let number = null;
+    let title = null;
+    let titleLine = null;
+    const numbered = NUMBERED_TITLE.exec(line);
+    if (numbered && isTitleText(numbered[2])) {
+      number = numbered[1];
+      title = numbered[2].trim();
+    } else if (SECTION_NUMBER.test(line)) {
+      // "1" / blank / "Introduction": the title is the next non-blank line
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim() && j - i <= 2) j++;
+      if (j < lines.length && j - i <= 2 && !NUMBERED_TITLE.test(lines[j].trim()) && isTitleText(lines[j])) {
+        number = SECTION_NUMBER.exec(line)[1];
+        title = lines[j].trim();
+        titleLine = j;
+      }
+    }
+    if (!number) continue;
+    const parts = number.split(".").map(Number);
+    if (!isNextSection(outline, parts)) continue;
+    outline = parts;
+    if (titleLine !== null) consumed.add(titleLine);
+    found.push({ line: i, level: parts.length, text: `${number} ${title}` });
+  }
+  return found;
+}
+
 /**
  * Walk a source ONCE and record every heading with its char offset
  * (ADR-014 D1). PURE — no I/O, no LLM, deterministic: the same bytes always
@@ -1981,13 +2098,20 @@ function splitToSize(text, max) {
  */
 function buildHeadingMap(content) {
   const text = String(content == null ? "" : content);
-  const headings = [];
+  const lines = text.split("\n");
+  const lineStart = [];
   let offset = 0;
-  for (const line of text.split("\n")) {
-    const m = HEADING_LINE.exec(line);
-    if (m) headings.push({ index: headings.length, level: m[1].length, text: m[2].trim(), start: offset, end: 0 });
+  for (const line of lines) {
+    lineStart.push(offset);
     offset += line.length + 1; // + the "\n" that split() consumed
   }
+  const headings = sourceHeadings(lines).map((h, index) => ({
+    index,
+    level: h.level,
+    text: h.text,
+    start: lineStart[h.line],
+    end: 0,
+  }));
   for (let i = 0; i < headings.length; i++) {
     headings[i].end = i + 1 < headings.length ? headings[i + 1].start : text.length;
   }
@@ -2046,16 +2170,19 @@ function chunkSource(content, maxChunkSize) {
     if (body.trim()) sections.push({ headingPath: sectionPath.slice(), content: body, headingIndex });
   };
 
-  for (const line of text.split("\n")) {
-    const heading = HEADING_LINE.exec(line);
+  const lines = text.split("\n");
+  const headingAt = new Map(sourceHeadings(lines).map((h) => [h.line, h]));
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const heading = headingAt.get(i);
     if (!heading) {
       sectionLines.push(line);
       continue;
     }
     closeSection();
-    const level = heading[1].length;
+    const level = heading.level;
     while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
-    stack.push({ level, text: heading[2].trim() });
+    stack.push({ level, text: heading.text });
     sectionPath = stack.map((h) => h.text);
     sectionLines = [line];
     headingIndex = headingsSeen;
@@ -2907,6 +3034,13 @@ async function loadJobs(bundleRoot) {
         // (GET /jobs/<id>, the app) is entitled to an array, not undefined.
         for (const job of parsed.jobs) {
           if (!Array.isArray(job.trajectory)) job.trajectory = [];
+          // A store written before reasoning was merged holds one event per
+          // token (8.4 MB on production); compact it on the way in.
+          else if (job.trajectory.some((e) => e && e.type === "reasoning_delta")) {
+            const compacted = [];
+            for (const e of job.trajectory) pushTrajectoryEvent(compacted, e);
+            job.trajectory = compacted;
+          }
           // The reaper's inactivity clock (FR-059) must survive a restart —
           // it is persisted with the rest of the record, but a record
           // written before the field existed comes back without it. Null,
@@ -2961,7 +3095,7 @@ function schedulePersistJobs(bundleRoot) {
   return persistPending;
 }
 
-async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers }) {
+async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers, parentJobId, reingestDocId }) {
   const state = await loadJobs(bundleRoot);
   state.seq++;
   const job = {
@@ -2971,6 +3105,12 @@ async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers })
     source,
     maxDepth: maxDepth ?? null,
     maxWorkers: maxWorkers ?? null,
+    // The job whose run started this one by following a reference — null for
+    // an ingest a user or an outside agent asked for. See triggerIngest.
+    parentJobId: parentJobId ?? null,
+    // Set for a RE-ingest: the document this run replaces. It is cleared when
+    // the run STARTS (not when it is queued), then rewritten under the same id.
+    reingestDocId: reingestDocId ?? null,
     queuedAt: nowIso(),
     startedAt: null,
     // Last captured trajectory event (FR-049): the reaper's staleness clock.
@@ -3041,13 +3181,37 @@ async function getJob(bundleRoot, id) {
  * transition, and a terminal job must still be allowed to record the `done`
  * line that made it terminal.
  */
+/**
+ * Append one stream event to a trajectory — THE rule for what a trajectory
+ * holds, shared by the live launcher (appendJobTrajectory) and the cold load
+ * (loadJobs), so a store written by an older service converges on it.
+ *
+ * Reasoning arrives one TOKEN per line. Stored as-is the trajectory became a
+ * token log — 33,089 of one run's 33,186 events — and the job store grew until
+ * the worker hit its heap limit. A run of consecutive reasoning lines is kept
+ * as ONE event with the joined text: the same words in the same place in the
+ * sequence, and any other event ends the run, so the tool / tool_result pairing
+ * the Jobs tab renders is untouched.
+ */
+function pushTrajectoryEvent(trajectory, event) {
+  const last = trajectory[trajectory.length - 1];
+  if (event && event.type === "reasoning_delta" && last && last.type === "reasoning_delta") {
+    for (const key of ["delta", "text"]) {
+      if (typeof event[key] === "string") last[key] = (typeof last[key] === "string" ? last[key] : "") + event[key];
+    }
+    return;
+  }
+  // a copy: a later merge must never write into the caller's event object
+  trajectory.push(event && event.type === "reasoning_delta" ? { ...event } : event);
+}
+
 async function appendJobTrajectory(bundleRoot, id, event) {
   if (!event || typeof event !== "object") return null;
   const state = await loadJobs(bundleRoot);
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return null;
   if (!Array.isArray(job.trajectory)) job.trajectory = [];
-  job.trajectory.push(event);
+  pushTrajectoryEvent(job.trajectory, event);
   // THE LIVENESS STAMP the stale reaper reads (FR-049). An event is the only
   // honest evidence that the run is still alive, so it is recorded here, at
   // the one place every event passes through. It rides the SAME coalesced
@@ -3353,7 +3517,7 @@ function renderSteps(steps) {
 }
 
 /** The sub-agent task for one ingest run. Embeds jobId / bundle / source. */
-function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
+function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers, prepared }) {
   const steps = acquisitionFirstSteps(bundle, source);
   const acquisition = steps.length
     ? `## Step 0 — acquire the source (do this FIRST, exactly as written)\n\n${renderSteps(steps)}\n\n` +
@@ -3362,9 +3526,16 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
       `\`okf_add_raw_source({content})\` instead — that re-emits the entire document as output tokens for no benefit. ` +
       `\`okf_add_raw_source\` returns the \`rawFile\` path, a \`docId\` AND a \`chunks\` array — see "The document id" ` +
       `and "Chunk processing" below; the chunks are what you decompose, not the whole \`rawFile\`.\n\n`
-    : `## Step 0 — the source is already in the bundle\n\nIt is at \`${source}\`. Read it from there with \`file_read\`; ` +
-      `do not expect it inline and do not re-fetch it. Its \`docId\` is \`${docIdForSource(source)}\` — unless ` +
-      `\`raw/sources.json\` already records a different one for this file, in which case that recorded id wins.\n\n`;
+    : prepared
+      ? `## Step 0 — the source is already in the bundle, and already split\n\nIt is \`${source}\`. Do NOT ` +
+        `\`okf_add_raw_source\` it again and do not re-fetch it: the service has already split it for this run. Its ` +
+        `\`docId\` is \`${prepared.docId}\`, and its chunks are, in order:\n\n` +
+        prepared.chunks.map((c) => `- \`${c.path}\``).join("\n") +
+        `\n\nRead them ONE AT A TIME with \`file_read\` (see "Chunk processing"); their \`headings\` lists are the ` +
+        `indices your \`sourceRange\` refers to.\n\n`
+      : `## Step 0 — the source is already in the bundle\n\nIt is at \`${source}\`. Read it from there with \`file_read\`; ` +
+        `do not expect it inline and do not re-fetch it. Its \`docId\` is \`${docIdForSource(source)}\` — unless ` +
+        `\`raw/sources.json\` already records a different one for this file, in which case that recorded id wins.\n\n`;
 
   return (
     `Ingest \`${source}\` into the OKF bundle "${bundle}" as organized chapters.\n\n` +
@@ -3404,9 +3575,12 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
     `\`> **Interpretation (LLM, at ingest):** …\` blockquote directly beneath it in the chapter body. Ordinary HTML ` +
     `hyperlinks stay remote references — do not download them. A failed asset is marked unavailable and does not fail ` +
     `the document.\n\n` +
-    `Follow at most ${maxDepth} hop(s) of references beyond this seed source, at most ${maxWorkers} at a time, each ` +
-    `nested reference via its own \`okf_ingest\` call (it becomes its own job). Skip anything already in the bundle's ` +
-    `provenance ledger.\n\n` +
+    (maxDepth > 0
+      ? `Follow at most ${maxDepth} hop(s) of references beyond this seed source, at most ${maxWorkers} at a time, each ` +
+        `nested reference via its own \`okf_ingest\` call (it becomes its own job, one hop shallower than this one). ` +
+        `Skip anything already in the bundle's provenance ledger.\n\n`
+      : `Do NOT follow any references: this run is at the depth limit. List the references you found as skipped ` +
+        `(over-depth) in your summary — an \`okf_ingest\` call from this run is refused.\n\n`) +
     `## Finishing\n\n` +
     `You do NOT finalize this job. The service launched this run and writes its terminal state from the run's own ` +
     `signal — there are no lifecycle callbacks for you to POST. Your one job-facing duty is your final message: a ` +
@@ -3424,6 +3598,14 @@ function progressFor(tool, index) {
   return `${tool} · ${index} tool calls so far`;
 }
 
+/** The job whose run has this id, or null — the run is not one of ours (a
+ *  user's chat, another agent) or no run id was given. */
+async function jobForRun(bundleRoot, runId) {
+  if (!runId) return null;
+  const state = await loadJobs(bundleRoot);
+  return state.jobs.find((j) => j.runId === runId) || null;
+}
+
 /**
  * THE single auto-trigger path. Shared by the `okf_ingest` tool and the app's
  * `POST /jobs` route — one capability, two surfaces, so a run a user starts
@@ -3433,13 +3615,41 @@ function progressFor(tool, index) {
  * Returns IMMEDIATELY with `{jobId, status: "queued"}`. The run proceeds in
  * the background; watch it via `okf_list_jobs` / `GET /jobs`.
  */
-async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers, defaults } = {}) {
+async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers, defaults, caller, reingest } = {}) {
   const src = String(source || "").trim();
   if (!bundle) throw new Error("bundle is required");
   if (!src) throw new Error("source is required — an http(s) URL, an absolute VFS path, or a raw/ path in the bundle");
 
-  const depth = Number.isFinite(maxDepth) ? maxDepth : (defaults && defaults.maxDepth) ?? 1;
-  const workers = Number.isFinite(maxWorkers) ? maxWorkers : (defaults && defaults.maxWorkers) ?? 3;
+  // A NESTED ingest — a reference followed from inside one of this service's
+  // own runs — is bounded by the run that is calling, identified by the
+  // `caller.runId` BOS passes with every tool call and the `runId` each job
+  // records. It gets ONE hop less than its parent and nothing the model passes
+  // can raise that; at zero it is refused. Without this every child restarted
+  // at the default depth, and one PDF became seven concurrent runs.
+  const parent = await jobForRun(bundleRoot, caller && caller.runId);
+  let depth;
+  let workers;
+  if (parent) {
+    const remaining = (Number.isFinite(parent.maxDepth) ? parent.maxDepth : 0) - 1;
+    if (remaining < 0) {
+      return {
+        status: "over_depth",
+        jobId: null,
+        bundle,
+        source: src,
+        parentJobId: parent.id,
+        note:
+          `Not started: your run (${parent.id}) is at its reference-depth limit, so it cannot ingest further ` +
+          `references. Report this one as skipped (over-depth) in your summary.`,
+      };
+    }
+    depth = Number.isFinite(maxDepth) ? Math.min(maxDepth, remaining) : remaining;
+    const parentWorkers = Number.isFinite(parent.maxWorkers) ? parent.maxWorkers : (defaults && defaults.maxWorkers) ?? 3;
+    workers = Number.isFinite(maxWorkers) ? Math.min(maxWorkers, parentWorkers) : parentWorkers;
+  } else {
+    depth = Number.isFinite(maxDepth) ? maxDepth : (defaults && defaults.maxDepth) ?? 1;
+    workers = Number.isFinite(maxWorkers) ? maxWorkers : (defaults && defaults.maxWorkers) ?? 3;
+  }
 
   const bDir = bundleDir(bundleRoot, bundle);
   if (!(await vfs.exists(bDir))) {
@@ -3447,11 +3657,16 @@ async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers,
   }
 
   // FR-018 dedup. A source already in the provenance ledger is NOT run
-  // again: the existing docId comes back and no job is created, so a repeat
-  // call is cheap and idempotent rather than a duplicate document.
+  // again unless the caller asks for a RE-ingest: the existing docId comes
+  // back and no job is created, so a repeat call is cheap and idempotent
+  // rather than a duplicate document. A re-ingest is the user's (or the
+  // assistant's) decision — never one a nested reference-follow can make, so
+  // a call from inside an ingest run always gets the ordinary answer.
+  let runSource = src;
+  let reingestDocId = null;
   if (!src.startsWith("raw/")) {
     const known = await findSource(bundleRoot, bundle, src).catch(() => null);
-    if (known) {
+    if (known && (!reingest || parent)) {
       return {
         status: "already_ingested",
         bundle,
@@ -3462,32 +3677,223 @@ async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers,
         jobId: null,
         note:
           "This source is already in the bundle's provenance ledger, so no run was started. Read what is there with " +
-          `okf_read_toc({bundle: "${bundle}", docId: "${known.docId}"}). Re-ingest only if the source genuinely changed — ` +
-          "pass its raw/ path directly to do that.",
+          `okf_read_toc({bundle: "${bundle}", docId: "${known.docId}"}). To replace it with a fresh ingest of the same ` +
+          `source, call okf_ingest again with reingest: true — the document is rewritten under the same id.`,
       };
+    }
+    if (known) {
+      reingestDocId = known.docId;
+      // Re-acquire from the ORIGIN: the source may have changed, and a fresh
+      // acquisition is what gives the run new chunks and a new heading map.
+      if (known.originUrl) runSource = known.originUrl;
     }
   }
 
-  const job = await createJob(bundleRoot, { bundleId: bundle, source: src, maxDepth: depth, maxWorkers: workers });
-  const task = buildIngestTask({ jobId: job.id, bundle, source: src, maxDepth: depth, maxWorkers: workers });
+  const job = await createJob(bundleRoot, {
+    bundleId: bundle,
+    source: runSource,
+    maxDepth: depth,
+    maxWorkers: workers,
+    parentJobId: parent ? parent.id : null,
+    reingestDocId,
+  });
 
   // Detached on purpose — see consequence (1) in this section's header. The
-  // caller gets {jobId} back before the first token of the run.
-  void driveRun(bundleRoot, job.id, task);
+  // caller gets {jobId} back before the first token of the run; the run itself
+  // starts when the queue has a free slot (pumpQueue).
+  void pumpQueue(bundleRoot);
 
   return {
     status: "queued",
     jobId: job.id,
     bundle,
-    source: src,
+    source: runSource,
     maxDepth: depth,
     maxWorkers: workers,
+    ...(reingestDocId ? { reingestOf: reingestDocId } : {}),
     job,
     note:
-      `Run ${job.id} started. It is running now in the bundled okf-ingest agent — there is nothing for you to run. ` +
-      `Check on it with okf_list_jobs({}) (or the app's Jobs tab); it ends as completed with a summary, or failed with ` +
-      `an error.`,
+      `Run ${job.id} is queued and starts as soon as the run queue has a free slot` +
+      (reingestDocId ? ` — it replaces document "${reingestDocId}", which is cleared when the run starts` : "") +
+      `. There is nothing for you to run. Check on it with okf_list_jobs({}) (or the app's Jobs tab); it ends as ` +
+      `completed with a summary, or failed with an error.`,
   };
+}
+
+// ── THE RUN QUEUE ─────────────────────────────────────────────────────────
+//
+// Every ingest used to start its run the moment it was requested. One PDF
+// that followed its references became seven concurrent runs competing for one
+// model, until the service ran out of heap (2026-10-13). A bundle-wide
+// re-ingest would have been one run per document, all at once. So every run —
+// requested, nested, re-ingest — is queued, and at most `maxConcurrentRuns`
+// (service config, default 2) run at a time, oldest first.
+//
+// The count is of runs THIS process launched. A `running` job inherited from
+// before a restart has no live stream behind it, and the startup sweep reaps
+// it; a `queued` one is still waiting and is pumped on startup.
+
+const DEFAULT_MAX_CONCURRENT_RUNS = 2;
+let maxConcurrentRuns = DEFAULT_MAX_CONCURRENT_RUNS;
+const activeRuns = new Set();
+let pumping = Promise.resolve();
+
+/** `0` PAUSES the queue: runs are accepted and wait queued until the cap is
+ *  raised — for when the model server is down or overloaded, without losing
+ *  the queued work. Anything that is not a non-negative number is the default. */
+function setMaxConcurrentRuns(n) {
+  maxConcurrentRuns = Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_MAX_CONCURRENT_RUNS;
+}
+
+function getMaxConcurrentRuns() {
+  return maxConcurrentRuns;
+}
+
+/** Start queued jobs, oldest first, while there are free slots. Serialised, so
+ *  two triggers arriving together can never both take the last slot. */
+function pumpQueue(bundleRoot) {
+  pumping = pumping.then(async () => {
+    const state = await loadJobs(bundleRoot);
+    const waiting = state.jobs.filter((j) => j.status === "queued" && !j.cancelRequested && !activeRuns.has(j.id)).reverse();
+    while (activeRuns.size < maxConcurrentRuns && waiting.length) {
+      const job = waiting.shift();
+      activeRuns.add(job.id);
+      void runJob(bundleRoot, job).finally(() => {
+        activeRuns.delete(job.id);
+        void pumpQueue(bundleRoot);
+      });
+    }
+  }).catch((err) => {
+    // The queue must survive a bad pass — the next trigger or finish re-pumps.
+    console.error(`[okf] run queue pump failed: ${err && err.stack ? err.stack : err}`);
+  });
+  return pumping;
+}
+
+/** Everything that happens when a queued job's turn comes. */
+async function runJob(bundleRoot, job) {
+  let prepared = null;
+  try {
+    if (job.reingestDocId) await clearDocument(bundleRoot, job.bundleId, job.reingestDocId);
+    if (String(job.source).startsWith("raw/")) prepared = await prepareRawSource(bundleRoot, job.bundleId, job.source);
+  } catch (err) {
+    await updateJob(bundleRoot, job.id, { status: "failed", error: `could not prepare the run: ${err.message}` }).catch(() => {});
+    return;
+  }
+  const task = buildIngestTask({
+    jobId: job.id,
+    bundle: job.bundleId,
+    source: job.source,
+    maxDepth: job.maxDepth,
+    maxWorkers: job.maxWorkers,
+    prepared,
+  });
+  await driveRun(bundleRoot, job.id, task);
+}
+
+/**
+ * Remove a document's DERIVED content so a re-ingest rewrites it under the
+ * same id: the stub, every chapter, the chunk cache. raw/ (append-only, the
+ * provenance) and the ledger stay; the index and TOC follow from the rebuild.
+ */
+async function clearDocument(bundleRoot, bundleName, docId) {
+  validateConceptId(docId);
+  const bDir = bundleDir(bundleRoot, bundleName);
+  for (const target of [conceptFilePath(bDir, docId), safeJoin(bDir, "concepts", docId), safeJoin(bDir, CHUNKS_DIR, docId)]) {
+    if (await vfs.exists(target)) await vfs.remove(target);
+  }
+  markGraphDirty(bDir);
+  await rebuildDerived(bundleRoot, bundleName);
+  await appendLog(bundleRoot, bundleName, {
+    event: "document_clear",
+    conceptId: docId,
+    message: `cleared document "${docId}" for a re-ingest (raw/ kept)`,
+  });
+}
+
+/**
+ * A run over a source ALREADY in raw/ gets the same chunks and heading map an
+ * acquisition would have produced — written by the service before the agent
+ * starts. Without them the agent was told to file_read the whole source and
+ * could only re-type it.
+ */
+async function prepareRawSource(bundleRoot, bundleName, rawPath) {
+  const bDir = bundleDir(bundleRoot, bundleName);
+  const content = await vfs.readText(safeJoin(bDir, rawPath));
+  const ledger = await readLedger(bDir);
+  const entry = Object.values(ledger.sources).find((e) => e && e.rawFile === rawPath && e.kind !== "asset");
+  const docId = (entry && entry.docId) || docIdForSource(path.basename(rawPath));
+  const headingMap = { sourceFile: rawPath, ...buildHeadingMap(content) };
+  const chunks = await writeChunks(bDir, docId, chunkSource(content, DEFAULT_MAX_CHUNK_SIZE), headingMap);
+  return { docId, chunks };
+}
+
+/** The newest ledger entry for each DOCUMENT (assets are part of their
+ *  document, not documents of their own). */
+function documentEntries(ledger) {
+  const byDoc = new Map();
+  for (const entry of Object.values(ledger.sources)) {
+    if (!entry || entry.kind === "asset" || !entry.docId) continue;
+    const prev = byDoc.get(entry.docId);
+    if (!prev || String(entry.ingestedAt || "") > String(prev.ingestedAt || "")) byDoc.set(entry.docId, entry);
+  }
+  return byDoc;
+}
+
+/**
+ * Re-ingest ONE document, by id, from what the provenance ledger recorded
+ * about it — re-acquired from its origin when it has one, else from its
+ * original file if that still exists, else from its newest raw/ version.
+ * Queued like every run; the document is cleared when the run starts.
+ */
+async function reingestDocument(bundleRoot, bundleName, docId, { defaults } = {}) {
+  const bDir = bundleDir(bundleRoot, bundleName);
+  if (!(await vfs.exists(bDir))) throw jobError(`bundle not found: ${bundleName}`, 404);
+  const entry = documentEntries(await readLedger(bDir)).get(docId);
+  if (!entry) {
+    throw jobError(
+      `document "${docId}" has no recorded source in ${bundleName}'s provenance ledger, so there is nothing to re-ingest it from`,
+      404,
+    );
+  }
+  let source = entry.originUrl || null;
+  if (!source && entry.sourceKey && entry.sourceKey.startsWith("/") && (await vfs.exists(entry.sourceKey))) source = entry.sourceKey;
+  if (source) {
+    const res = await triggerIngest(bundleRoot, { bundle: bundleName, source, reingest: true, defaults });
+    return { docId, jobId: res.jobId, source: res.source, status: res.status };
+  }
+  if (!entry.rawFile) throw jobError(`document "${docId}" has neither an origin nor a raw/ copy to re-ingest from`, 409);
+  return { ...(await queueReingestFromRaw(bundleRoot, bundleName, docId, entry.rawFile, defaults)), status: "queued" };
+}
+
+/**
+ * Re-ingest every document in a bundle — reingestDocument for each, all
+ * through the run queue, so a large bundle never becomes that many concurrent
+ * runs.
+ */
+async function reingestBundle(bundleRoot, bundleName, { defaults } = {}) {
+  const bDir = bundleDir(bundleRoot, bundleName);
+  if (!(await vfs.exists(bDir))) throw jobError(`bundle not found: ${bundleName}`, 404);
+  const jobs = [];
+  for (const docId of documentEntries(await readLedger(bDir)).keys()) {
+    jobs.push(await reingestDocument(bundleRoot, bundleName, docId, { defaults }));
+  }
+  return { bundle: bundleName, jobs, note: `${jobs.length} document(s) queued for re-ingest.` };
+}
+
+/** Queue a re-ingest of one document from its raw/ copy — for a document
+ *  whose original source can no longer be re-acquired. */
+async function queueReingestFromRaw(bundleRoot, bundleName, docId, rawFile, defaults) {
+  const job = await createJob(bundleRoot, {
+    bundleId: bundleName,
+    source: rawFile,
+    maxDepth: (defaults && defaults.maxDepth) ?? 1,
+    maxWorkers: (defaults && defaults.maxWorkers) ?? 3,
+    parentJobId: null,
+    reingestDocId: docId,
+  });
+  void pumpQueue(bundleRoot);
+  return { docId, jobId: job.id, source: rawFile };
 }
 
 /**
@@ -3600,7 +4006,7 @@ function summaryFromOutput(output, toolCalls) {
   const COUNT_PATTERNS = {
     chapters: [/(\d+)\s+chapters?\b/i, /(\d+)\s+sections?\b/i, /(\d+)\s+parts?\b/i],
     concepts: [/(\d+)\s+concepts?\s*(?:terms?)?\b/i, /(\d+)\s+topics?\b/i],
-    assets: [/(\d+)\s+assets?\b/i, /(\d+)\s+images?\b/i, /(\d+)\s+figures?\b/i, /(\d+)\s+videos?\b/i, /(\d+)\s+interpretations?\b/i],
+    assets: [/(\d+)\s+assets?\b/i, /(\d+)\s+images?\b/i, /(\d+)\s+figures?\b/i, /(\d+)\s+media\b/i, /(\d+)\s+videos?\b/i, /(\d+)\s+interpretations?\b/i],
     refsSkipped: [/(\d+)\s+(?:references?|refs?)\s+skipped/i, /skipped\s+(\d+)\s+(?:references?|refs?)/i],
     refsFailed: [/(\d+)\s+(?:references?|refs?)\s+failed/i, /failed\s+(\d+)\s+(?:references?|refs?)/i],
   };
@@ -3683,7 +4089,10 @@ async function reapStaleJobs(bundleRoot, bounds) {
   const reaped = [];
 
   for (const job of state.jobs) {
-    if (job.status !== "queued" && job.status !== "running") continue;
+    // Only a RUNNING job has a run that can die unseen. A queued one is waiting
+    // its turn behind the run queue's cap — however long that takes, there is
+    // nothing stale about it, and a restart re-pumps it (pumpQueue).
+    if (job.status !== "running") continue;
     // `lastEventAt` is the liveness stamp `appendJobTrajectory` writes per
     // captured event; `startedAt` covers the window before the run's first
     // event, and `queuedAt` the window before it started at all.
@@ -3786,6 +4195,14 @@ module.exports = {
   triggerIngest,
   acquisitionFirstSteps,
   buildIngestTask,
+  // the run queue, re-ingest
+  pumpQueue,
+  setMaxConcurrentRuns,
+  getMaxConcurrentRuns,
+  DEFAULT_MAX_CONCURRENT_RUNS,
+  reingestBundle,
+  reingestDocument,
+  clearDocument,
   // internals exposed for the bridge, the tools layer and tests
   appendLog,
   // the launcher's prose->counts reader; tests/summary-from-output.test.mjs

@@ -155,9 +155,15 @@ test("completed / cancelled / failed jobs are never reaped, however old", async 
   assert.equal((await jobById(root, "run-failed")).error, "its own failure", "an existing failure is not overwritten");
 });
 
-test("a queued job is a reap candidate too", async (t) => {
+// This used to assert the opposite. Before the run queue a job was `queued`
+// only for the instant before its run started, so one still queued 45 minutes
+// later was a lost run. Now `queued` means WAITING for a slot under
+// maxConcurrentRuns — reaping it would fail work that never started, and a
+// restart re-pumps it instead (tests/reingest-and-queue.test.mjs).
+test("a queued job is NOT a reap candidate — it is waiting for a run slot, not a run that died", async (t) => {
   const { root } = await withJobs(t, [{ id: "run-queued", status: "queued", startedAt: null, lastEventAt: null, queuedAt: ago(45 * MINUTE) }]);
-  assert.deepEqual((await reap(root)).reaped, ["run-queued"]);
+  assert.deepEqual((await reap(root)).reaped, []);
+  assert.equal((await jobById(root, "run-queued")).status, "queued");
 });
 
 // ── the bounds are CONFIGURABLE (US13 acceptance 3) ─────────────────────

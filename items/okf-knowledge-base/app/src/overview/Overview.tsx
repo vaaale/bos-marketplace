@@ -12,12 +12,12 @@
 import React from "react";
 import { Icon } from "../lib/icons";
 import { createBundle, deleteBundle, fetchBundleDetail } from "../lib/serviceClient";
-import type { BundleDetail, BundleHealth } from "../lib/types";
+import type { BundleDetail, BundleHealth, DocumentRow } from "../lib/types";
 import BundleList from "./BundleList";
 import BundleDetailView from "./BundleDetail";
-import { DeleteModal, ImportModal, IngestModal, NewBundleModal } from "./Modals";
+import { DeleteModal, ImportModal, IngestModal, NewBundleModal, ReingestModal } from "./Modals";
 
-export type ModalKind = "new" | "import" | "export" | "ingest" | "delete" | null;
+export type ModalKind = "new" | "import" | "export" | "ingest" | "delete" | "reingest" | null;
 
 interface Props {
   bundles: BundleHealth[];
@@ -35,6 +35,8 @@ export default function Overview({ bundles, activeBundle, onActiveBundle, onBund
   const [openBundle, setOpenBundle] = React.useState<string | null>(null);
   const [modal, setModal] = React.useState<ModalKind>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<BundleHealth | null>(null);
+  // null = the whole bundle; a row = one document
+  const [reingestTarget, setReingestTarget] = React.useState<DocumentRow | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
 
   const loadDetail = React.useCallback(async (name: string) => {
@@ -124,6 +126,14 @@ export default function Overview({ bundles, activeBundle, onActiveBundle, onBund
             setModal("delete");
           }}
           onReload={() => loadDetail(openBundle!)}
+          onReingestAll={() => {
+            setReingestTarget(null);
+            setModal("reingest");
+          }}
+          onReingestDoc={(doc) => {
+            setReingestTarget(doc);
+            setModal("reingest");
+          }}
         />
       )}
 
@@ -142,6 +152,19 @@ export default function Overview({ bundles, activeBundle, onActiveBundle, onBund
       ) : null}
       {modal === "ingest" ? (
         <IngestModal bundle={openBundle || ""} onClose={() => setModal(null)} onStarted={onIngestStarted} />
+      ) : null}
+      {modal === "reingest" ? (
+        <ReingestModal
+          bundle={openBundle || ""}
+          docId={reingestTarget?.id}
+          title={reingestTarget?.title}
+          docCount={detail?.health.docs}
+          onClose={() => {
+            setModal(null);
+            setReingestTarget(null);
+          }}
+          onStarted={onIngestStarted}
+        />
       ) : null}
       {modal === "delete" && deleteTarget ? (
         <DeleteModal
