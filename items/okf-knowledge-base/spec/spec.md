@@ -244,6 +244,21 @@ The user asks for content by or about a person — *"what has Diego Córdoba cov
 2. **Given** a person-kind term, **When** the user (or agent) calls `okf_list_concepts`, **Then** the term is reported with `kind: person`, distinguishable from topical terms.
 3. **Given** a person-kind term, **When** the user views the Query tab's Knowledge Graph, **Then** the person renders as a distinct node (its own category color/shape) with edges to the documents/chapters it covers.
 
+### User Story 13 - Large documents ingest quickly and don't get reaped mid-run (Priority: P1)
+
+The user ingests one or several large documents, and may ingest several simultaneously. Each completes in a bounded, predictable time, and a long-but-actively-progressing run is not killed by the stale reaper. The ingest's model output is dominated by the metadata the agent authors (concepts, summaries, persons, interpretations), not by re-typing the source text.
+
+**Why this priority**: This is what makes the KB usable for real-world documents (long articles, whitepapers, tech reports) and for batch ingestion. The 1.4M-token context failure and the repeated 30-minute stale reaps are both symptoms of the same root cause: the model re-emits source it could have left on disk, so runs are slow, token-heavy, and stall-prone.
+
+**Independent Test**: Ingest a 1MB+ structured document; verify the stored chapter bodies are verbatim slices of the source (not re-typed) with frontmatter + interpretations added; verify a run still producing trajectory events past 30 minutes is not reaped; verify the reaper bound is changeable in Settings → Plugins.
+
+**Acceptance Scenarios**:
+
+1. **Given** a large source with clear heading structure, **When** it is ingested, **Then** each stored chapter's body (minus the LLM-authored interpretation blocks) is a verbatim slice of the source for that chapter's heading range — the model did not re-emit the source body as output tokens.
+2. **Given** a run that has produced a trajectory event within the configured inactivity bound, **When** it has been running longer than the bound in total, **Then** it is NOT reaped — the bound measures inactivity, not total duration.
+3. **Given** the reaper bound in Settings → Plugins → OKF Knowledge Base, **When** the user changes it, **Then** the new bound is honored on subsequent runs.
+4. **Given** several documents ingested simultaneously, **When** they compete for the model provider, **Then** each is an independent job; an actively-progressing run is not reaped, and a genuinely stalled (silent) run is eventually reaped with an honest error.
+
 ### Edge Cases
 
 - **What happens when a source has no headings (no natural chunk boundaries)?** → The chunker falls back to paragraph boundaries (double-newline splits). If a single paragraph exceeds `maxChunkSize`, it is split at the nearest sentence boundary (period/space). The chunk carries no `headingPath` (it's a flat split).
@@ -261,6 +276,9 @@ The user asks for content by or about a person — *"what has Diego Córdoba cov
 - **What happens when the concept vocabulary grows very large?** → `okf_search`'s deterministic pass still works; if the vocabulary becomes too large for one cheap pass, a keyword pre-filter (still no vector/SQL) is the documented escalation — see NFR-002.
 - **What happens when an ingest run would follow a reference already in the bundle?** → Deduplicated against existing provenance; the hop is skipped and reported, not silently re-fetched.
 - **What happens when the last chapter of a document is deleted?** → The document remains (possibly empty); the bundle is not auto-deleted.
+- **What happens when a chapter the author wrote does not align to a single heading (a heading-less preamble, or the agent merges two short sections into one chapter)?** → The chapter's body is the source content for the range the agent declares; the service assembles it from that range (possibly across chunk boundaries) plus the LLM-authored frontmatter/interpretations. The verbatim-slice body invariant (FR-060) still holds.
+- **What happens when an inline-asset interpretation is authored for a chapter whose body is extracted from source?** → The extracted body and the authored interpretation block are combined (the interpretation is placed beneath the asset link, per FR-021); neither is lost.
+- **What happens when a single model turn takes longer than the inactivity bound (no trajectory events during the generation)?** → This is the failure the configurable bound + smaller (non-re-emitting) turns exist to make rare; the bound is inactivity-based and user-raisable (FR-059), and the body-extraction write protocol (FR-060) keeps each turn small enough that a single generation does not exceed a sane default. A run that is genuinely silent past the bound is reaped with an honest error.
 
 ## Requirements *(mandatory)*
 
@@ -385,6 +403,12 @@ The user asks for content by or about a person — *"what has Diego Córdoba cov
 - **FR-057 (Trajectory capture)**: The launcher MUST **capture the headless run's full NDJSON stream** (every event: `run_started`, `tool_call`, `tool_result`, `done`) and store it on the job record as a `trajectory` field (an array of the raw NDJSON events, in order). This is the agent's complete conversation/trajectory for the run — every tool it called, every result it received, and its final output. The trajectory is stored alongside the existing job fields (status, summary, error, runId) in the job store (in-memory + persisted `.jobs/`). It MUST NOT be lost on service restart.
 - **FR-058 (Trajectory exposure)**: The service MUST expose the job's trajectory via the app-facing REST: `GET /jobs/<id>` returns the full job record **including `trajectory`** (the NDJSON event array). The app's Jobs tab MUST render the trajectory in the expandable job detail: a **tool-call timeline** — each `tool_call` event shown as a collapsible card (tool name + input, expandable to show the `tool_result`), matching the rendering pattern used by Self-Heal and the Agentic Editor (the same `tool_call`/`tool_result` NDJSON shape, the same collapsible-card UI pattern). The timeline is read-only (it's a historical record, not a live stream). For a running job, the trajectory shows the events captured so far (it grows as the run progresses); for a terminal job, it's complete.
 
+### Functional Requirements — ingest efficiency & run timeout
+
+- **FR-059 (Configurable, inactivity-based run timeout)**: The bound past which a non-terminal ingest run is reaper-marked **failed (stale)** MUST be **user-configurable in Settings → Plugins → OKF Knowledge Base** (surfaced in the service config form alongside `maxDepth`/`maxWorkers`/`maxChunkSize`), with a sane default. The bound MUST be an **inactivity** bound — measured from the run's last observed progress (its most recent trajectory event), not from when it started — so a legitimately long run that is still producing work is not reaped. Because a single long model turn produces **no** trajectory events while it generates, the default MUST be long enough (and the bound MUST be configurable) to absorb large documents and the provider contention of concurrent ingestion; the exact default, the inactivity signal, and any guardrails are a design concern (design.md, ADR-014).
+
+- **FR-060 (Bounded ingest output — no source re-emission)**: The headless ingest run MUST NOT re-emit source text that already exists on disk (the staged source / chunk files) as the model's **output** tokens. When the agent writes a chapter, it contributes only the content it **authors** — the frontmatter (`concepts`, `summary`, `person_terms`, `title`, `status`) and any inline-asset **interpretation** blocks — and the **service assembles the chapter's body from the source's on-disk content**. The invariant: a stored chapter's body, with the LLM-authored interpretation blocks removed, MUST be a **verbatim slice of the source** for that chapter's heading range (the chapter is a copy of source text plus authored frontmatter/interpretations — not a re-typing of it). Per-chapter write cost is therefore O(metadata + interpretations), not O(body). The exact mechanism — how the agent references a chapter's source range, how it handles chapters the author wrote across non-heading boundaries or that span chunk boundaries, how LLM-authored additions are combined with the extracted body, and whether per-chapter writes are batched per chunk — is a **design concern** (design.md, ADR-014), constrained by: it MUST be deterministic; MUST NOT lose LLM-authored text; MUST handle the no-heading / single-chapter / cross-chunk / merged-section edge cases; and MUST preserve the verbatim-slice body invariant.
+
 ### Non-Functional Requirements
 
 - **NFR-001 (OKF portability)**: Every bundle MUST be a spec-conformant OKF bundle usable with git/grep/editor; the concept index and document TOCs are plain `.md` files inside the bundle.
@@ -438,6 +462,7 @@ The user asks for content by or about a person — *"what has Diego Córdoba cov
 - **SC-016**: Searching a person's name (e.g. "Diego Córdoba") via `okf_search` returns the documents/chapters that person authored or is the subject of — because salient persons are registered as person-kind terms at ingest (FR-053); no separate search path is needed.
 - **SC-017**: A source document of 1MB+ (~250K tokens) is ingested successfully — the chunker splits it into chunks ≤ `maxChunkSize`, the agent processes them sequentially, and the resulting bundle has a complete document (all chapters, TOC, index) with no chapter lost or duplicated.
 - **SC-018**: Clicking a completed or failed job in the Jobs tab shows the agent's trajectory — a scrollable tool-call timeline with each `tool_call` (name + input) and its `tool_result` in collapsible cards — matching the rendering pattern of Self-Heal / Agentic Editor. For a running job, the trajectory grows in real-time as events are captured.
+- **SC-019**: Ingesting a large document produces stored chapters whose bodies (minus LLM-authored interpretation blocks) are **byte-correct verbatim slices of the source** — the model's per-chapter output is bounded by the metadata it authors (concepts / summary / persons / interpretations), not by re-emitted source text; a run still producing trajectory events past the configured inactivity bound is **not** reaped, and the bound is changeable in Settings → Plugins → OKF Knowledge Base.
 
 ## Assumptions
 
