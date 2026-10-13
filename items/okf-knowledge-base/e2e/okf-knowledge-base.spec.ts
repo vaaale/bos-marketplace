@@ -113,15 +113,50 @@ let api: APIRequestContext;
 let serviceBase: string;
 
 async function resolveServiceBase(shell: APIRequestContext): Promise<string> {
-  if (process.env.OKF_SERVICE_BASE) return process.env.OKF_SERVICE_BASE;
+  // An explicit OKF_SERVICE_BASE pins the worker port, but a test that
+  // restarts the service (config PATCH / reaper test) reassigns the OS port —
+  // the pinned value goes stale and every later call 500s. Trust the pinned
+  // base only while it still answers; otherwise re-resolve from the live API.
+  if (process.env.OKF_SERVICE_BASE) {
+    const pinned = process.env.OKF_SERVICE_BASE;
+    try {
+      const probe = await shell.get(new URL("config", pinned).toString(), { timeout: 2000 });
+      if (probe.ok()) return pinned;
+    } catch { /* fall through to live resolution */ }
+  }
   for (let attempt = 0; attempt < 15; attempt++) {
+    // Prefer the direct loopback port from the detail endpoint — it always
+    // works. The httpPath (supervisor proxy) 404s in preview builds (known
+    // BOS gap: the preview's Next.js build doesn't register the proxy route).
+    const detail = await shell.get(`${BASE}/api/services/${SERVICE_ID}`);
+    if (detail.ok()) {
+      const d = await detail.json();
+      const port = d.service?.boundPort;
+      if (port) {
+        const cand = `http://127.0.0.1:${port}/`;
+        try { const p = await shell.get(new URL("config", cand).toString(), { timeout: 1500 }); if (p.ok()) return cand; } catch {}
+        // Don't return a dead port — loop and try again (the new worker
+        // may not have bound yet, or the detail endpoint reports a vacated port).
+      }
+    }
+    // Fallback: the config endpoint's direct port (not httpPath — the
+    // supervisor proxy 404s in preview builds).
     const res = await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`);
     if (res.ok()) {
       const cfg = await res.json();
-      if (cfg.httpPath) return new URL(cfg.httpPath, BASE).toString();
-      if (cfg.port) return `http://127.0.0.1:${cfg.port}/`;
+      if (cfg.port) {
+        const cand = `http://127.0.0.1:${cfg.port}/`;
+        try { const p = await shell.get(new URL("config", cand).toString(), { timeout: 1500 }); if (p.ok()) return cand; } catch {}
+      }
     }
     await new Promise((r) => setTimeout(r, 1000));
+  }
+  // Last resort: httpPath (works in production, 404s in preview).
+  const res = await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`);
+  if (res.ok()) {
+    const cfg = await res.json();
+    if (cfg.httpPath) return new URL(cfg.httpPath, BASE).toString();
+    if (cfg.port) return `http://127.0.0.1:${cfg.port}/`;
   }
   throw new Error(
     `The ${SERVICE_ID} service never reported a bound port. Start it (Settings → Plugins) before running this suite.`,
@@ -213,6 +248,10 @@ async function seedMain(): Promise<void> {
     chapter("deployment", "pre-deploy", "Pre-Deploy Gate", "CI green, migrations reviewed, and a documented rollback plan.", ["deployment"]),
   ];
   const res = await api.post(`bundles/${B.main}/import`, { data: { files } });
+  if (!res.ok()) {
+    console.error("SEEDMAIN IMPORT FAIL status=", res.status(), "body=", (await res.text()).slice(0, 500));
+    console.error("files[0..2]=", JSON.stringify(files.slice(0, 3)).slice(0, 800));
+  }
   expect(res.ok()).toBeTruthy();
 }
 
@@ -252,6 +291,17 @@ test.beforeAll(async () => {
   await shell.dispose();
   api = await request.newContext({ baseURL: serviceBase });
   for (const b of Object.values(B)) await del(b);
+  // VFS remove is async — the HTTP 200 returns before files are gone.
+  // Settle: wait until the listing no longer shows any of the deleted bundles.
+  for (let i = 0; i < 30; i++) {
+    const list = await api.get("bundles");
+    if (list.ok()) {
+      const body = await list.json();
+      const names = (Array.isArray(body) ? body : body.bundles || []).map((b: any) => b.name);
+      if (!Object.values(B).some((b) => names.includes(b))) break;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
   await seedMain();
   await seedRules();
 });
@@ -2424,7 +2474,7 @@ test("AA3 (FR-059/US13 AS2): the reaper fires on INACTIVITY and on the TOTAL bac
   const shell = await request.newContext();
   const cfg = await (await shell.get(`${BASE}/api/services/${SERVICE_ID}/config`)).json();
   const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
-  const inactivityMs = cfg.runtime.jobFinalizeTimeoutMs as number;
+  const inactivityMs = (cfg.runtime && (cfg.runtime as any).jobFinalizeTimeoutMs) || 1800_000;
   const jobsFile = `${bundleRoot}/.jobs/jobs.json`;
 
   const existing = await shell.get(`${BASE}/api/fs?op=read&path=${encodeURIComponent(jobsFile)}`);
