@@ -1964,6 +1964,123 @@ function splitToSize(text, max) {
   return out.length ? out : [text];
 }
 
+// ── Headings of a source that has no Markdown headings ─────────────────────
+//
+// A PDF converted to markdown arrives with NO `#` lines — its section titles
+// are plain lines ("2 Model Architecture", "2.1 Attention") — so a heading map
+// built from Markdown headings alone is empty, `sourceRange` can express
+// nothing but `whole: true`, and the agent's only way to write chapters is to
+// re-type the document. On production it did exactly that: all 130K characters
+// of a technical report, with `#` markers inserted, after first reaching for
+// file_write to do it.
+//
+// So when a source has no Markdown heading at all, its structure is read from
+// the two conventions such documents actually use, and nothing else:
+//
+//   • a NUMBERED section title — "2", "2.1", "2.1.1" then a Capitalised title
+//     — accepted only as the valid NEXT entry of an outline (a child, a
+//     sibling, or the next sibling of an ancestor). The outline rule is what
+//     rejects the numbers that litter a converted PDF: page numbers ("9"),
+//     figure labels ("80 Block 16"), table values ("1"). pdfminer often puts
+//     the number and the title on separate lines ("1" / blank / "Introduction");
+//     that pair is one heading, starting at the number line.
+//   • a CONVENTIONAL unnumbered title (Abstract, References, …) alone on its
+//     line.
+//
+// Both must stand alone — the line before is blank or ends a sentence or a
+// table row, never a mid-sentence wrap — and be short, not ending like a
+// sentence or a table-of-contents entry (a trailing page number). Offsets are into the untouched source, so a chapter body is still a
+// verbatim slice of raw/ (SC-019). A source with ANY Markdown heading is read
+// exactly as before — the fallback never mixes in.
+
+const SECTION_NUMBER = /^(\d{1,2}(?:\.\d{1,2}){0,4})\.?$/;
+const NUMBERED_TITLE = /^(\d{1,2}(?:\.\d{1,2}){0,4})\.?\s+(\S.*)$/;
+const CONVENTIONAL_TITLES = new Set([
+  "abstract", "introduction", "background", "related work", "conclusion", "conclusions", "discussion",
+  "acknowledgements", "acknowledgments", "references", "bibliography", "appendix", "appendices", "summary",
+]);
+const MAX_TITLE_LENGTH = 90;
+const MAX_TITLE_WORDS = 14;
+
+/** A line that can be a section title's TEXT: capitalised, short, and not a
+ *  sentence or a TOC entry. */
+function isTitleText(text) {
+  const t = text.trim();
+  if (!t || t.length > MAX_TITLE_LENGTH || t.split(/\s+/).length > MAX_TITLE_WORDS) return false;
+  if (!/^[A-Z]/.test(t)) return false;
+  if (/[.;:,]$/.test(t)) return false; // a sentence or a run-in label, not a title
+  if (/\s\d+$/.test(t)) return false; // "Method 7" — a table-of-contents line
+  return true;
+}
+
+/** Is `next` (parts of a section number) the valid next entry after `prev`? */
+function isNextSection(prev, next) {
+  if (!prev.length) return next.length === 1 && next[0] === 1;
+  if (next.length === prev.length + 1 && next[next.length - 1] === 1 && prev.every((n, i) => next[i] === n)) return true;
+  if (next.length > prev.length) return false;
+  for (let i = 0; i < next.length - 1; i++) if (next[i] !== prev[i]) return false;
+  return next[next.length - 1] === prev[next.length - 1] + 1;
+}
+
+/**
+ * Every heading of a source as `{line, level, text}` (line = 0-based index) —
+ * THE one heading reader, shared by buildHeadingMap and chunkSource so the
+ * chunks the agent reads and the map its `sourceRange` resolves against can
+ * never disagree.
+ */
+function sourceHeadings(lines) {
+  const atx = [];
+  lines.forEach((line, i) => {
+    const m = HEADING_LINE.exec(line);
+    if (m) atx.push({ line: i, level: m[1].length, text: m[2].trim() });
+  });
+  if (atx.length) return atx;
+
+  const found = [];
+  let outline = [];
+  // A title starts its own line of thought: the line before it is blank, or
+  // ENDS something — a sentence, a table row, a parenthetical. pdfminer often
+  // sets a title directly under the last line of the previous paragraph, but a
+  // line that merely wraps mid-sentence ("…trained on" / "2 Trillion Tokens")
+  // never qualifies.
+  const standsAlone = (i) => i === 0 || !lines[i - 1].trim() || /[.!?:|)\]]\s*$/.test(lines[i - 1]);
+  const consumed = new Set(); // title lines already used by a split "1" / "Introduction" heading
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || consumed.has(i) || !standsAlone(i)) continue;
+
+    if (CONVENTIONAL_TITLES.has(line.toLowerCase()) && /^[A-Z]/.test(line)) {
+      found.push({ line: i, level: 1, text: line });
+      continue;
+    }
+
+    let number = null;
+    let title = null;
+    let titleLine = null;
+    const numbered = NUMBERED_TITLE.exec(line);
+    if (numbered && isTitleText(numbered[2])) {
+      number = numbered[1];
+      title = numbered[2].trim();
+    } else if (SECTION_NUMBER.test(line)) {
+      // "1" / blank / "Introduction": the title is the next non-blank line
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim() && j - i <= 2) j++;
+      if (j < lines.length && j - i <= 2 && !NUMBERED_TITLE.test(lines[j].trim()) && isTitleText(lines[j])) {
+        number = SECTION_NUMBER.exec(line)[1];
+        title = lines[j].trim();
+        titleLine = j;
+      }
+    }
+    if (!number) continue;
+    const parts = number.split(".").map(Number);
+    if (!isNextSection(outline, parts)) continue;
+    outline = parts;
+    if (titleLine !== null) consumed.add(titleLine);
+    found.push({ line: i, level: parts.length, text: `${number} ${title}` });
+  }
+  return found;
+}
+
 /**
  * Walk a source ONCE and record every heading with its char offset
  * (ADR-014 D1). PURE — no I/O, no LLM, deterministic: the same bytes always
@@ -1981,13 +2098,20 @@ function splitToSize(text, max) {
  */
 function buildHeadingMap(content) {
   const text = String(content == null ? "" : content);
-  const headings = [];
+  const lines = text.split("\n");
+  const lineStart = [];
   let offset = 0;
-  for (const line of text.split("\n")) {
-    const m = HEADING_LINE.exec(line);
-    if (m) headings.push({ index: headings.length, level: m[1].length, text: m[2].trim(), start: offset, end: 0 });
+  for (const line of lines) {
+    lineStart.push(offset);
     offset += line.length + 1; // + the "\n" that split() consumed
   }
+  const headings = sourceHeadings(lines).map((h, index) => ({
+    index,
+    level: h.level,
+    text: h.text,
+    start: lineStart[h.line],
+    end: 0,
+  }));
   for (let i = 0; i < headings.length; i++) {
     headings[i].end = i + 1 < headings.length ? headings[i + 1].start : text.length;
   }
@@ -2046,16 +2170,19 @@ function chunkSource(content, maxChunkSize) {
     if (body.trim()) sections.push({ headingPath: sectionPath.slice(), content: body, headingIndex });
   };
 
-  for (const line of text.split("\n")) {
-    const heading = HEADING_LINE.exec(line);
+  const lines = text.split("\n");
+  const headingAt = new Map(sourceHeadings(lines).map((h) => [h.line, h]));
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const heading = headingAt.get(i);
     if (!heading) {
       sectionLines.push(line);
       continue;
     }
     closeSection();
-    const level = heading[1].length;
+    const level = heading.level;
     while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
-    stack.push({ level, text: heading[2].trim() });
+    stack.push({ level, text: heading.text });
     sectionPath = stack.map((h) => h.text);
     sectionLines = [line];
     headingIndex = headingsSeen;
