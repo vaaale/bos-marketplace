@@ -325,7 +325,9 @@ if (parentPort) {
         await closeServer();
         parentPort.postMessage({ type: "disposed" });
       } else if (msg.type === "tool_call") {
-        const { callId, name, args } = msg.payload;
+        // `caller` ({runId, agentId}) is which run made the call — BOS's
+        // answer, not the model's. Absent from a BOS that predates it.
+        const { callId, name, args, caller } = msg.payload;
         const handler = handlers[name];
         if (!handler) {
           parentPort.postMessage({
@@ -335,7 +337,7 @@ if (parentPort) {
           return;
         }
         try {
-          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, staleJobMs, maxTotalTimeoutMs, getRuntime, serviceId });
+          const result = await handler(args || {}, { core, bundleRoot, vfs: vfsBridge, ingestDefaults, staleJobMs, maxTotalTimeoutMs, getRuntime, serviceId, caller });
           parentPort.postMessage({ type: "tool_result", payload: { callId, result } });
         } catch (err) {
           parentPort.postMessage({

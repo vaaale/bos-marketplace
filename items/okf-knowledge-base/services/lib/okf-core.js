@@ -2961,7 +2961,7 @@ function schedulePersistJobs(bundleRoot) {
   return persistPending;
 }
 
-async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers }) {
+async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers, parentJobId }) {
   const state = await loadJobs(bundleRoot);
   state.seq++;
   const job = {
@@ -2971,6 +2971,9 @@ async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers })
     source,
     maxDepth: maxDepth ?? null,
     maxWorkers: maxWorkers ?? null,
+    // The job whose run started this one by following a reference — null for
+    // an ingest a user or an outside agent asked for. See triggerIngest.
+    parentJobId: parentJobId ?? null,
     queuedAt: nowIso(),
     startedAt: null,
     // Last captured trajectory event (FR-049): the reaper's staleness clock.
@@ -3404,9 +3407,12 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers }) {
     `\`> **Interpretation (LLM, at ingest):** …\` blockquote directly beneath it in the chapter body. Ordinary HTML ` +
     `hyperlinks stay remote references — do not download them. A failed asset is marked unavailable and does not fail ` +
     `the document.\n\n` +
-    `Follow at most ${maxDepth} hop(s) of references beyond this seed source, at most ${maxWorkers} at a time, each ` +
-    `nested reference via its own \`okf_ingest\` call (it becomes its own job). Skip anything already in the bundle's ` +
-    `provenance ledger.\n\n` +
+    (maxDepth > 0
+      ? `Follow at most ${maxDepth} hop(s) of references beyond this seed source, at most ${maxWorkers} at a time, each ` +
+        `nested reference via its own \`okf_ingest\` call (it becomes its own job, one hop shallower than this one). ` +
+        `Skip anything already in the bundle's provenance ledger.\n\n`
+      : `Do NOT follow any references: this run is at the depth limit. List the references you found as skipped ` +
+        `(over-depth) in your summary — an \`okf_ingest\` call from this run is refused.\n\n`) +
     `## Finishing\n\n` +
     `You do NOT finalize this job. The service launched this run and writes its terminal state from the run's own ` +
     `signal — there are no lifecycle callbacks for you to POST. Your one job-facing duty is your final message: a ` +
@@ -3424,6 +3430,14 @@ function progressFor(tool, index) {
   return `${tool} · ${index} tool calls so far`;
 }
 
+/** The job whose run has this id, or null — the run is not one of ours (a
+ *  user's chat, another agent) or no run id was given. */
+async function jobForRun(bundleRoot, runId) {
+  if (!runId) return null;
+  const state = await loadJobs(bundleRoot);
+  return state.jobs.find((j) => j.runId === runId) || null;
+}
+
 /**
  * THE single auto-trigger path. Shared by the `okf_ingest` tool and the app's
  * `POST /jobs` route — one capability, two surfaces, so a run a user starts
@@ -3433,13 +3447,41 @@ function progressFor(tool, index) {
  * Returns IMMEDIATELY with `{jobId, status: "queued"}`. The run proceeds in
  * the background; watch it via `okf_list_jobs` / `GET /jobs`.
  */
-async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers, defaults } = {}) {
+async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers, defaults, caller } = {}) {
   const src = String(source || "").trim();
   if (!bundle) throw new Error("bundle is required");
   if (!src) throw new Error("source is required — an http(s) URL, an absolute VFS path, or a raw/ path in the bundle");
 
-  const depth = Number.isFinite(maxDepth) ? maxDepth : (defaults && defaults.maxDepth) ?? 1;
-  const workers = Number.isFinite(maxWorkers) ? maxWorkers : (defaults && defaults.maxWorkers) ?? 3;
+  // A NESTED ingest — a reference followed from inside one of this service's
+  // own runs — is bounded by the run that is calling, identified by the
+  // `caller.runId` BOS passes with every tool call and the `runId` each job
+  // records. It gets ONE hop less than its parent and nothing the model passes
+  // can raise that; at zero it is refused. Without this every child restarted
+  // at the default depth, and one PDF became seven concurrent runs.
+  const parent = await jobForRun(bundleRoot, caller && caller.runId);
+  let depth;
+  let workers;
+  if (parent) {
+    const remaining = (Number.isFinite(parent.maxDepth) ? parent.maxDepth : 0) - 1;
+    if (remaining < 0) {
+      return {
+        status: "over_depth",
+        jobId: null,
+        bundle,
+        source: src,
+        parentJobId: parent.id,
+        note:
+          `Not started: your run (${parent.id}) is at its reference-depth limit, so it cannot ingest further ` +
+          `references. Report this one as skipped (over-depth) in your summary.`,
+      };
+    }
+    depth = Number.isFinite(maxDepth) ? Math.min(maxDepth, remaining) : remaining;
+    const parentWorkers = Number.isFinite(parent.maxWorkers) ? parent.maxWorkers : (defaults && defaults.maxWorkers) ?? 3;
+    workers = Number.isFinite(maxWorkers) ? Math.min(maxWorkers, parentWorkers) : parentWorkers;
+  } else {
+    depth = Number.isFinite(maxDepth) ? maxDepth : (defaults && defaults.maxDepth) ?? 1;
+    workers = Number.isFinite(maxWorkers) ? maxWorkers : (defaults && defaults.maxWorkers) ?? 3;
+  }
 
   const bDir = bundleDir(bundleRoot, bundle);
   if (!(await vfs.exists(bDir))) {
@@ -3468,7 +3510,13 @@ async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers,
     }
   }
 
-  const job = await createJob(bundleRoot, { bundleId: bundle, source: src, maxDepth: depth, maxWorkers: workers });
+  const job = await createJob(bundleRoot, {
+    bundleId: bundle,
+    source: src,
+    maxDepth: depth,
+    maxWorkers: workers,
+    parentJobId: parent ? parent.id : null,
+  });
   const task = buildIngestTask({ jobId: job.id, bundle, source: src, maxDepth: depth, maxWorkers: workers });
 
   // Detached on purpose — see consequence (1) in this section's header. The
@@ -3600,7 +3648,7 @@ function summaryFromOutput(output, toolCalls) {
   const COUNT_PATTERNS = {
     chapters: [/(\d+)\s+chapters?\b/i, /(\d+)\s+sections?\b/i, /(\d+)\s+parts?\b/i],
     concepts: [/(\d+)\s+concepts?\s*(?:terms?)?\b/i, /(\d+)\s+topics?\b/i],
-    assets: [/(\d+)\s+assets?\b/i, /(\d+)\s+images?\b/i, /(\d+)\s+figures?\b/i, /(\d+)\s+videos?\b/i, /(\d+)\s+interpretations?\b/i],
+    assets: [/(\d+)\s+assets?\b/i, /(\d+)\s+images?\b/i, /(\d+)\s+figures?\b/i, /(\d+)\s+media\b/i, /(\d+)\s+videos?\b/i, /(\d+)\s+interpretations?\b/i],
     refsSkipped: [/(\d+)\s+(?:references?|refs?)\s+skipped/i, /skipped\s+(\d+)\s+(?:references?|refs?)/i],
     refsFailed: [/(\d+)\s+(?:references?|refs?)\s+failed/i, /failed\s+(\d+)\s+(?:references?|refs?)/i],
   };

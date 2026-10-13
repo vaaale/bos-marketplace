@@ -237,8 +237,9 @@ In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json`. Service-level, ne
   "status": "queued | running | completed | cancelled | failed",
   "bundleId": "engineering",
   "source": "https://example.com/performance-budgets",
-  "maxDepth": 1,
+  "maxDepth": 1,                 // reference hops THIS run may still follow
   "maxWorkers": 3,
+  "parentJobId": null,           // the job whose run followed a reference into this one
   "queuedAt": "2026-10-09T11:58:00.000Z",
   "startedAt": "2026-10-09T11:58:01.000Z",
   "endedAt": "2026-10-09T12:03:11.000Z",

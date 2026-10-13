@@ -93,13 +93,19 @@ Regenerates the derived artifacts first, so the manifest always carries a correc
 
 | `status` | Payload | Meaning |
 |---|---|---|
-| `acquisition_required` | `steps[]`, `jobId`, `job` | Run the steps verbatim — they pin `output_path` — then call again with the resulting `raw/` path. |
-| `delegation_required` | `delegate{agent, task}`, `jobId`, `callbacks`, `job` | `agent_delegate` with the block. The task embeds the `jobId` and the lifecycle URLs. |
-| `already_ingested` | `docId`, `rawFile`, `ingestedAt` | Deduplicated against `raw/sources.json`; no duplicate created. |
+| `queued` | `jobId`, `maxDepth`, `maxWorkers`, `job` | A job was recorded and the bundled `okf-ingest` agent launched; follow it with `okf_list_jobs`. |
+| `already_ingested` | `docId`, `rawFile`, `ingestedAt` | Deduplicated against `raw/sources.json`; no run started. |
+| `over_depth` | `parentJobId` | Called from a run with no reference hops left; no run started. |
 
-A **dispatcher, not a writer**: the worker has no `web_fetch` and cannot run an agent loop, so it returns the exact next calls instead. `output_path` is the mechanism that keeps a long document out of the calling model's context.
-
-After `agent_delegate` returns, the caller POSTs `callbacks.fail` if the result was an error or empty — the safety net for a sub-agent that dies without reporting.
+**Nested ingests are bounded by the run that calls.** BOS passes the calling run
+with every tool call (`tool_call.payload.caller.runId`) and each job records its
+run's `runId`, so a call from inside one of this service's own ingest runs is
+recognised as a reference being followed. Its job gets `parentJobId` and
+`maxDepth = parent.maxDepth - 1` — a `maxDepth` argument can lower that, never
+raise it — and `maxWorkers` at most the parent's. At zero the call returns
+`over_depth`. The bound deliberately does not depend on anything the model
+passes: before it, every child restarted at the default depth, and one PDF
+became seven concurrent runs.
 
 ### `okf_add_raw_source`
 `{bundle, filename?, content?, sourcePath?, conceptId?, title?, originUrl?, asset?, docId?}`

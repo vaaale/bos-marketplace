@@ -25,7 +25,7 @@ The service launches a bundled, deliberately narrow agent called **okf-ingest** 
 3. **Splits it into chapters** at the source's own heading structure. A source with no headings becomes a single chapter — it won't invent an outline the author didn't write.
 4. **Assigns concept terms and writes a one-line summary** for each chapter. It checks the bundle's existing vocabulary first, so terms grow by extension rather than by accumulating near-duplicates.
 5. **Downloads and interprets inline assets.** For every non-HTML image or video in a chapter, it saves a local copy and writes an interpretation of what the diagram actually says or the clip actually shows, directly beneath the link in the chapter. Ordinary hyperlinks to web pages stay as links — only real artifacts are copied. This happens **once**, at ingest: reading the chapter later gives you the diagram's content with no vision call.
-6. **Follows references**, within limits — by default one hop, three at a time. Each followed reference becomes **its own run** with its own job. Anything already in the bundle is skipped rather than re-fetched.
+6. **Follows references**, within limits — by default one hop, three at a time. Each followed reference becomes **its own run** with its own job, one hop shallower than the run that found it, so a reference's references are followed only while hops remain; at zero the service refuses the call and the run reports the reference as skipped (over-depth). Anything already in the bundle is skipped rather than re-fetched.
 7. **Reports.** The document TOC and the bundle's concept index are rebuilt automatically as chapters are written; there's no separate indexing step.
 
 ## Watching a run

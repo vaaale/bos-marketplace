@@ -245,7 +245,7 @@ const DECLARATIONS = [
           type: "string",
           description: "What to ingest: an http(s) URL, an absolute VFS path (e.g. /workspace/report.pdf), or a raw/ path already in the bundle.",
         },
-        maxDepth: { type: "number", description: "Reference-crawl hops beyond the seed source (overrides the bundle default)." },
+        maxDepth: { type: "number", description: "Reference-crawl hops beyond the seed source (overrides the bundle default). Called from inside an ingest run, the new run gets one hop less than that run, and this can only lower it." },
         maxWorkers: { type: "number", description: "How many references to ingest concurrently (overrides the bundle default)." },
       },
       ["bundle", "source"],
@@ -442,6 +442,9 @@ function makeHandlers(core) {
         maxDepth: args.maxDepth,
         maxWorkers: args.maxWorkers,
         defaults: ctx.ingestDefaults,
+        // Which run is calling (from BOS, not the model) — a reference followed
+        // from inside an ingest run inherits that run's remaining depth.
+        caller: ctx.caller,
       }),
 
     // The run observer. Reads the SAME core.listJobs() records the app's Jobs

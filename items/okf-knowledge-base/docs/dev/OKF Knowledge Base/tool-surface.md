@@ -60,7 +60,7 @@ Git/tarball import: fetch and unpack into the VFS first, then import the directo
 
 | Tool | Input | Returns |
 |---|---|---|
-| `okf_ingest` | `{bundle, source, maxDepth?, maxWorkers?}` | `{jobId, status: "queued"}` — or `{status: "already_ingested", docId}` |
+| `okf_ingest` | `{bundle, source, maxDepth?, maxWorkers?}` | `{jobId, status: "queued"}` — or `{status: "already_ingested", docId}`, or `{status: "over_depth"}` from a run with no hops left |
 | `okf_add_raw_source` | `{bundle, filename?, content?, sourcePath?, conceptId?, title?, originUrl?, asset?, docId?}` | the `rawFile` path |
 
 ## Jobs (3)
