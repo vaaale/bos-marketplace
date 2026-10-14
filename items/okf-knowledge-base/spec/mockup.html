@@ -382,6 +382,24 @@
   .g-node.sel .g-circ { stroke-width:2.6; filter:drop-shadow(0 0 6px rgba(255,255,255,.35)); }
   .g-node.dim { opacity:.24; }
   .g-node.dimmed { opacity:.3; }
+  /* ── legibility (FR-073, 2026-10-14) ──
+     edge labels only on the hovered node's edges; node labels BELOW the node —
+     documents always, everything else when zoomed in, hovered, selected or a
+     search hit; a search FADES the rest (and hides their edges) instead of
+     merely dimming it. */
+  .g-elab { display:none; }
+  .g-elab.hot { display:inline; }
+  .g-node .g-tx { display:none; font-size:calc(10px / var(--gk, 1)); }
+  .g-node.doc .g-tx { font-size:calc(11.5px / var(--gk, 1)); }
+  .g-elbl { font-size:calc(9.5px / var(--gk, 1)); }
+  .g-node.doc .g-tx, .g-svg.zoomed .g-node .g-tx, .g-node.hot .g-tx, .g-node.sel .g-tx, .g-node.match .g-tx, .g-node.near .g-tx { display:inline; }
+  .g-svg.searching .g-node.faded .g-tx { display:none; }
+  .g-node.faded { opacity:.09; }
+  .g-edge.faded { opacity:.03; }
+  .g-ctl { position:absolute; right:10px; top:10px; display:flex; flex-direction:column; gap:4px; z-index:2; }
+  .g-ctl button { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border-radius:6px; border:1px solid var(--border); background:rgba(15,18,24,.85); color:var(--muted); cursor:pointer; font-size:13px; }
+  .g-ctl button:hover { color:var(--text); background:var(--panel2); }
+  .g-hint { position:absolute; left:10px; bottom:8px; font-size:11px; color:var(--muted); background:rgba(15,18,24,.8); border:1px solid var(--border); border-radius:6px; padding:3px 8px; z-index:2; }
   .g-node.match .g-ring { opacity:.95; }
   .g-node.match .g-circ { filter: drop-shadow(0 0 7px rgba(255,255,255,.5)); }
   .q-content.graph-mode { display:flex; flex-direction:column; overflow:hidden; padding:12px; gap:0; }
@@ -1404,22 +1422,28 @@ function deleteJob(id){
 }
 
 /* ================= QUERY ================= */
-const L = { k:5200, rest:120, center:0.02, damp:0.8, maxV:9, ticks:150 }; // force-sim params: Coulomb k, spring rest length, centering, damping, velocity cap, ticks
+// force-sim params (FR-073 "spread out", 2026-10-14). Coulomb k; spring rest
+// length PER EDGE KIND (a chapter sits close to its document, a term further
+// out); a weak centering pull; damping; a speed cap; more ticks with cooling;
+// and a COLLISION pass that keeps every pair of circles (plus padding) apart.
+const L = { k:12000, rest:{contain:70, cover:150, link:130}, spring:0.03, center:0.004, damp:0.82, maxV:14, ticks:420, pad:22, labelZoom:1.25, fitMargin:48, kMin:0.2, kMax:3 };
 let G = { nodes:[], byId:{}, edges:[], nbr:new Map(), view:{x:0,y:0,k:1}, raf:0, drag:null, pan:null, moved:false, center:{x:0,y:0}, lastW:0, lastH:0, retry:false, resizeObs:null };
 const GEDGE_META = { contain:{label:'contains'}, cover:{label:'covers'}, link:{label:'related'} };
 
 function graphData(bundleId){
   const b=BUNDLES[bundleId];
-  const docs=b.docs.map(d=>({id:d.id,label:d.title,type:'doc'}));
+  // Node ids are NAMESPACED by kind (FR-073): a document called "deployment"
+  // and the concept term "deployment" are two nodes, not one with two faces.
+  const docs=b.docs.map(d=>({id:'doc:'+d.id,docId:d.id,label:d.title,type:'doc'}));
   const chaps=[];
-  b.docs.forEach(d=>d.chapters.forEach(c=>chaps.push({id:d.id+'/'+c.id,docId:d.id,chId:c.id,label:c.title,type:'chap'})));
+  b.docs.forEach(d=>d.chapters.forEach(c=>chaps.push({id:'chap:'+d.id+'/'+c.id,docId:d.id,chId:c.id,label:c.title,type:'chap'})));
   const idx=conceptIndex(b);
-  const concepts=idx.filter(t=>t.kind==='topic').map(t=>({id:t.name,label:t.name,type:'concept',count:t.count}));
-  const persons=idx.filter(t=>t.kind==='person').map(t=>({id:t.name,label:t.name,type:'person',count:t.count}));
-  const containment=chaps.map(c=>({from:c.docId,to:c.id,kind:'contain'}));
+  const concepts=idx.filter(t=>t.kind==='topic').map(t=>({id:'term:'+t.name,term:t.name,label:t.name,type:'concept',count:t.count}));
+  const persons=idx.filter(t=>t.kind==='person').map(t=>({id:'term:'+t.name,term:t.name,label:t.name,type:'person',count:t.count}));
+  const containment=chaps.map(c=>({from:'doc:'+c.docId,to:c.id,kind:'contain'}));
   const coverage=[];
-  idx.forEach(t=>t.covers.forEach(c=>coverage.push({from:c.docId+'/'+c.chId,to:t.name,kind:'cover'})));
-  const links=(EXPLICIT_LINKS[bundleId]||[]).map(l=>({from:l[0],to:l[1],kind:'link'}));
+  idx.forEach(t=>t.covers.forEach(c=>coverage.push({from:'chap:'+c.docId+'/'+c.chId,to:'term:'+t.name,kind:'cover'})));
+  const links=(EXPLICIT_LINKS[bundleId]||[]).map(l=>({from:'chap:'+l[0],to:'chap:'+l[1],kind:'link'}));
   return {docs,chaps,concepts,persons,containment,coverage,links};
 }
 function nodeRadius(n){ if(n.type==='doc') return 22; if(n.type==='concept'||n.type==='person') return 14+Math.min(9,(n.count||1)*2.2); return 15; }
@@ -1440,15 +1464,20 @@ function renderGraph(g){
   if(G.resizeObs){ G.resizeObs.disconnect(); G.resizeObs=null; }
   const all=g.docs.concat(g.chaps).concat(g.concepts).concat(g.persons||[]);
   const center=G.center;
-  const baseR=Math.max(120,Math.min(W,H)/2 - 74);
-  const byType={doc:0,chap:0,concept:0,person:0};
-  G.nodes=all.map(n=>{
-    const total=g[n.type==='doc'?'docs':n.type==='chap'?'chaps':n.type==='person'?'persons':'concepts'].length;
-    const i=byType[n.type]++; const a=(i/total)*Math.PI*2+(n.type==='doc'?0:n.type==='chap'?1.2:n.type==='person'?3.4:2.3);
-    const rr=baseR*(n.type==='doc'?0.28:n.type==='chap'?0.58:0.9);
-    return Object.assign({},n,{r:nodeRadius(n),fixed:false,fx:null,fy:null,vx:0,vy:0,
-      x:center.x+Math.cos(a)*rr+(Math.random()-.5)*10, y:center.y+Math.sin(a)*rr*0.82+(Math.random()-.5)*10});
-  });
+  // Seed by STRUCTURE, not by category ring: documents spread on a wide ring,
+  // each chapter on a small ring around its own document, each term at the
+  // centroid of the chapters it covers. The simulation then only refines it.
+  const R=Math.max(160, Math.sqrt(all.length)*46);
+  const pos={};
+  g.docs.forEach((d,i)=>{ const a=i/g.docs.length*Math.PI*2; pos[d.id]={x:center.x+Math.cos(a)*R, y:center.y+Math.sin(a)*R}; });
+  const chOf={}; g.chaps.forEach(c=>{ (chOf[c.docId]=chOf[c.docId]||[]).push(c); });
+  Object.keys(chOf).forEach(docId=>{ const p0=pos['doc:'+docId]||center; chOf[docId].forEach((c,i,arr)=>{ const a=i/arr.length*Math.PI*2; pos[c.id]={x:p0.x+Math.cos(a)*80, y:p0.y+Math.sin(a)*80}; }); });
+  const coverOf={}; g.coverage.forEach(e=>{ (coverOf[e.to]=coverOf[e.to]||[]).push(e.from); });
+  (g.concepts.concat(g.persons||[])).forEach(t=>{ const ps=(coverOf[t.id]||[]).map(id=>pos[id]).filter(Boolean);
+    const x=ps.length? ps.reduce((s,p)=>s+p.x,0)/ps.length : center.x, y=ps.length? ps.reduce((s,p)=>s+p.y,0)/ps.length : center.y;
+    pos[t.id]={x:x+(center.x-x)*0.15, y:y+(center.y-y)*0.15}; });
+  G.nodes=all.map(n=>Object.assign({},n,{r:nodeRadius(n),fixed:false,fx:null,fy:null,vx:0,vy:0,
+    x:(pos[n.id]||center).x+(Math.random()-.5)*8, y:(pos[n.id]||center).y+(Math.random()-.5)*8}));
   G.byId={}; G.nodes.forEach(n=>G.byId[n.id]=n);
   const mk=(from,to,kind)=>({from,to,kind,el:null,wrap:null});
   G.edges=[].concat(g.containment.map(e=>mk(e.from,e.to,'contain')),
@@ -1458,8 +1487,8 @@ function renderGraph(g){
   G.edges.forEach(e=>{ G.nbr.get(e.from).add(e.to); G.nbr.get(e.to).add(e.from); });
   G.view={x:0,y:0,k:1}; gHover=null;
   renderGraphSVG();
-  for(let i=0;i<L.ticks;i++) stepGraph();
-  applyTransform();
+  for(let i=0;i<L.ticks;i++) stepGraph(1-i/L.ticks*0.95);   // cooling: alpha 1 → 0.05
+  fitView(null);
   drawGraph();
   attachGraphInteractions(svg);
   G.resizeObs=new ResizeObserver(()=>{
@@ -1470,9 +1499,9 @@ function renderGraph(g){
   });
   G.resizeObs.observe(stage);
 }
-function stepGraph(){
+function stepGraph(alpha){
+  alpha=alpha==null? 0.3 : alpha;
   const ns=G.nodes; if(!ns.length) return;
-  let cx=0, cy=0; ns.forEach(n=>{ cx+=n.x; cy+=n.y; }); cx/=ns.length; cy/=ns.length;
   for(let i=0;i<ns.length;i++){
     const a=ns[i]; let fx=0, fy=0;
     for(let j=0;j<ns.length;j++){ if(i===j) continue; const b=ns[j];
@@ -1484,17 +1513,38 @@ function stepGraph(){
   }
   G.edges.forEach(e=>{ const a=G.byId[e.from], b=G.byId[e.to];
     let dx=b.x-a.x, dy=b.y-a.y; const d=Math.max(1,Math.hypot(dx,dy));
-    const f=(d-L.rest)*0.02, ux=dx/d, uy=dy/d;
+    const f=(d-L.rest[e.kind])*L.spring, ux=dx/d, uy=dy/d;
     a._fx+=f*ux; a._fy+=f*uy; b._fx-=f*ux; b._fy-=f*uy;
   });
   ns.forEach(n=>{
     n._fx-=(n.x-G.center.x)*L.center; n._fy-=(n.y-G.center.y)*L.center;
     if(n.fixed){ n.x=n.fx; n.y=n.fy; n.vx=0; n.vy=0; return; }
-    n.vx=(n.vx+n._fx)*L.damp; n.vy=(n.vy+n._fy)*L.damp;
+    n.vx=(n.vx+n._fx*alpha)*L.damp; n.vy=(n.vy+n._fy*alpha)*L.damp;
     const sp=Math.hypot(n.vx,n.vy); if(sp>L.maxV){ n.vx*=L.maxV/sp; n.vy*=L.maxV/sp; }
     n.x+=n.vx; n.y+=n.vy;
   });
+  // collision: no two circles (plus label padding) overlap
+  for(let i=0;i<ns.length;i++) for(let j=i+1;j<ns.length;j++){
+    const a=ns[i], b=ns[j]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||0.01;
+    const min=a.r+b.r+L.pad; if(d>=min) continue;
+    const push=(min-d)/2, ux=dx/d, uy=dy/d;
+    if(!a.fixed){ a.x-=ux*push; a.y-=uy*push; } if(!b.fixed){ b.x+=ux*push; b.y+=uy*push; }
+  }
 }
+/** Zoom/pan so the given nodes (all when null) fill the stage, labels included. */
+function fitView(ids){
+  const host=document.getElementById('graphStage'); if(!host) return;
+  const W=host.clientWidth, H=host.clientHeight;
+  const ns=ids? G.nodes.filter(n=>ids.has(n.id)) : G.nodes; if(!ns.length) return;
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  ns.forEach(n=>{ x0=Math.min(x0,n.x-n.r-40); x1=Math.max(x1,n.x+n.r+40); y0=Math.min(y0,n.y-n.r); y1=Math.max(y1,n.y+n.r+22); });
+  const k=Math.max(L.kMin, Math.min(ids? 1.6 : 1.2, Math.min((W-2*L.fitMargin)/(x1-x0), (H-2*L.fitMargin)/(y1-y0))));
+  G.view.k=k; G.view.x=W/2-(x0+x1)/2*k; G.view.y=H/2-(y0+y1)/2*k;
+  applyTransform();
+}
+function zoomBy(f){ const host=document.getElementById('graphStage'); if(!host) return; const W=host.clientWidth/2, H=host.clientHeight/2;
+  const nk=Math.max(L.kMin, Math.min(L.kMax, G.view.k*f)); G.view.x=W-(W-G.view.x)*(nk/G.view.k); G.view.y=H-(H-G.view.y)*(nk/G.view.k); G.view.k=nk; applyTransform(); }
+function fitResults(){ const q=(state.qsearch||'').trim(); fitView(q? graphMatchSet(q) : null); }
 function drawGraph(){
   const host=document.getElementById('graphStage'); const svg=host&&host.querySelector('.g-svg');
   if(!svg) return;
@@ -1532,7 +1582,7 @@ function renderGraphSVG(){
     h+='<g class="g-node '+n.type+sel+'" data-id="'+n.id+'"><title>'+escapeHtml(n.label)+'</title>'
       +'<circle class="g-ring" r="'+(n.r+5)+'" stroke="'+ringCol+'"/>'
       +'<circle class="g-circ" r="'+n.r+'"/>'
-      +'<text class="g-tx" text-anchor="middle" dominant-baseline="central">'+escapeHtml(n.label)+'</text></g>';
+      +'<text class="g-tx" text-anchor="middle" y="'+(n.r+11)+'">'+escapeHtml(trunc(n.label,28))+'</text></g>';
   });
   h+='</g></g>';
   svg.innerHTML=h;
@@ -1542,19 +1592,19 @@ function renderGraphSVG(){
   G.nodes.forEach(n=>{ n.el=svg.querySelector('.g-nodes .g-node[data-id="'+n.id+'"]'); });
   drawGraph();
 }
-function applyTransform(){ const host=document.getElementById('graphStage'); const svg=host&&host.querySelector('.g-svg'); if(!svg) return; const sel=svg.querySelector('.g-sel'); if(sel) sel.setAttribute('transform','translate('+G.view.x+','+G.view.y+') scale('+G.view.k+')'); }
+function applyTransform(){ const host=document.getElementById('graphStage'); const svg=host&&host.querySelector('.g-svg'); if(!svg) return; const sel=svg.querySelector('.g-sel'); if(sel) sel.setAttribute('transform','translate('+G.view.x+','+G.view.y+') scale('+G.view.k+')'); svg.classList.toggle('zoomed', G.view.k>=L.labelZoom); svg.style.setProperty('--gk', G.view.k); }
 function graphSVG(){ const host=document.getElementById('graphStage'); return host?host.querySelector('.g-svg'):null; }
 function screenToWorld(svg,sx,sy){ const r=svg.getBoundingClientRect(); return { x:((sx-r.left)-G.view.x)/G.view.k, y:((sy-r.top)-G.view.y)/G.view.k }; }
 let gHover=null;
 function setGraphHover(id){
   if(id===gHover) return; gHover=id;
   if(!id){
-    G.nodes.forEach(n=>{ if(n.el) n.el.classList.remove('dim','hot'); });
+    G.nodes.forEach(n=>{ if(n.el) n.el.classList.remove('dim','hot','near'); });
     G.edges.forEach(e=>{ if(e.el) e.el.classList.remove('dim','hot'); if(e.wrap) e.wrap.classList.remove('dim','hot'); });
     return;
   }
   const near=G.nbr.get(id)||new Set();
-  G.nodes.forEach(n=>{ if(!n.el) return; const near2=near.has(n.id); n.el.classList.toggle('hot', n.id===id); n.el.classList.toggle('dim', !near2); });
+  G.nodes.forEach(n=>{ if(!n.el) return; const near2=near.has(n.id); n.el.classList.toggle('hot', n.id===id); n.el.classList.toggle('near', near2 && n.id!==id); n.el.classList.toggle('dim', !near2); });
   G.edges.forEach(e=>{ const inc=(e.from===id||e.to===id); if(e.el) e.el.classList.toggle('hot',inc), e.el.classList.toggle('dim',!inc); if(e.wrap) e.wrap.classList.toggle('hot',inc), e.wrap.classList.toggle('dim',!inc); });
 }
 function attachGraphInteractions(svg){
@@ -1574,7 +1624,7 @@ function attachGraphInteractions(svg){
   });
   svg.addEventListener('wheel',e=>{
     e.preventDefault();
-    const nk=Math.max(0.4, Math.min(2.6, G.view.k*Math.exp(-e.deltaY*0.0016)));
+    const nk=Math.max(L.kMin, Math.min(L.kMax, G.view.k*Math.exp(-e.deltaY*0.0016)));
     const r=svg.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
     G.view.x=px-(px-G.view.x)*(nk/G.view.k); G.view.y=py-(py-G.view.y)*(nk/G.view.k); G.view.k=nk;
     applyTransform();
@@ -1584,9 +1634,9 @@ function attachGraphInteractions(svg){
     const gEl=e.target.closest('.g-node'); if(!gEl) return;
     const n=G.byId[gEl.getAttribute('data-id')];
     openPane(n.type==='doc'?'doc':(n.type==='concept'||n.type==='person')?'concept':'chap',
-      n.type==='doc'? n.id : (n.type==='chap'? n.docId : null),
+      (n.type==='doc'||n.type==='chap')? n.docId : null,
       n.type==='chap'? n.chId : null,
-      (n.type==='concept'||n.type==='person')? n.id : null);
+      (n.type==='concept'||n.type==='person')? n.term : null);
   });
   svg.addEventListener('mouseover',e=>{ const gEl=e.target.closest('.g-node'); setGraphHover(gEl? G.byId[gEl.getAttribute('data-id')].id : null); });
 }
@@ -1610,9 +1660,9 @@ window.addEventListener('mouseup',()=>{
 });
 function isNodeSelected(id){
   const p=state.pane;
-  if(p.kind==='doc') return id===p.docId;
-  if(p.kind==='concept') return id===p.term;
-  if(p.kind==='chap') return id===(p.docId+'/'+p.chId);
+  if(p.kind==='doc') return id==='doc:'+p.docId;
+  if(p.kind==='concept') return id==='term:'+p.term;
+  if(p.kind==='chap') return id==='chap:'+p.docId+'/'+p.chId;
   return false;
 }
 function legendHtml(){
@@ -1671,23 +1721,31 @@ function renderTableView(bundleId, q){
   h+='</tbody></table>';
   return h;
 }
+function graphMatchSet(q){
+  const ql=(q||'').toLowerCase().trim(); const ids=hitNodeIds(state.qBundle,q);
+  G.nodes.forEach(n=>{ if(n.type==='doc' && n.label.toLowerCase().includes(ql)) ids.add(n.id); });
+  return ids;
+}
 function applyGraphSearch(q){
   const ql=(q||'').toLowerCase().trim();
-  const ids=ql? hitNodeIds(state.qBundle,q) : new Set();
+  const svg=graphSVG(); if(svg) svg.classList.toggle('searching', !!ql);
+  const ids=ql? graphMatchSet(q) : new Set();
   G.nodes.forEach(n=>{
     if(!n.el) return;
-    const match=!ql || ids.has(n.id) || n.label.toLowerCase().includes(ql);
-    n.el.classList.toggle('match', !!ql && match);
-    n.el.classList.toggle('dimmed', !!ql && !match);
+    const match=!!ql && ids.has(n.id);
+    n.el.classList.toggle('match', match);
+    n.el.classList.toggle('faded', !!ql && !match);
+    n.el.classList.remove('dimmed');
   });
   G.edges.forEach(e=>{
     if(!e.el) return;
-    if(!ql){ e.el.classList.remove('dim'); return; }
-    const a=G.byId[e.from], b=G.byId[e.to];
-    const am=a && (ids.has(a.id) || a.label.toLowerCase().includes(ql));
-    const bm=b && (ids.has(b.id) || b.label.toLowerCase().includes(ql));
-    e.el.classList.toggle('dim', !am && !bm);
+    const both=ids.has(e.from) && ids.has(e.to);
+    e.el.classList.toggle('faded', !!ql && !both);
+    e.el.classList.toggle('dim', false);
   });
+  const hint=document.getElementById('g-hint');
+  if(hint) hint.textContent= ql? (ids.size? ids.size+' of '+G.nodes.length+' nodes match — zoomed to the results' : 'No node matches — showing the whole graph') : G.nodes.length+' nodes · scroll or + to zoom in for every label';
+  if(G.nodes.length) fitView(ql && ids.size? ids : null);
 }
 function updateSearchClear(){
   const clear=document.getElementById('q-clear');
@@ -1789,7 +1847,7 @@ function renderHits(bundleId,q){
 }
 function hitNodeIds(bundleId,q){
   const ids=new Set();
-  searchHits(bundleId,q).forEach(r=>{ ids.add(r.docId); ids.add(r.docId+'/'+r.chId); if(r.matched) ids.add(r.matched); });
+  searchHits(bundleId,q).forEach(r=>{ ids.add('doc:'+r.docId); ids.add('chap:'+r.docId+'/'+r.chId); if(r.matched) ids.add('term:'+r.matched); });
   return ids;
 }
 function onQSearchInput(v){
@@ -1849,8 +1907,8 @@ function renderQuery(){
   } else if(state.qView==='graph'){
     const g=graphData(state.qBundle);
     content.innerHTML='<div class="g-legend">'+legendHtml()+'</div>'
-      +'<div id="graphStage" class="graph-stage"><svg class="g-svg"></svg></div>'
-      +'<div class="note">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>contains</b> (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>covers</b> (chapter → the concept/person term it covers, via the concept index), and <b>related</b> (explicit <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_add_link</code> edges). Force-directed layout — <b>drag</b> a node, <b>scroll</b> to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbors. Click any node to open it in the reader pane. Type in the search box above: the chapters <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_search</code> finds — by term, title, summary or full text — light up with their documents and matched terms; everything else dims to 30%. Switch to <b>Table</b> to read the ranked hits with their excerpts.</span></div>';
+      +'<div id="graphStage" class="graph-stage"><div class="g-ctl"><button title="Zoom in" onclick="zoomBy(1.3)">+</button><button title="Zoom out" onclick="zoomBy(1/1.3)">−</button><button title="Fit (the search results, when searching)" onclick="fitResults()">⤢</button></div><span class="g-hint" id="g-hint"></span><svg class="g-svg"></svg></div>'
+      +'<div class="note">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>contains</b> (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>covers</b> (chapter → the concept/person term it covers, via the concept index), and <b>related</b> (explicit <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_add_link</code> edges). Force-directed layout — <b>drag</b> a node, <b>scroll</b> to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbors. Click any node to open it in the reader pane. Labels: documents always; everything else when you zoom in, hover or search. Type in the search box above: the chapters <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_search</code> finds — by term, title, summary or full text — light up with their documents and matched terms; everything else fades out and the view zooms to the results (⤢ re-fits). Switch to <b>Table</b> to read the ranked hits with their excerpts.</span></div>';
     renderGraph(g);
     applyGraphSearch(state.qsearch);
   } else {
