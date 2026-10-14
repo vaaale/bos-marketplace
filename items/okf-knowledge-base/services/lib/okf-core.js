@@ -2081,7 +2081,7 @@ async function upsertConcept(...args) {
   return withBundle(bundleDir(bundleRoot, bundleName), () => upsertConceptLocked(...args));
 }
 
-async function upsertConceptLocked(bundleRoot, bundleName, id, { title, body, frontmatter, sourceRange, interpretations } = {}) {
+async function upsertConceptLocked(bundleRoot, bundleName, id, { title, body, frontmatter, sourceRange, interpretations, caller } = {}) {
   const bDir = bundleDir(bundleRoot, bundleName);
   if (!(await vfs.exists(bDir))) throw new Error(`bundle not found: ${bundleName} — create it first with okf_init_bundle({name: "${bundleName}"})`);
   const existing = await readConceptRaw(bDir, id);
@@ -2132,6 +2132,7 @@ async function upsertConceptLocked(bundleRoot, bundleName, id, { title, body, fr
   const raw = stringifyDocument(merged, finalBody);
   await vfs.writeText(conceptFilePath(bDir, id), raw);
   await commitConcepts(bundleRoot, bundleName, [{ id, raw }]);
+  await noteRunWrite(bundleRoot, caller, bundleName, id);
   await appendLog(bundleRoot, bundleName, {
     event: existing ? "concept_update" : "concept_create",
     conceptId: id,
@@ -3922,8 +3923,8 @@ async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers, p
     // The job whose run started this one by following a reference — null for
     // an ingest a user or an outside agent asked for. See triggerIngest.
     parentJobId: parentJobId ?? null,
-    // Set for a RE-ingest: the document this run replaces. It is cleared when
-    // the run STARTS (not when it is queued), then rewritten under the same id.
+    // Set for a RE-ingest: the document this run replaces — rewritten under
+    // the same id, and replaced only when the run COMPLETES (FR-064).
     reingestDocId: reingestDocId ?? null,
     queuedAt: nowIso(),
     startedAt: null,
@@ -4536,7 +4537,16 @@ async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers,
   let runSource = src;
   let reingestDocId = null;
   if (!src.startsWith("raw/")) {
-    const known = await findSource(bundleRoot, bundle, src).catch(() => null);
+    let known = await findSource(bundleRoot, bundle, src).catch(() => null);
+    // The ledger records that a source WAS ingested, not that its document is
+    // still there. One whose document is gone — deleted, or lost to a run that
+    // never finished — is ingested again like a new source: answering
+    // "already ingested" for it left production unable to restore one for 22
+    // hours (AQ4).
+    if (known && !(await documentExists(bundleRoot, bundle, known.docId))) {
+      if (known.originUrl) runSource = known.originUrl;
+      known = null;
+    }
     if (known && (!reingest || parent)) {
       return {
         status: "already_ingested",
@@ -4585,7 +4595,9 @@ async function triggerIngest(bundleRoot, { bundle, source, maxDepth, maxWorkers,
     job,
     note:
       `Run ${job.id} is queued and starts as soon as the run queue has a free slot` +
-      (reingestDocId ? ` — it replaces document "${reingestDocId}", which is cleared when the run starts` : "") +
+      (reingestDocId
+        ? ` — it replaces document "${reingestDocId}" when it completes (until then the current version stays; a failed or cancelled run changes nothing)`
+        : "") +
       `. There is nothing for you to run. Check on it with okf_list_jobs({}) (or the app's Jobs tab); it ends as ` +
       `completed with a summary, or failed with an error.`,
   };
@@ -4645,7 +4657,6 @@ function pumpQueue(bundleRoot) {
 async function runJob(bundleRoot, job) {
   let prepared = null;
   try {
-    if (job.reingestDocId) await clearDocument(bundleRoot, job.bundleId, job.reingestDocId);
     if (String(job.source).startsWith("raw/")) prepared = await prepareRawSource(bundleRoot, job.bundleId, job.source);
   } catch (err) {
     await updateJob(bundleRoot, job.id, { status: "failed", error: `could not prepare the run: ${err.message}` }).catch(() => {});
@@ -4662,30 +4673,75 @@ async function runJob(bundleRoot, job) {
   await driveRun(bundleRoot, job.id, task);
 }
 
-/**
- * Remove a document's DERIVED content so a re-ingest rewrites it under the
- * same id: the stub, every chapter, the chunk cache. raw/ (append-only, the
- * provenance) and the ledger stay; the index and TOC follow from the rebuild.
- */
-async function clearDocument(...args) {
-  const [bundleRoot, bundleName] = args;
-  return withBundle(bundleDir(bundleRoot, bundleName), () => clearDocumentLocked(...args));
+/** Whether a document — its stub or any chapter of it — is in the bundle. */
+async function documentExists(bundleRoot, bundleName, docId) {
+  const model = await getModel(bundleRoot, bundleName);
+  for (const id of model.entries.keys()) if (id === docId || id.startsWith(`${docId}/`)) return true;
+  return false;
 }
 
-async function clearDocumentLocked(bundleRoot, bundleName, docId) {
+// ── RE-INGEST: REPLACE ON SUCCESS (FR-064, ADR-024) ───────────────────────
+//
+// A re-ingest used to CLEAR the document when its run started. A run that
+// then failed, was cancelled, was reaped or died with the worker left the
+// bundle without the document — and, the ledger still listing the source,
+// unable to get it back through a plain ingest. Now the document is untouched
+// until the run COMPLETES; then the chapters it did not rewrite are removed,
+// because the new version no longer has them. A run that completed without
+// writing anything for the document replaces nothing.
+//
+// "What the run wrote" is recorded, not inferred: every okf_upsert_concept
+// carries the calling run's id (BOS passes `caller` with each tool call), and
+// that is attributed to the job running it. File times were the alternative,
+// and on a filesystem with coarse timestamps a chapter written just after the
+// run started looks older than the start — which would delete new work.
+
+const runWrites = new Map(); // job id -> Set of "<bundle>/<concept id>" the run wrote
+
+async function noteRunWrite(bundleRoot, caller, bundleName, id) {
+  if (!caller || !caller.runId) return;
+  const job = await jobForRun(bundleRoot, caller.runId);
+  if (!job) return; // not one of this service's runs — a user's chat, another agent
+  if (!runWrites.has(job.id)) runWrites.set(job.id, new Set());
+  runWrites.get(job.id).add(`${bundleName}/${id}`);
+}
+
+/**
+ * After a re-ingest COMPLETES: remove the document's chapters the run did not
+ * rewrite. Returns what it did, for the job summary.
+ */
+async function replaceDocumentOnSuccess(...args) {
+  const [bundleRoot, bundleName] = args;
+  return withBundle(bundleDir(bundleRoot, bundleName), () => replaceDocumentOnSuccessLocked(...args));
+}
+
+async function replaceDocumentOnSuccessLocked(bundleRoot, bundleName, docId, jobId) {
   validateConceptId(docId);
-  const bDir = bundleDir(bundleRoot, bundleName);
-  const before = await getModel(bundleRoot, bundleName);
-  const removed = Array.from(before.entries.keys()).filter((id) => id === docId || id.startsWith(`${docId}/`));
-  for (const target of [conceptFilePath(bDir, docId), safeJoin(bDir, "concepts", docId), safeJoin(bDir, CHUNKS_DIR, docId)]) {
-    if (await vfs.exists(target)) await vfs.remove(target);
+  const written = runWrites.get(jobId) || new Set();
+  const ofDoc = (id) => id === docId || id.startsWith(`${docId}/`);
+  const wroteForDoc = [...written].some((key) => key.startsWith(`${bundleName}/`) && ofDoc(key.slice(bundleName.length + 1)));
+  if (!wroteForDoc) {
+    return {
+      docId,
+      removed: [],
+      note: `the run wrote nothing for "${docId}", so its previous version is kept as it was`,
+    };
   }
+  const bDir = bundleDir(bundleRoot, bundleName);
+  const model = await getModel(bundleRoot, bundleName);
+  const removed = Array.from(model.entries.keys())
+    .filter((id) => ofDoc(id) && !written.has(`${bundleName}/${id}`))
+    .sort();
+  for (const id of removed) await vfs.remove(conceptFilePath(bDir, id));
   await commitConcepts(bundleRoot, bundleName, removed.map((id) => ({ id, raw: null })));
   await appendLog(bundleRoot, bundleName, {
-    event: "document_clear",
+    event: "document_replace",
     conceptId: docId,
-    message: `cleared document "${docId}" for a re-ingest (raw/ kept)`,
+    message:
+      `re-ingest ${jobId} completed: document "${docId}" is its new version` +
+      (removed.length ? `; removed ${removed.length} chapter(s) it did not rewrite: ${removed.join(", ")}` : ""),
   });
+  return { docId, removed };
 }
 
 /**
@@ -4726,7 +4782,7 @@ function documentEntries(ledger) {
  * Re-ingest ONE document, by id, from what the provenance ledger recorded
  * about it — re-acquired from its origin when it has one, else from its
  * original file if that still exists, else from its newest raw/ version.
- * Queued like every run; the document is cleared when the run starts.
+ * Queued like every run; the document is replaced when the run completes.
  */
 async function reingestDocument(bundleRoot, bundleName, docId, { defaults } = {}) {
   const bDir = bundleDir(bundleRoot, bundleName);
@@ -4828,10 +4884,27 @@ async function driveRun(bundleRoot, jobId, task) {
     });
 
     if (run.ok) {
-      await updateJob(bundleRoot, jobId, {
-        status: "completed",
-        summary: summaryFromOutput(run.output, run.toolCalls),
-      });
+      const summary = summaryFromOutput(run.output, run.toolCalls);
+      const job = await findJob(bundleRoot, jobId);
+      // FR-064: a cancel can land between the stream's `done` and here — a
+      // cancelled run replaces nothing, so only a job still running may.
+      if (job && job.reingestDocId && job.status === "running") {
+        try {
+          summary.replaced = await replaceDocumentOnSuccess(bundleRoot, job.bundleId, job.reingestDocId, jobId);
+        } catch (err) {
+          // Said as it is: the new version IS written; what is left over is
+          // the old chapters it did not rewrite.
+          await updateJob(bundleRoot, jobId, {
+            status: "failed",
+            summary,
+            error:
+              `the run completed and wrote the new version of "${job.reingestDocId}", but removing the chapters it did not ` +
+              `rewrite failed: ${err.message}. Those old chapters are still in the bundle.`,
+          });
+          return;
+        }
+      }
+      await updateJob(bundleRoot, jobId, { status: "completed", summary });
     } else if (run.endedReason === "cancelled") {
       // An aborted run is NOT a failed run (FR-050). The stream's own
       // endedReason is what distinguishes the two, so the derivation reads
@@ -4849,6 +4922,8 @@ async function driveRun(bundleRoot, jobId, task) {
       status: "failed",
       error: `could not drive the okf-ingest run: ${err.message}`,
     }).catch(() => {});
+  } finally {
+    runWrites.delete(jobId);
   }
 }
 
@@ -5092,7 +5167,8 @@ module.exports = {
   DEFAULT_MAX_CONCURRENT_RUNS,
   reingestBundle,
   reingestDocument,
-  clearDocument,
+  replaceDocumentOnSuccess,
+  documentExists,
   // internals exposed for the bridge, the tools layer and tests
   appendLog,
   // the launcher's prose->counts reader; tests/summary-from-output.test.mjs

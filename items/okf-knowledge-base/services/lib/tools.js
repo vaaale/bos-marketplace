@@ -266,7 +266,7 @@ const DECLARATIONS = [
         maxWorkers: { type: "number", description: "How many references to ingest concurrently (overrides the bundle default)." },
         reingest: {
           type: "boolean",
-          description: "Re-ingest a source that is ALREADY in the bundle: re-acquire it from its origin and rewrite the document under the same id (its chapters are cleared when the run starts; raw/ keeps every version). Only when the user asks for a re-ingest — never for a reference you are following.",
+          description: "Re-ingest a source that is ALREADY in the bundle: re-acquire it from its origin and rewrite the document under the same id (the current version stays until the run completes — then chapters it did not rewrite are removed; a failed or cancelled run changes nothing; raw/ keeps every version). Only when the user asks for a re-ingest — never for a reference you are following.",
         },
       },
       ["bundle", "source"],
@@ -419,6 +419,8 @@ function makeHandlers(core) {
         frontmatter: args.frontmatter,
         sourceRange: args.sourceRange,
         interpretations: args.interpretations,
+        // which run wrote it — a re-ingest replaces only what its run did not rewrite (FR-064)
+        caller: ctx.caller,
       }),
     okf_delete_concept: (args, ctx) => core.deleteConcept(ctx.bundleRoot, args.bundle, args.id, { rewriteBacklinks: !!args.rewrite_backlinks }),
     okf_merge_concepts: (args, ctx) => core.mergeConcepts(ctx.bundleRoot, args.bundle, args.from, args.to),

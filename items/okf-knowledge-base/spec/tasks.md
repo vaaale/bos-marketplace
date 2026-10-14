@@ -427,3 +427,15 @@ The production OOM (design.md §13). TDD: AP1 reproduced the crash in a worker w
 - [x] **AP6.** e2e run hygiene, found by AP5's rerun: the trigger, return-time, progress and Ingest-modal tests started REAL runs and left them going; with the run queue's cap of 2, FR-044's run sat queued and its poll blamed the stream. Each now cancels its run (`stopRun`); FR-044 waits for a free slot first (`waitForFreeRunSlot`, reporting who holds the queue) and has its own 16-minute timeout — under the default 30 s its 10-minute terminal-state poll could never wait for a real run.
 - [x] **AP7.** e2e restart race, found by the next rerun (58 passed, then C1 failed with `"<!doctype "... is not valid JSON` 70 ms after the job-control fixtures restarted the service): `resolveServiceBase` returned the Supervisor's route as soon as BOS reported it, while the new worker was still binding. It now waits until the service's JSON `GET /config` answers (`untilServing`) — for every restart site, not just C1.
   *Done 2026-10-14: the first load migrated the 13 MB store (jobs.json 13 MB → 105 KB, 40 trajectory files); no heap crash since; full e2e 85/85 after AP6/AP7.*
+
+## Re-ingest replaces on success (FR-064, FR-018, ADR-024) — appended 2026-10-14
+
+Found on production: `medium` held a ledger entry for an article whose document a never-finished re-ingest had cleared (2026-10-13 17:56); `okf_ingest` answered `already_ingested` for it for 22 hours.
+
+### Phase AQ
+
+- [x] **AQ1.** Tests first (`tests/reingest-and-queue.test.mjs`): AQ1 nothing removed while the run is live, on success only the chapters it did not rewrite go; AQ2 a failed or cancelled re-ingest removes nothing; AQ3 a completed run that wrote nothing keeps the document; AQ4 a source whose document is gone is ingested again. Red for the right reasons before the change.
+- [x] **AQ2.** `okf-core.js`: `noteRunWrite` (attribution via `caller`), `replaceDocumentOnSuccess`, `documentExists` in the dedup; `clearDocument` removed; `tools.js` passes `caller` to `upsertConcept`.
+- [x] **AQ3.** Text: the `reingest` parameter, the `okf-ingest-workflow` skill (and: never sleep-poll a run), the app's Ingest and Re-ingest dialogs (dist rebuilt), usage `ingest.md`, dev `tools.md`/`data-model.md`/`architecture.md`; spec FR-018/FR-064; design §14 ADR-024. Full suite green (151).
+- [ ] **AQ4.** On the deployment: update, restart the service, rerun the e2e.
+

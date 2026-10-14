@@ -194,7 +194,9 @@ Knowledge *authoring* stays agent-driven throughout — the app never writes a c
 
 ### Re-ingest and the run queue (FR-063 / FR-064)
 
-`reingest: true` re-ingests a source the ledger already holds: the job records `reingestDocId`, its source is the document's recorded **origin** (re-acquired, so the run gets fresh chunks and a fresh heading map), and when the job's turn comes `runJob` first calls `clearDocument` — stub, `concepts/<docId>/`, `.chunks/<docId>/`, then one index rebuild — and the run rewrites the document under the same id. `raw/` is never touched. A nested caller (FR-061) cannot re-ingest.
+`reingest: true` re-ingests a source the ledger already holds: the job records `reingestDocId`, its source is the document's recorded **origin** (re-acquired, so the run gets fresh chunks and a fresh heading map), and the run rewrites the document under the same id. **Nothing is removed before the run completes** (ADR-024): every `okf_upsert_concept` carries the calling run's id (`caller`), recorded per job by `noteRunWrite`; when the run completes, `replaceDocumentOnSuccess` removes the document's chapters it did not write and logs `document_replace`, and the job summary carries `replaced: {docId, removed}`. A run that wrote nothing for the document removes nothing (`replaced.note` says so); a failed or cancelled run removes nothing. The chunk cache needs no clearing — `writeChunks` replaces it when the new source is registered. `raw/` is never touched.
+
+Dedup (FR-018) holds only while the document exists: `triggerIngest` checks `documentExists` and ingests a source whose document is gone as a new one. A nested caller (FR-061) cannot re-ingest.
 
 Every run goes through `pumpQueue`: queued jobs start oldest-first while fewer than `maxConcurrentRuns` runs launched by this process are live; each finished run pumps again, and so does service startup (after the reaper's sweep, which only reaps `running` jobs). A run whose source is a `raw/` path gets its chunks and heading map from `prepareRawSource` before the agent starts — the task lists the chunk paths instead of telling the agent to read the source whole.
 
