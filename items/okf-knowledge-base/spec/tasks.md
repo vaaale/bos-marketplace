@@ -390,10 +390,10 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 
 ### Phase AL — agent-facing text `[P]` once AI's shapes are fixed
 
-- [ ] **AL1.** `skills/okf-lookup/SKILL.md` (new) — FR-071's process: choose the bundle (`okf_list_bundles`); **browse** (`okf_read_toc({bundle})`, paged) or **search** (`okf_search`, `groupBy` for "which documents"); the document's TOC; read only the chapters that answer; cite chapter id + `source`; flag stale/deprecated; keep KB content apart from own knowledge; an empty search is not absence until a rephrase and the TOC agree; a lookup writes nothing, starts no ingest, never reads `raw/`.
-- [ ] **AL2.** `skills/okf-bundle-schema/SKILL.md` — §Query → one-line pointer to `okf-lookup`; "extend before you create" → `okf_list_concepts({query})`.
-- [ ] **AL3.** `agents/okf-ingest/AGENT.md` — vocabulary checks by query (`okf_list_concepts({query})`, `okf_search`), never the whole list; the document summary cap (≤ 2 sentences, ≤ 300 characters).
-- [ ] **AL4.** `tests/ingest-agent-contract.test.mjs` — the prompt never tells the agent to list the whole vocabulary; it states the summary cap; `okf-lookup` exists and names only tools on the surface.
+- [x] **AL1.** `skills/okf-lookup/SKILL.md` (new) — FR-071's process: choose the bundle (`okf_list_bundles`); **browse** (`okf_read_toc({bundle})`, paged) or **search** (`okf_search`, `groupBy` for "which documents"); the document's TOC; read only the chapters that answer; cite chapter id + `source`; flag stale/deprecated; keep KB content apart from own knowledge; an empty search is not absence until a rephrase and the TOC agree; a lookup writes nothing, starts no ingest, never reads `raw/`.
+- [x] **AL2.** `skills/okf-bundle-schema/SKILL.md` — §Query → one-line pointer to `okf-lookup`; "extend before you create" → `okf_list_concepts({query})`.
+- [x] **AL3.** `agents/okf-ingest/AGENT.md` — vocabulary checks by query (`okf_list_concepts({query})`, `okf_search`), never the whole list; the document summary cap (≤ 2 sentences, ≤ 300 characters).
+- [x] **AL4.** `tests/ingest-agent-contract.test.mjs` — the prompt never tells the agent to list the whole vocabulary; it states the summary cap; `okf-lookup` exists and names only tools on the surface.
 
 ### Phase AM — docs
 

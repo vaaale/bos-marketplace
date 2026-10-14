@@ -4232,7 +4232,7 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers, prepared
     `\`type: section\`), each carrying \`parent\`, the \`concepts\` terms it covers and a one-line \`summary\` — those ` +
     `three fields are what the concept index and the document TOC are derived from. Upsert the document stub ` +
     `(\`concepts/<docId>.md\`, \`type: document\`) with the original URL in \`sources[].uri\` so the app's "Open source" ` +
-    `link has a target. Check \`okf_list_concepts\` before coining a term: extend before you create.\n\n` +
+    `link has a target. Before coining a term, query for it — \`okf_list_concepts({bundle, query: "<part of the term>"})\` — and extend an existing one: the vocabulary is paged, and a large bundle has thousands of terms.\n\n` +
     `For every NON-HTML asset in a chapter's scope: \`web_fetch\` it with \`output_path\` into ` +
     `\`raw/assets/<docId>/\`, register it with \`okf_add_raw_source({asset:true, docId, sourcePath})\`, interpret it ` +
     `with \`view_image\` or \`video_keyframes\`, and write the stored link plus a ` +

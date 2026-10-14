@@ -81,7 +81,7 @@ Process them **sequentially**:
 
 ### 2. Learn what the bundle already covers
 
-`okf_list_concepts` for the vocabulary; `okf_read_toc` for a document you may be extending. Do this **before** you write anything. Extending an existing concept term is almost always better than coining a near-duplicate, and a near-duplicate is the single most damaging thing you can do to a bundle's routing.
+The vocabulary, BY QUERY — `okf_list_concepts({bundle, query: "attention"})` for each topic you are about to tag (a large bundle has thousands of terms; a page of them is not "the vocabulary"), or `okf_search` for the topic; `okf_read_toc` for a document you may be extending. Do this **before** you write anything. Extending an existing concept term is almost always better than coining a near-duplicate, and a near-duplicate is the single most damaging thing you can do to a bundle's routing.
 
 ### 3. Decompose at the source's own heading structure
 
@@ -97,7 +97,7 @@ The chunk boundaries are **mechanical**, not editorial: never treat "one chunk" 
 
 `<docId>` here is always the `docId` from the `okf_add_raw_source` response (§1b) — never one you made up.
 
-- Stub: `okf_upsert_concept({bundle, id: "<docId>", frontmatter: {type: "document", title, summary, person_terms: ["<the author>"], sources: [{id, uri}]}})`.
+- Stub: `okf_upsert_concept({bundle, id: "<docId>", frontmatter: {type: "document", title, summary, person_terms: ["<the author>"], sources: [{id, uri}]}})`. The stub's `summary` says what the document is about in **at most two sentences and 300 characters** — it is what a reader scans in the bundle's table of contents, hundreds to a page; the service refuses a longer one. The detail belongs in the chapters.
 - Each chapter: `okf_upsert_concept({bundle, id: "<docId>/<chId>", sourceRange: {...}, frontmatter: {...}, interpretations: [...]})` — **the chapter write protocol below. You do not write the body.**
 
 **`parent`, `concepts` and `summary` are what make a chapter findable.** The concept index and the document TOC are derived from exactly those three fields; a chapter missing them is stored and invisible to `okf_search`. Write a summary someone searching would actually phrase — it is the text the deterministic match runs against.
@@ -143,7 +143,7 @@ Pass `body` only for a chapter you are genuinely **authoring** (a synthesis you 
 
 ### 5. Assign concept terms — extend before you create
 
-Lowercase, hyphenated, naming a *topic* and not a document. Two to four per chapter is usually right. Check `okf_list_concepts` or the index first. You cannot merge or delete terms — that is the user's curation — so a near-duplicate you coin stays until someone cleans it up: reuse the existing term instead.
+Lowercase, hyphenated, naming a *topic* and not a document. Two to four per chapter is usually right. Check first with `okf_list_concepts({bundle, query: "<part of the term>"})`. You cannot merge or delete terms — that is the user's curation — so a near-duplicate you coin stays until someone cleans it up: reuse the existing term instead.
 
 ### 5b. Extract the salient persons — `person_terms`, never `concepts`
 
