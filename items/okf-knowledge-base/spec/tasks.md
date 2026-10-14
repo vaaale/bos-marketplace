@@ -369,9 +369,9 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 ### Phase AJ — the graph: identity and layout (ADR-022)
 
 **Tests first** — `tests/graph-identity.test.mjs`, `tests/graph-layout.test.mjs`:
-- [ ] **AJ1. (SC-024)** `core.graph()` on a bundle with document "deployment" and term "deployment" → two nodes (`doc:deployment`, `concept:deployment`), each with its own edges; edges reference keys.
-- [ ] **AJ2. (SC-024)** `graphlayout.mjs`: after settle, no two circles overlap (distance ≥ r₁+r₂) on a generated 400-node graph; a chapter ends nearer its own document than the median node; `fitBox(ids)` covers exactly those nodes plus label margin.
-- [ ] **AJ3.** `matchSet(hits, nodes, query)` = hit chapters + their documents + matched terms + documents whose title contains the query.
+- [x] **AJ1. (SC-024)** `core.graph()` on a bundle with document "deployment" and term "deployment" → two nodes (`doc:deployment`, `concept:deployment`), each with its own edges; edges reference keys.
+- [x] **AJ2. (SC-024)** `graphlayout.mjs`: after settle, no two circles overlap (distance ≥ r₁+r₂) on a generated 400-node graph; a chapter ends nearer its own document than the median node; `fitBox(ids)` covers exactly those nodes plus label margin.
+- [x] **AJ3.** `matchSet(hits, nodes, query)` = hit chapters + their documents + matched terms + documents whose title contains the query.
 
 **Implement**: namespaced ids in `core.graph()`; `app/src/lib/graphlayout.mjs` + `.d.mts` (seeding, per-kind springs, cooling, collision, `fitBox`, `matchSet`, a `step()` the app drives in animation-frame chunks); `forceSim.ts` becomes a thin adapter over it or is removed.
 

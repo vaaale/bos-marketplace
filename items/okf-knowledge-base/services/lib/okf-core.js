@@ -1702,42 +1702,49 @@ async function graph(bundleRoot, bundleName) {
   const nodes = [];
   const edges = [];
   const present = new Set();
+  // A node's id is its NAMESPACED key (FR-073(f), ADR-022): a document called
+  // "deployment" and the concept term "deployment" are two nodes. The bare
+  // ids used to collide, collapsing both into one node and landing the
+  // term's coverage edges on the document.
+  const docKey = (id) => `doc:${id}`;
+  const chapKey = (id) => `chap:${id}`;
+  const conceptKey = (id) => (model.classified.documents.has(id) && !model.classified.chapters.some((c) => c.id === id) ? docKey(id) : chapKey(id));
 
   for (const doc of model.classified.documents.values()) {
-    nodes.push({ id: doc.id, key: `doc:${doc.id}`, type: "doc", label: doc.title, description: doc.summary || "" });
-    present.add(doc.id);
+    nodes.push({ id: docKey(doc.id), key: docKey(doc.id), type: "doc", label: doc.title, description: doc.summary || "", docId: doc.id });
+    present.add(docKey(doc.id));
   }
   for (const ch of model.classified.chapters) {
-    nodes.push({ id: ch.id, key: `chap:${ch.id}`, type: "chap", label: ch.title, description: ch.summary || "", docId: ch.docId, chId: ch.chId, status: ch.status });
-    present.add(ch.id);
-    edges.push({ from: ch.docId, to: ch.id, kind: "containment", label: "contains" });
+    nodes.push({ id: chapKey(ch.id), key: chapKey(ch.id), type: "chap", label: ch.title, description: ch.summary || "", docId: ch.docId, chId: ch.chId, status: ch.status });
+    present.add(chapKey(ch.id));
+    edges.push({ from: docKey(ch.docId), to: chapKey(ch.id), kind: "containment", label: "contains" });
   }
   for (const term of model.terms) {
     // The 4th node category (ADR-011/FR-054): a person-kind term is its own
     // type so the renderer can colour it, but it is NOT a new shape — same
-    // count-driven radius, same `coverage` edge kind as a topic term. Its
-    // `id` is the lowercased name (the app's maps key on it); its `label`
-    // keeps the original case for display.
+    // count-driven radius, same `coverage` edge kind as a topic term. A
+    // person's key is the lowercased name; `label`/`term` keep its case.
     const person = term.kind === "person";
     const type = person ? "person" : "concept";
-    const id = person ? String(term.name).toLowerCase() : term.name;
+    const key = `${type}:${person ? String(term.name).toLowerCase() : term.name}`;
     nodes.push({
-      id,
-      key: `${type}:${id}`,
+      id: key,
+      key,
       type,
       label: term.name,
+      term: term.name,
       count: term.count,
       description: `${person ? "person · covers" : "covers"} ${term.count} chapter${term.count === 1 ? "" : "s"}`,
     });
-    present.add(id);
+    present.add(key);
     for (const cov of term.covers) {
       // an empty `chId` is a DOCUMENT-level cover (the author) — the edge
       // then runs doc -> person instead of chap -> person
-      edges.push({ from: cov.chId ? `${cov.docId}/${cov.chId}` : cov.docId, to: id, kind: "coverage", label: "covers" });
+      edges.push({ from: cov.chId ? chapKey(`${cov.docId}/${cov.chId}`) : docKey(cov.docId), to: key, kind: "coverage", label: "covers" });
     }
   }
   for (const e of await readLinksSidecar(bDir)) {
-    edges.push({ from: e.from, to: e.to, kind: "link", label: e.label || "related" });
+    edges.push({ from: conceptKey(e.from), to: conceptKey(e.to), kind: "link", label: e.label || "related" });
   }
 
   return {
