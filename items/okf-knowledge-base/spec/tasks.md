@@ -397,8 +397,8 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 
 ### Phase AM — docs
 
-- [ ] **AM1.** `docs/dev/OKF Knowledge Base/` — `tools.md` (search, two-level TOC, paged vocabulary, slim detail), the model/queue/refresh and its signature limits, the graph.
-- [ ] **AM2.** `docs/usage/OKF Knowledge Base/` — browsing vs searching, what the badges mean, the graph controls; troubleshooting: an mtime-preserving copy needs `okf_lint` to be seen.
+- [x] **AM1.** `docs/dev/OKF Knowledge Base/` — `tools.md` (search, two-level TOC, paged vocabulary, slim detail), the model/queue/refresh and its signature limits, the graph.
+- [x] **AM2.** `docs/usage/OKF Knowledge Base/` — browsing vs searching, what the badges mean, the graph controls; troubleshooting: an mtime-preserving copy needs `okf_lint` to be seen.
 
 ### Phase AN — e2e (`e2e/okf-knowledge-base.spec.ts`)
 

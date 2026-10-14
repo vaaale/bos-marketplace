@@ -17,20 +17,20 @@ The bundle is the unit of curation *and* of retrieval scope. Checking a design a
 
 ## The retrieval model, in plain terms
 
-Search here is **concept-anchored**, not full-text. A query is matched against the bundle's concept vocabulary and the one-line description stored for each chapter. What comes back is a **table of contents**: one row per relevant chapter, each naming the document, the chapter, its one-line description, and **the concept term that matched** — so you can see *why* a row is there.
+There are two ways in. **Browse** the bundle's table of contents — every document, newest first, with a short summary of what it is about. Or **search** it: a query is matched against the concept terms, chapter titles, summaries and the **full text** of every chapter. What comes back is one row per matching chapter, each naming the document, the chapter, its one-line summary, and **what matched** — a concept, a person, the title, the summary, or the text itself, with the sentence it was found in — so you can see *why* a row is there.
 
 You then open a row to read the chapter in full.
 
 Two consequences worth knowing up front:
 
-- **There is no fuzzy semantic magic.** No embeddings, no vector store. The match is deterministic: the same query returns the same rows, every time.
-- **A query that paraphrases body text but misses both the vocabulary and the stored descriptions returns nothing** — and an empty result is a real answer, not a bug. See [Troubleshooting](troubleshooting.md), which explains what to do about it.
+- **It matches words, not meanings.** No embeddings, no vector store. Accents and capitals don't matter ("Cordoba" finds "Córdoba"), and a word matches from its start ("api" does not find "rapid"), but a synonym that appears nowhere in the bundle won't. The match is deterministic: the same query returns the same rows, every time.
+- **Nothing found is not yet proof it isn't there.** Try other words, or browse the table of contents. See [Troubleshooting](troubleshooting.md).
 
 ### People are searchable too
 
 Ingest also records the **salient persons** a document is by or about: its **author**, and the **named key figures** a chapter is actually about (not every name that gets mentioned). They become terms in the same vocabulary, tagged as *person* rather than *topic*, so you can search a bundle by someone's name — full name, first name or surname — and get the documents and chapters they wrote or are the subject of.
 
-In the app they are **teal** wherever terms appear: a teal node in the graph, a *person* pill in the concept index, a *Person* row in the table, a teal "matched person" tag on a search hit.
+In the app they are **teal** wherever terms appear: a teal node in the graph, a *person* pill in the concept index, a *Person* row in the table, a teal *person* badge on a search hit. And because search covers the full text, a name is found even where ingest didn't record it as a person.
 
 The assistant uses exactly the same search through `okf_search`. One implementation, two surfaces: what you see in the app and what the assistant sees can't drift apart.
 

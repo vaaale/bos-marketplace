@@ -4,16 +4,12 @@
 
 This is the one that surprises people, so it's first.
 
-**Search is concept-anchored, not full-text.** It matches your query against two things only: the bundle's **concept term names**, and the **one-line summary** stored for each chapter. It does not scan chapter bodies. A query that paraphrases something buried in a paragraph, using words that appear neither in the vocabulary nor in any summary, correctly returns nothing.
+Search covers concept terms, titles, summaries **and the full text** of every chapter — so if a word is in the knowledge base, a search for it finds it. When it doesn't:
 
-An empty result is a real answer. What to do with it:
-
-1. **Widen the query.** Fewer words, more topical ones. "rollback" beats "what happens if the canary deploy goes wrong".
-2. **Read the vocabulary.** Overview → Concept Index, or ask the assistant for `okf_list_concepts`. Pick the term that's actually there and search that. This is almost always the fastest fix.
-3. **Browse the document.** Overview → Documents → the document's TOC. If the knowledge is in a chapter whose summary didn't capture it, you'll see it here.
-4. **Improve the summary.** If a chapter is genuinely about something its one-line summary doesn't say, that summary is the bug. Ask the assistant to update it (`okf_upsert_concept` with a better `summary`) — it is the retrieval surface, so it's worth getting right.
-
-The trade is deliberate: a deterministic match over a small vocabulary is fast, explainable (every row names the term that matched), and can't hallucinate a row. Full-text and fuzzy matching would return things that merely contain your words.
+1. **Use the words the text would use.** Search matches words, not meanings: a synonym the document never uses won't match. A name, a number or a distinctive phrase is the most reliable query.
+2. **Browse instead.** Overview → Documents is the table of contents, newest first with a summary each; open a likely document and read its chapter list.
+3. **Was the file changed outside the app in a way that keeps its size and timestamp?** The service notices changed files by size and modification time. A copy that preserves timestamps (`cp -p`, `rsync -a`, unpacking an archive) can slip past it — run a health check (Overview → Health, or ask the assistant for `okf_lint`) to rescan.
+4. **Improve the summary.** If a chapter is about something its one-line summary doesn't say, fix the summary (`okf_upsert_concept`) — summaries rank above body text, and they are what a reader scans.
 
 ## Two terms mean the same thing
 
@@ -76,4 +72,4 @@ A bundle imported from somewhere else (or created before this version) may not c
 
 ## Where the files actually are
 
-`/KnowledgeBase/<bundle>/` in the Files app — plain Markdown, editable by hand, under git if you want. The derived `concept-index.md` and `toc/*.md` are rebuilt from the chapters on the next read, so hand-editing content is safe; editing those two is pointless rather than harmful.
+`/KnowledgeBase/<bundle>/` in the Files app — plain Markdown, editable by hand, under git if you want. The derived `concept-index.md`, `toc/*.md` and `index.md` are rebuilt from the chapters — after a hand edit, on the next search or read — so hand-editing content is safe; editing those derived files is pointless rather than harmful.
