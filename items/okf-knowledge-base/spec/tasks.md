@@ -352,9 +352,9 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 ### Phase AH — vocabulary, bundle detail, summary cap (ADR-019, ADR-021, ADR-020)
 
 **Tests first** — `tests/paged-vocabulary.test.mjs`:
-- [ ] **AH1.** `listConcepts({query, kind, status, offset, limit})` — folded substring on the name, default 100 / max 500, `covers` ≤ 5 + `coversTotal`, `total`; `type` answers with the pointer, not a list.
-- [ ] **AH2.** `bundleDetail` returns `{health, indexGeneratedAt}` only.
-- [ ] **AH3.** Upserting a **document** stub with a summary of 3 sentences, or 321 characters, is rejected with the limit in the message; a chapter summary is not checked; a stored long summary is never rewritten.
+- [x] **AH1.** `listConcepts({query, kind, status, offset, limit})` — folded substring on the name, default 100 / max 500, `covers` ≤ 5 + `coversTotal`, `total`; `type` answers with the pointer, not a list.
+- [x] **AH2.** `bundleDetail` returns `{health, indexGeneratedAt}` only.
+- [x] **AH3.** Upserting a **document** stub with a summary of 3 sentences, or 321 characters, is rejected with the limit in the message; a chapter summary is not checked; a stored long summary is never rewritten.
 
 **Implement** in `okf-core.js`.
 

@@ -1611,37 +1611,58 @@ function documentSource(frontmatter) {
   return null;
 }
 
-/** The concept VOCABULARY with per-term chapter counts (FR-006). */
-async function listConcepts(bundleRoot, bundleName, { type, status, kind } = {}) {
+const TERM_PAGE = { default: 100, max: 500 };
+const COVERS_PER_TERM = 5;
+
+/**
+ * The concept VOCABULARY (FR-006 as amended): terms filtered by an optional
+ * `query` on the name (case- and accent-insensitive substring), paged, each
+ * with its kind, count and at most COVERS_PER_TERM of the chapters it covers
+ * (`coversTotal` says how many). Bounded by the page, never by the bundle
+ * (NFR-011, ADR-019). Documents and chapters are okf_read_toc's — `type`
+ * answers with a pointer there instead of a list.
+ */
+async function listConcepts(bundleRoot, bundleName, { query, type, status, kind, offset, limit } = {}) {
   const model = await getModel(bundleRoot, bundleName);
-  // `kind` is an OPTIONAL filter (ADR-011): "topic" | "person" | "all"
-  // (anything else, including the default, means all).
+  if (type === "document" || type === "section" || type === "chapter") {
+    return {
+      terms: [],
+      total: 0,
+      note: "Documents and chapters are not listed here. Documents: okf_read_toc({bundle}) (paged, newest first). A document's chapters: okf_read_toc({bundle, docId}).",
+    };
+  }
+  // `kind` is an OPTIONAL filter (ADR-011): "topic" | "person"; anything else means all.
   const wantKind = kind === "topic" || kind === "person" ? kind : null;
+  const q = query ? fold(query) : "";
+  const now = Date.now();
   let terms = model.terms
     .filter((t) => !wantKind || (t.kind || "topic") === wantKind)
-    .map((t) => ({
-      term: t.name,
-      kind: t.kind || "topic",
-      count: t.count,
-      covers: t.covers
-        .filter((c) => !status || c.status === status)
-        .map((c) => ({ docId: c.docId, chId: c.chId, title: c.chTitle, description: c.description, status: c.status })),
-    }));
-  if (status) terms = terms.map((t) => ({ ...t, count: t.covers.length })).filter((t) => t.count > 0);
-
-  const documents = Array.from(model.classified.documents.values()).map((d) => ({
-    id: d.id,
-    title: d.title,
-    summary: d.summary,
-    chapters: model.classified.chapters.filter((c) => c.docId === d.id).length,
+    .filter((t) => !q || fold(t.name).includes(q))
+    .map((t) => {
+      const covers = t.covers.filter((c) => !status || c.status === status);
+      return { t, covers };
+    })
+    .filter(({ covers }) => !status || covers.length > 0);
+  const total = terms.length;
+  const page = pageOf(total, { offset, limit }, TERM_PAGE);
+  terms = terms.slice(page.offset, page.offset + page.limit).map(({ t, covers }) => ({
+    term: t.name,
+    kind: t.kind || "topic",
+    count: covers.length,
+    coversTotal: covers.length,
+    covers: covers.slice(0, COVERS_PER_TERM).map((c) => {
+      const entry = model.entries.get(c.chId ? `${c.docId}/${c.chId}` : c.docId);
+      return {
+        docId: c.docId,
+        chId: c.chId,
+        title: c.chTitle,
+        description: c.description,
+        status: c.status,
+        stale: entry ? isStale(entry.frontmatter, now) : false,
+      };
+    }),
   }));
-  const chapters = model.classified.chapters
-    .filter((c) => !status || c.status === status)
-    .map((c) => ({ id: c.id, docId: c.docId, title: c.title, summary: c.summary, concepts: c.concepts, status: c.status, stale: c.stale }));
-
-  if (type === "document") return { terms: [], documents, chapters: [] };
-  if (type === "section" || type === "chapter") return { terms: [], documents: [], chapters };
-  return { terms, documents, chapters, indexGeneratedAt: model.indexGeneratedAt, needsRegeneration: model.needsRegeneration };
+  return { terms, total, ...page, indexGeneratedAt: model.indexGeneratedAt, needsRegeneration: model.needsRegeneration };
 }
 
 // ── graph derivation (ADR-004) — computed ON READ, never stored ──────────
@@ -1807,24 +1828,15 @@ async function listBundles(bundleRoot) {
   return bundles;
 }
 
-/** Bundle detail for the app's Overview tab (design.md §8.3). */
+/**
+ * Bundle detail for the app's Overview tab: the counts the stat cards and tab
+ * badges need — and nothing proportional to the bundle (FR-036, ADR-021). The
+ * Documents and Concept Index tabs page their own lists.
+ */
 async function bundleDetail(bundleRoot, name) {
   const model = await getModel(bundleRoot, name);
   const health = await bundleHealth(bundleRoot, name);
-  const documents = Array.from(model.classified.documents.values()).map((d) => {
-    const chs = model.classified.chapters.filter((c) => c.docId === d.id);
-    return {
-      id: d.id,
-      title: d.title,
-      summary: d.summary,
-      chapters: chs.length,
-      conceptRefs: chs.reduce((n, c) => n + c.concepts.length, 0),
-      updated: d.updatedAt || (chs.map((c) => c.updatedAt).filter(Boolean).sort().pop() || null),
-      needsAttention: chs.some((c) => c.stale || c.status === "deprecated"),
-      source: documentSource(d.frontmatter),
-    };
-  });
-  return { health, documents, conceptIndex: model.terms, indexGeneratedAt: model.indexGeneratedAt };
+  return { health, indexGeneratedAt: model.indexGeneratedAt };
 }
 
 /**
@@ -2088,6 +2100,7 @@ async function upsertConceptLocked(bundleRoot, bundleName, id, { title, body, fr
 
   const merged = { ...base, ...patch, id, updated_at: now };
   if (!merged.type) merged.type = merged.parent ? "section" : "document";
+  if (merged.type === "document" && patch.summary !== undefined) checkDocumentSummary(patch.summary);
   if (merged.created_at === undefined) merged.created_at = base.created_at || now;
 
   // ── the body (ADR-014 D4 precedence) ─────────────────────────────────
@@ -2132,6 +2145,24 @@ async function upsertConceptLocked(bundleRoot, bundleName, id, { title, body, fr
         },
       }
     : written;
+}
+
+const DOCUMENT_SUMMARY_MAX = 320;
+
+/**
+ * A document's summary is what a reader of the bundle TOC scans — hundreds of
+ * them on a page (FR-070). Two sentences, about 300 characters. Checked when a
+ * write SETS it; summaries already stored are never rewritten.
+ */
+function checkDocumentSummary(summary) {
+  const text = String(summary || "").trim();
+  const sentences = (text.match(/[.!?]+(?=\s|$)/g) || []).length;
+  if (sentences > 2) {
+    throw new Error(`a document summary is at most two sentences (this one has ${sentences}) — say what the document is about, briefly; detail belongs in its chapters`);
+  }
+  if (text.length > DOCUMENT_SUMMARY_MAX) {
+    throw new Error(`a document summary is at most ${DOCUMENT_SUMMARY_MAX} characters (this one has ${text.length}) — say what the document is about, briefly`);
+  }
 }
 
 /**

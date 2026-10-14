@@ -381,7 +381,14 @@ function makeHandlers(core) {
     // `kind` is an additive, optional filter (ADR-011) — omitted means every
     // term, and every term in the response now carries its own `kind`.
     okf_list_concepts: (args, ctx) =>
-      core.listConcepts(ctx.bundleRoot, args.bundle, { type: args.type, status: args.status, kind: args.kind }),
+      core.listConcepts(ctx.bundleRoot, args.bundle, {
+        query: args.query,
+        type: args.type,
+        status: args.status,
+        kind: args.kind,
+        offset: args.offset,
+        limit: args.limit,
+      }),
 
     // ── Concepts ─────────────────────────────────────────────────────────
     // ADR-014 D4 PRECEDENCE: `sourceRange` present -> the service extracts
