@@ -153,7 +153,7 @@ That route is not OKF-specific — it is the HTTP face of BOS's in-process `abor
 
 `cancelled` is a **distinct terminal state**, not a flavour of `failed`: cancelling is something the user asked for, so the record carries no error and the Jobs tab paints it in muted warm amber rather than red. The job record and everything the run already wrote are preserved.
 
-`core.deleteJob()` (`okf_delete_job` / `DELETE /jobs/<id>`) removes a **terminal** job's record from the hot map and the mirrored `jobs.json` — and nothing else. Bundle content is never touched. A still-active job is refused: cancel it first.
+`core.deleteJob()` (`okf_delete_job` / `DELETE /jobs/<id>`) removes a **terminal** job's record from the hot map and the mirrored `jobs.json`, and its trajectory file — and nothing else. Bundle content is never touched. A still-active job is refused: cancel it first.
 
 ## The reaper
 
@@ -163,7 +163,7 @@ That route is not OKF-specific — it is the HTTP face of BOS's in-process `abor
 
 - **inactivity** — `now - job.lastEventAt > staleJobMs` (a.k.a. `jobFinalizeTimeoutMs`, default 30 min). `lastEventAt` is stamped by `appendJobTrajectory` on every captured NDJSON event and persisted with the record, so the bound means "has said nothing for 30 minutes", never "has been running for 30 minutes" — a long ingest that keeps emitting tool calls is never reaped.
 
-**What a trajectory holds.** Every stream event in order — except that consecutive `reasoning_delta` lines, which BOS streams one token per line, are merged into one event with the joined text (`pushTrajectoryEvent`, used by both `appendJobTrajectory` and the cold load in `loadJobs`). Stored per token, one run reached 33,186 events and the job store, re-serialised in full on each coalesced write, took the worker past its heap limit.
+**What a trajectory holds.** Every stream event in order — except that consecutive `reasoning_delta` lines, which BOS streams one token per line, are merged into one event with the joined text (`pushTrajectoryEvent`, used by both `appendJobTrajectory` and the cold load in `readJobStore`). Stored per token, one run reached 33,186 events and took the worker past its heap limit.
 - **total runtime** — `now - job.startedAt > maxTotalTimeoutMs` (default 6 h). The backstop inactivity cannot provide: a run that keeps emitting events while repeating the same failure refreshes `lastEventAt` forever.
 
 The `error` names the bound that actually tripped — the inactivity message lists a BOS restart as one possible cause among a long generation and a provider stall rather than asserting it. Terminal jobs (completed/cancelled/failed) are never candidates. It runs **on a timer** (every 5 minutes, `unref`'d so it never holds the worker open) **and as a sweep on every (re)start**.
@@ -172,7 +172,15 @@ The startup sweep is the important half: a restart is precisely the event that o
 
 ## The job store
 
-In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json` so the Jobs tab survives a restart. Service-level, not bundle-level: the tab is global, and a run must outlive the bundle it targeted being deleted mid-flight. History is capped at 200. `.jobs/` is operational state, not OKF content, and is **excluded from export**.
+In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json` so the Jobs tab survives a restart. Service-level, not bundle-level: the tab is global, and a run must outlive the bundle it targeted being deleted mid-flight. History is capped at 200; a record dropped by the cap takes its trajectory file with it. `.jobs/` is operational state, not OKF content, and is **excluded from export**.
+
+**Records and trajectories are separate files.** `jobs.json` holds the records only; each run's trajectory is `.jobs/trajectories/<id>.json`. A write therefore costs what it changes: an event rewrites its own run's trajectory, a status change rewrites the records, and no write carries another run's history. Together they used to be one file, every record embedding its full trajectory — on production 40 runs made it 13 MB, held whole in the heap and re-serialised (twice: the store, then the `/api/fs` request body) on every event of every live run, and a single ingest exhausted the worker's 256 MB heap (`tests/job-store-memory.test.mjs` AP1 reproduces it in a worker with the same limits). A run's events are kept in memory only while it can still append; once it is terminal and the file is written they are released, and `GET /jobs/<id>` reads the file.
+
+**One writer per file.** `writeLatest` gives every file at most one write in flight and one waiting; the waiting write renders its content when it starts, so it carries every change made until then, and writes land in the order they started. Trajectory events are additionally coalesced per run (`TRAJECTORY_PERSIST_MS`, 250 ms); the terminal transition flushes at once.
+
+**A store that cannot be read is an error, never an empty store.** Only a missing `jobs.json` starts empty. An unreadable or unparseable one is reported by every job operation and left as it is — starting clean would let the next write erase the run history. Concurrent callers share one cold load.
+
+**An older store converges on load.** Records written with an inline `trajectory` (any service before this layout) have it moved to its file and are rewritten without it. An *empty* inline trajectory is dropped without touching the file — it is what an older service writes back after reading a new store.
 
 Terminal states are **final**: a late transition against an already-terminal job is recorded as a no-op rather than resurrecting a finished run.
 

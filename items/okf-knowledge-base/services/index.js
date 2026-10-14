@@ -309,9 +309,10 @@ if (parentPort) {
             // Warm the global job store from disk. Ingest runs are
             // service-level operational state (okf-core's `.jobs/jobs.json`
             // under the bundle root), so the Jobs tab still shows yesterday's
-            // completed and failed runs after a service restart. Non-fatal:
-            // an unreadable store just starts empty rather than blocking the
-            // tool surface that was already declared above.
+            // completed and failed runs after a service restart. Non-fatal
+            // to the rest of the service: an unreadable store is reported
+            // here and by every job operation that needs it — it is never
+            // replaced with an empty one, which would erase the history.
             try {
               const jobs = await core.listJobs(bundleRoot);
               log("info", `job store loaded: ${jobs.length} ingest run(s) on record`);
