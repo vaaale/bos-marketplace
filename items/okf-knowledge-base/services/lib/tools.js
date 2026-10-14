@@ -365,15 +365,13 @@ function makeHandlers(core) {
   return {
     // ── Retrieval ────────────────────────────────────────────────────────
     okf_search: async (args, ctx) => {
-      // core.search() is untouched by the person-kind work (SC-016): the
-      // rows it returns simply carry an additive `kind` per row now.
-      const rows = await core.search(ctx.bundleRoot, args.bundle, args.query, args.limit);
+      // The same core.search() the app's /search route runs (FR-036).
+      const res = await core.search(ctx.bundleRoot, args.bundle, args.query, { limit: args.limit, groupBy: args.groupBy });
       return {
         bundle: args.bundle,
         query: args.query,
-        rows,
-        count: rows.length,
-        note: rows.length
+        ...res,
+        note: res.count
           ? "Each row is a TOC pointer. Call okf_read_concept({bundle, id: `<docId>/<chId>`}) for the full chapter, or okf_read_toc({bundle, docId}) for the document's chapter list. Nothing here is a snippet."
           : "No concept term or stored description matched. This search is concept-anchored, not full text — widen the query, or call okf_list_concepts to read the vocabulary and route from there. Do not invent an answer.",
       };

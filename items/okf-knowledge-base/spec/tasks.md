@@ -339,15 +339,15 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 ### Phase AG — search (ADR-015, ADR-018)
 
 **Tests first** — `tests/full-text-search.test.mjs`:
-- [ ] **AG1. (SC-020)** A name present only in one chapter body → that chapter, `matchKind: "text"`, the name in `excerpt`; "Cordoba" finds "Córdoba" and the reverse; `api` does not match "rapid".
-- [ ] **AG2.** A document stub's author is found by name (`chId: ""`, as today).
-- [ ] **AG3.** `"what is our rollback policy"` → canary first, `matchedConcept: "rollback"`; `"migrations reviewed"` → pre-deploy, `matchedConcept: "deployment"` (anchored); a query of only stop words still searches.
-- [ ] **AG4.** Ranking: every-word matches above partial ones; term > title > summary > text within equal coverage; ties by `addedAt` then id; identical input → byte-identical output (FR-002).
-- [ ] **AG5.** Excerpt ≤ 3 sentences and ≤ 400 characters **including** ellipses; taken from the original text (a ligature/Hangul fixture proves folding never shifts it).
-- [ ] **AG6.** `limit` default 10, max 50 (`clamped`); `total`, `searched`, `matchedWords`; `groupBy: "document"` → ≤ 10 groups ordered by best hit, ≤ 5 hits each, `total` per group.
-- [ ] **AG7. (SC-023)** The bundle's file listing is identical before and after a search.
+- [x] **AG1. (SC-020)** A name present only in one chapter body → that chapter, `matchKind: "text"`, the name in `excerpt`; "Cordoba" finds "Córdoba" and the reverse; `api` does not match "rapid".
+- [x] **AG2.** A document stub's author is found by name (`chId: ""`, as today).
+- [x] **AG3.** `"what is our rollback policy"` → canary first, `matchedConcept: "rollback"`; `"migrations reviewed"` → pre-deploy, `matchedConcept: "deployment"` (anchored); a query of only stop words still searches.
+- [x] **AG4.** Ranking: every-word matches above partial ones; term > title > summary > text within equal coverage; ties by `addedAt` then id; identical input → byte-identical output (FR-002).
+- [x] **AG5.** Excerpt ≤ 3 sentences and ≤ 400 characters **including** ellipses; taken from the original text (a ligature/Hangul fixture proves folding never shifts it).
+- [x] **AG6.** `limit` default 10, max 50 (`clamped`); `total`, `searched`, `matchedWords`; `groupBy: "document"` → ≤ 10 groups ordered by best hit, ≤ 5 hits each, `total` per group.
+- [x] **AG7. (SC-023)** The bundle's file listing is identical before and after a search.
 
-**Implement**: `fold`, stop words, word-start regexes, `searchFullText` (§12.3) over `model.chapters ∪ model.docs`, BM25-style score, per-sentence excerpt, grouping; `search()` returns the ADR-018 object; `searchIndex` kept only as the term tier.
+**Implement**: `fold`, stop words, word-start regexes, `searchFullText` (§12.3) over `model.chapters ∪ model.docs`, BM25-style score, per-sentence excerpt, grouping; `search()` returns the ADR-018 object; `searchIndex` removed (term matching is part of the scan). *AG7 passed before the implementation — search wrote nothing then either — and is kept as the guard that the new search still writes nothing.*
 
 ### Phase AH — vocabulary, bundle detail, summary cap (ADR-019, ADR-021, ADR-020)
 

@@ -2289,7 +2289,7 @@ search(bundle, query, {limit=10, groupBy}):
 
 | File | Change |
 |---|---|
-| `services/lib/okf-core.js` | the model, queue, refresh (ADR-016) replacing `derivedCache`/`graphCache`; parallel reads; no swallowed listing errors; `searchFullText` (ADR-015); `recordSource` `firstIngestedAt` (ADR-017); `bundleToc`; paged `listConcepts`; slim `bundleDetail`; summary cap; `index.md` order + term count; namespaced graph ids |
+| `services/lib/okf-core.js` | the model, queue, refresh (ADR-016) replacing `derivedCache`/`graphCache`; parallel reads; no swallowed listing errors; `searchFullText` (ADR-015) replacing `searchIndex`; `recordSource` `firstIngestedAt` (ADR-017); `bundleToc`; paged `listConcepts`; slim `bundleDetail`; summary cap; `index.md` order + term count; namespaced graph ids |
 | `services/lib/tools.js` | DECLARATIONS for `okf_search` (drops "NOT full text", ~77-78), `okf_read_toc` (~104), `okf_list_concepts`; the no-match note (~378); handlers |
 | `services/lib/http-bridge.js` | the two GET routes; `groupBy` on search; slim detail |
 | `services/service.json` | the tool-group description ("concept-anchored search" → search over terms, titles, summaries and full text; browse the TOC) |

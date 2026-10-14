@@ -328,9 +328,10 @@ function createRequestHandler(ctx) {
           const query = req.method === "POST" ? body.query : url.searchParams.get("query");
           const limitRaw = req.method === "POST" ? body.limit : url.searchParams.get("limit");
           const limit = limitRaw === undefined || limitRaw === null || limitRaw === "" ? undefined : Number(limitRaw);
-          // byte-for-byte the okf_search tool's rows — same core.search()
-          const rows = await core.search(bundleRoot, bundle, query || "", limit);
-          return sendJson(res, 200, { bundle, query: query || "", rows, count: rows.length });
+          const groupBy = (req.method === "POST" ? body.groupBy : url.searchParams.get("groupBy")) || undefined;
+          // byte-for-byte the okf_search tool's object — same core.search()
+          const result = await core.search(bundleRoot, bundle, query || "", { limit, groupBy });
+          return sendJson(res, 200, { bundle, query: query || "", ...result });
         }
         if (bundle && req.method === "GET" && section === "graph" && parts.length === 3) {
           return sendJson(res, 200, await core.graph(bundleRoot, bundle));

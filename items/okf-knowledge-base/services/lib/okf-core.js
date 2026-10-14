@@ -1239,87 +1239,308 @@ function getModel(bundleRoot, bundleName, opts = {}) {
 //  RETRIEVAL (T006) — okf_search: ONE deterministic function, two surfaces
 // ════════════════════════════════════════════════════════════════════════
 
-function tokenize(query) {
-  return String(query || "").toLowerCase().split(/[^\w-]+/).filter(Boolean);
+// ── full-text search (ADR-015, ADR-018, design.md §12.3) ─────────────────
+//
+// A linear scan over the model: every chapter and every document stub, its
+// terms, title, summary and body (inline-asset interpretations included). At
+// the target scale — ~3,000 chapters, ~10 MB of text — that is tens of
+// milliseconds, and it needs no index to keep consistent, nothing on disk
+// (SC-023) and no dependency. ADR-015 records when to replace it.
+
+const SEARCH_PAGE = { default: 10, max: 50 };
+const GROUP_HITS = 5;
+const EXCERPT_MAX = 400;
+const SEARCHED = ["terms", "titles", "summaries", "full text"];
+const TIER = { term: 4, person: 4, title: 3, summary: 2, text: 1 };
+const FIELD_WEIGHT = { term: 4, title: 3, summary: 2, text: 1 };
+const BM25_K1 = 1.2;
+// A small, fixed English list. Dropped only when something else is left:
+// a query made of nothing but these is searched as written.
+const STOP_WORDS = new Set("what is our the a an of to in on for and or how does do we i it this that with about are be".split(" "));
+
+/** Lowercase, compatibility-decomposed, combining marks removed: "Córdoba" -> "cordoba". */
+function fold(text) {
+  return String(text || "").normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase();
+}
+
+function queryWords(query) {
+  const words = Array.from(new Set(fold(query).split(/[^\p{L}\p{N}]+/u).filter(Boolean)));
+  const content = words.filter((w) => !STOP_WORDS.has(w));
+  return content.length ? content : words;
+}
+
+/** A word matches at the START of a word: `api` does not match "rapid". */
+function wordRegex(word) {
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "gu");
+}
+
+function countMatches(re, folded) {
+  re.lastIndex = 0;
+  let n = 0;
+  while (re.exec(folded)) n++;
+  return n;
+}
+
+/** Markdown reduced to its readable text; a heading becomes its own sentence. */
+function plainText(body) {
+  return String(body || "")
+    .replace(/```[^\n]*\n([\s\S]*?)```/g, "$1")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+(.*)$/gm, "$1.")
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")
+    .replace(/\*\*|__|`|~~/g, "");
+}
+
+// Per-entry search text, computed on first use. Entries are replaced, never
+// mutated, when a concept changes — so the cache can never serve stale text.
+const searchTextCache = new WeakMap();
+function searchTextOf(entry) {
+  let t = searchTextCache.get(entry);
+  if (!t) {
+    const plain = plainText(entry.body);
+    t = { plain, folded: fold(plain) };
+    searchTextCache.set(entry, t);
+  }
+  return t;
+}
+
+/** The sentence index whose folded text matches the most words, else -1. */
+function bestSentence(sentences, regexes) {
+  let best = -1;
+  let bestCount = 0;
+  sentences.forEach((sentence, i) => {
+    const f = fold(sentence);
+    const n = regexes.filter((re) => countMatches(re, f) > 0).length;
+    if (n > bestCount) {
+      best = i;
+      bestCount = n;
+    }
+  });
+  return best;
+}
+
+/** Where the first matched word starts in the ORIGINAL sentence. Folding can
+ *  change length (ligatures, Hangul), so positions are mapped character by
+ *  character — never assumed equal. */
+function originalMatchIndex(sentence, words) {
+  let folded = "";
+  const origAt = [];
+  let i = 0;
+  for (const ch of sentence) {
+    const f = fold(ch);
+    for (let k = 0; k < f.length; k++) origAt.push(i);
+    folded += f;
+    i += ch.length;
+  }
+  let first = Infinity;
+  for (const w of words) {
+    const re = wordRegex(w);
+    const m = re.exec(folded);
+    // the match may begin with the boundary character before the word
+    if (m) first = Math.min(first, m.index + m[0].length - w.length);
+  }
+  return first === Infinity ? 0 : origAt[first] || 0;
 }
 
 /**
- * Concept-anchored search over the Level-1 index (design.md §6.1).
- *
- * NO LLM IS IN THIS MATCH. It is a lookup: tokenize, match tokens against
- * concept-term names and the one-line descriptions the index carries, collect
- * the covering chapters, rank, return TOC rows. The LLM does the *routing*
- * (deciding what to ask) and the *synthesis* (reading the full chapters it
- * then fetches) — this is the deterministic bridge between the two.
- *
- * Because the pass is over `terms` (distinct vocabulary), its cost is bounded
- * by V, not by the document or chapter count (NFR-011 / SC-006).
- *
- * The SAME function backs the `okf_search` tool and the app's
- * `/bundles/<b>/search` route, so the two can never diverge (FR-036/FR-043).
- * Ranking is fully deterministic — ties break on (docId, chId) — so the same
- * query against an unchanged bundle always returns byte-identical rows.
+ * The sentence with the most matched words, plus at most one either side —
+ * at most three sentences and EXCERPT_MAX characters, ellipses included. Cut
+ * from the original text, so it reads as the source wrote it.
  */
-function searchIndex(terms, query, limit = 25) {
-  const tokens = tokenize(query);
-  if (!tokens.length) return [];
-  const rows = [];
-  const seen = new Map(); // docId/chId -> row index (a chapter appears once)
-
-  for (const term of terms) {
-    const name = String(term.name || "").toLowerCase();
-    const termTokens = tokens.filter((tok) => name.includes(tok));
-    const termHit = termTokens.length > 0;
-    for (const cov of term.covers || []) {
-      const desc = String(cov.description || "").toLowerCase();
-      const descTokens = tokens.filter((tok) => desc.includes(tok));
-      if (!termHit && !descTokens.length) continue;
-      const key = `${cov.docId}/${cov.chId}`;
-      const matchedTokens = new Set([...termTokens, ...descTokens]);
-      const candidate = {
-        docId: cov.docId,
-        docTitle: cov.docTitle,
-        chId: cov.chId,
-        chTitle: cov.chTitle,
-        description: cov.description || "",
-        matchedConcept: term.name,
-        // additive (ADR-011): WHICH KIND of term matched. The algorithm
-        // above is untouched — a person's name is an ordinary term-name hit.
-        kind: term.kind || "topic",
-        status: cov.status || "draft",
-        stale: !!cov.stale,
-        _tier: termHit ? 0 : 1, // a term-name match outranks a description-only match
-        _tokens: matchedTokens.size,
-      };
-      if (!seen.has(key)) {
-        seen.set(key, rows.length);
-        rows.push(candidate);
-      } else {
-        // the same chapter reached via a second term: keep the stronger match,
-        // so `matchedConcept` always names the reason the row ranks where it does
-        const existing = rows[seen.get(key)];
-        if (candidate._tier < existing._tier || (candidate._tier === existing._tier && candidate._tokens > existing._tokens)) {
-          rows[seen.get(key)] = candidate;
-        }
-      }
-    }
+function excerptFor(plain, words) {
+  const regexes = words.map(wordRegex);
+  const sentences = plain.split(/(?<=[.!?。])\s+|\n+/).map((x) => x.trim()).filter(Boolean);
+  const best = bestSentence(sentences, regexes);
+  if (best < 0) return "";
+  const tries = [
+    [best - 1, best, best + 1],
+    [best - 1, best],
+    [best, best + 1],
+    [best],
+  ];
+  for (const t of tries) {
+    const text = t.map((i) => sentences[i]).filter(Boolean).join(" ");
+    if (text.length <= EXCERPT_MAX) return text;
   }
-
-  rows.sort((a, b) => {
-    if (a._tier !== b._tier) return a._tier - b._tier;
-    if (a._tokens !== b._tokens) return b._tokens - a._tokens;
-    if (a.docId !== b.docId) return a.docId < b.docId ? -1 : 1;
-    return a.chId < b.chId ? -1 : a.chId > b.chId ? 1 : 0;
-  });
-
-  const n = Number.isFinite(limit) && limit > 0 ? limit : 25;
-  // Empty is a valid answer (spec Edge Cases): never invent a row.
-  return rows.slice(0, n).map(({ _tier, _tokens, ...row }) => row);
+  const sentence = sentences[best];
+  const at = originalMatchIndex(sentence, words);
+  const start = Math.max(0, Math.min(at - Math.floor(EXCERPT_MAX / 3), sentence.length - (EXCERPT_MAX - 2)));
+  const room = EXCERPT_MAX - (start > 0 ? 1 : 0) - 1;
+  const end = start + room;
+  return `${start > 0 ? "…" : ""}${sentence.slice(start, end)}${end < sentence.length ? "…" : ""}`;
 }
 
-async function search(bundleRoot, bundleName, query, limit) {
+/** The searchable units of a model: every chapter and every real document stub. */
+function searchUnits(model) {
+  const units = [];
+  const now = Date.now();
+  for (const ch of model.classified.chapters) {
+    const entry = model.entries.get(ch.id);
+    if (!entry) continue;
+    const doc = model.classified.documents.get(ch.docId);
+    units.push({
+      entry,
+      docId: ch.docId,
+      docTitle: (doc && doc.title) || ch.docId,
+      chId: ch.chId,
+      chTitle: ch.title,
+      summary: ch.summary || "",
+      concepts: ch.concepts,
+      persons: ch.personTerms || [],
+      status: ch.status,
+      stale: isStale(ch.frontmatter, now),
+    });
+  }
+  for (const doc of model.classified.documents.values()) {
+    const entry = model.entries.get(doc.id);
+    if (!entry || doc.synthetic) continue;
+    const fm = doc.frontmatter || {};
+    units.push({
+      entry,
+      docId: doc.id,
+      docTitle: doc.title,
+      chId: "",
+      chTitle: doc.title,
+      summary: doc.summary || "",
+      concepts: Array.isArray(fm.concepts) ? fm.concepts.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : [],
+      persons: doc.personTerms || [],
+      status: "stable",
+      stale: false,
+    });
+  }
+  return units;
+}
+
+/**
+ * okf_search (FR-001/FR-002 as amended): ranked chapter hits over terms,
+ * titles, summaries and full text. ANY query word may match — a natural
+ * paraphrase must still route (US1 AS1) — and rows matching more of the words
+ * rank first. Deterministic: coverage, tier, score, document added-date, id.
+ */
+function searchFullText(model, query, opts = {}) {
+  const words = queryWords(query);
+  const grouped = opts.groupBy === "document";
+  const page = pageOf(0, { limit: opts.limit }, SEARCH_PAGE);
+  if (!words.length) return grouped ? { groups: [], count: 0, total: 0, searched: SEARCHED, ...pick(page) } : { rows: [], count: 0, total: 0, searched: SEARCHED, ...pick(page) };
+  const regexes = words.map(wordRegex);
+  const units = searchUnits(model);
+
+  const scored = [];
+  const df = new Array(words.length).fill(0);
+  for (const u of units) {
+    const text = searchTextOf(u.entry);
+    const terms = [
+      ...u.concepts.map((name) => ({ name, kind: "topic", folded: fold(name.replace(/-/g, " ")) })),
+      ...u.persons.map((name) => ({ name, kind: "person", folded: fold(name) })),
+    ];
+    const fields = { title: fold(u.chTitle), summary: fold(u.summary), text: text.folded };
+    const matched = [];
+    const tf = [];
+    let bestTermHits = 0;
+    let bestTerm = null;
+    const termHits = terms.map(() => 0);
+    words.forEach((w, wi) => {
+      const re = regexes[wi];
+      const counts = {
+        term: terms.reduce((n, t, ti) => {
+          const c = countMatches(re, t.folded);
+          if (c) termHits[ti]++;
+          return n + c;
+        }, 0),
+        title: countMatches(re, fields.title),
+        summary: countMatches(re, fields.summary),
+        text: countMatches(re, fields.text),
+      };
+      tf.push(counts);
+      if (counts.term || counts.title || counts.summary || counts.text) {
+        matched.push(wi);
+        df[wi]++;
+      }
+    });
+    if (!matched.length) continue;
+    terms.forEach((t, ti) => {
+      if (termHits[ti] > bestTermHits) {
+        bestTermHits = termHits[ti];
+        bestTerm = t;
+      }
+    });
+    const anyIn = (field) => matched.some((wi) => tf[wi][field] > 0);
+    const matchKind = bestTerm ? (bestTerm.kind === "person" ? "person" : "term") : anyIn("title") ? "title" : anyIn("summary") ? "summary" : "text";
+    // A term match names its term; anything else is anchored to the
+    // chapter's own term, exactly as a description match always was.
+    const anchor = bestTerm || (u.concepts.length ? { name: u.concepts[0], kind: "topic" } : u.persons.length ? { name: u.persons[0], kind: "person" } : null);
+    scored.push({ u, matched, tf, matchKind, anchor, inText: anyIn("text") });
+  }
+
+  const n = units.length;
+  const idf = df.map((d) => Math.log(1 + (n - d + 0.5) / (d + 0.5)));
+  const added = model.addedByDoc || new Map();
+  for (const s of scored) {
+    let score = 0;
+    for (const wi of s.matched) {
+      for (const field of ["term", "title", "summary", "text"]) {
+        const c = s.tf[wi][field];
+        if (c) score += FIELD_WEIGHT[field] * ((c * (BM25_K1 + 1)) / (c + BM25_K1)) * idf[wi];
+      }
+    }
+    s.score = Math.round(score * 1e6) / 1e6;
+    s.addedAt = added.get(s.u.docId) || "";
+  }
+  scored.sort((a, b) =>
+    b.matched.length - a.matched.length ||
+    TIER[b.matchKind] - TIER[a.matchKind] ||
+    b.score - a.score ||
+    (a.addedAt === b.addedAt ? 0 : a.addedAt < b.addedAt ? 1 : -1) ||
+    (a.u.docId === b.u.docId ? (a.u.chId < b.u.chId ? -1 : a.u.chId > b.u.chId ? 1 : 0) : a.u.docId < b.u.docId ? -1 : 1),
+  );
+
+  const toRow = (s) => {
+    const row = {
+      docId: s.u.docId,
+      docTitle: s.u.docTitle,
+      chId: s.u.chId,
+      chTitle: s.u.chTitle,
+      description: s.u.summary,
+      matchedConcept: s.anchor ? s.anchor.name : null,
+      kind: s.anchor ? s.anchor.kind : null,
+      status: s.u.status,
+      stale: s.u.stale,
+      matchKind: s.matchKind,
+      matchedWords: s.matched.map((wi) => words[wi]),
+    };
+    if (s.inText) row.excerpt = excerptFor(searchTextOf(s.u.entry).plain, s.matched.map((wi) => words[wi]));
+    return row;
+  };
+
+  if (!grouped) {
+    const rows = scored.slice(0, page.limit).map(toRow);
+    return { rows, count: rows.length, total: scored.length, searched: SEARCHED, ...pick(page) };
+  }
+  const byDoc = new Map();
+  for (const s of scored) {
+    if (!byDoc.has(s.u.docId)) byDoc.set(s.u.docId, { docId: s.u.docId, docTitle: s.u.docTitle, all: [] });
+    byDoc.get(s.u.docId).all.push(s);
+  }
+  const groups = Array.from(byDoc.values())
+    .slice(0, page.limit)
+    .map((g) => ({ docId: g.docId, docTitle: g.docTitle, total: g.all.length, hits: g.all.slice(0, GROUP_HITS).map(toRow) }));
+  return { groups, count: groups.length, total: scored.length, searched: SEARCHED, ...pick(page) };
+}
+
+/** The clamp report from a page, if any. */
+function pick(page) {
+  return page.clamped ? { clamped: true, maxLimit: page.maxLimit } : {};
+}
+
+/**
+ * okf_search — the one search behind the tool and the app's route (FR-036).
+ * `opts` is `{limit, groupBy}`; a bare number is a limit (older callers).
+ */
+async function search(bundleRoot, bundleName, query, opts) {
   const model = await getModel(bundleRoot, bundleName);
-  return searchIndex(model.terms, query, limit);
+  return searchFullText(model, query, typeof opts === "number" ? { limit: opts } : opts || {});
 }
 
 // ── derived read views (design.md §6.2) ──────────────────────────────────
@@ -4548,7 +4769,6 @@ module.exports = {
   deleteBundle,
   // retrieval (the redesign's core)
   search,
-  searchIndex,
   readToc,
   readConcept,
   listConcepts,
@@ -4628,7 +4848,6 @@ module.exports = {
   normalizeLinkTarget,
   parseFrontmatter,
   stringifyDocument,
-  tokenize,
   safeJoin,
   assetContentType,
   STATUSES,
