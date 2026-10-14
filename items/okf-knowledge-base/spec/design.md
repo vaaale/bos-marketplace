@@ -1074,8 +1074,9 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
   3. **Writes patch.** `upsertConcept`, `deleteConcept`, `addLink`, `addRawSource` re-read only
      what they wrote (one `stat` for its new signature), patch the model, recompute the term
      table in memory, and write `concept-index.md`, **that document's** `toc/<docId>.md`, and
-     `index.md`. `mergeConcepts`, import, `clearDocument` (re-ingest start), `initBundle` and
-     lint rebuild — they touch many files by nature. `exportBundle` takes the queue and reads
+     `index.md`. Import, `initBundle` and lint's repair rebuild — they touch many files by
+     nature. `mergeConcepts` and `clearDocument` (re-ingest start) commit the
+     concepts they rewrote or removed, like any other write (no re-read). `exportBundle` takes the queue and reads
      the model; it rebuilds only on detected drift.
   4. **Reads check freshness.** List `concepts/` recursively with **bounded parallelism (16)**
      plus a `stat` of `raw/sources.json`; re-read concepts whose signature changed, appeared or

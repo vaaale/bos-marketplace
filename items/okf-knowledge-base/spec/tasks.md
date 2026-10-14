@@ -307,24 +307,25 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 
 ### Phase AD — the test harness can see what the design claims
 
-- [ ] **AD1.** `tests/memfs-server.mjs` — `list` returns `size` and `modified` (mtime ms, bumped on every write) like `/api/fs`; add a per-op **request counter** with reset (`/__counts`), and a hook to make one `list` fail (for AE3).
-- [ ] **AD2.** `tests/fixtures/gen-bundle.mjs` — writes a generated bundle into the memfs: N documents × M chapters, terms, person terms, one name present **only** in one chapter body, a document and a term sharing a name, ledger entries with `ingestedAt`.
+- [x] **AD1.** `tests/memfs-server.mjs` — `list` returns `size` and `modified` (mtime ms, bumped on every write) like `/api/fs`; add a per-op **request counter** with reset (`/__counts`), and a hook to make one `list` fail (for AE3).
+- [x] **AD2.** `tests/fixtures/gen-bundle.mjs` — writes a generated bundle into the memfs: N documents × M chapters, terms, person terms, one name present **only** in one chapter body, a document and a term sharing a name, ledger entries with `ingestedAt`.
 
 ### Phase AE — the incremental model, one serial queue per bundle (ADR-016)
 
 **Tests first** — `tests/derived-model.test.mjs`:
-- [ ] **AE1.** A chapter write on a 3,000-chapter bundle issues **O(1)** concept reads (memfs counter: the written file + its stat), and rewrites only `concept-index.md`, that document's `toc/`, and `index.md`.
-- [ ] **AE2.** A file changed behind the service's back (written straight into the memfs) — changed, added, deleted — is reflected by the next `search`/`readToc`/`listConcepts`, and that document's stored `toc/` is rewritten.
-- [ ] **AE3.** A failed `list` during refresh **rejects** the read and leaves the model as it was (never an empty bundle).
-- [ ] **AE4.** Two concurrent writers (two simulated runs: upserts + `recordSource` + `addLink`) lose no chapter, ledger entry or link; a search issued mid-write never sees a half-patched model; concurrent reads share one refresh (counter).
-- [ ] **AE5.** A chapter whose `stale_after` passes shows `stale` on the next read with no write in between.
-- [ ] **AE6.** Backlinks (`okf_backlinks`, `deleteConcept({rewriteBacklinks})`) come from the model — no second full read (counter).
+- [x] **AE1.** A chapter write on a 3,000-chapter bundle issues **O(1)** concept reads (memfs counter: the written file + its stat), and rewrites only `concept-index.md`, that document's `toc/`, and `index.md`.
+- [x] **AE2.** A file changed behind the service's back (written straight into the memfs) — changed, added, deleted — is reflected by the next `search`/`readToc`/`listConcepts`, and that document's stored `toc/` is rewritten.
+- [x] **AE3.** A failed `list` during refresh **rejects** the read and leaves the model as it was (never an empty bundle).
+- [x] **AE4.** Two concurrent writers (two simulated runs: upserts + `recordSource` + `addLink`) lose no chapter, ledger entry or link; a search issued mid-write never sees a half-patched model; concurrent reads share one refresh (counter).
+- [x] **AE5.** A chapter whose `stale_after` passes shows `stale` on the next read with no write in between.
+- [x] **AE6.** Backlinks (`okf_backlinks`, `deleteConcept({rewriteBacklinks})`) come from the model — no second full read (counter).
 
 **Implement** — `services/lib/okf-core.js`:
-- [ ] **AE7.** The model (§12.2) and `queue(bundle)`: serial, re-entrant by construction (public functions enqueue; internals don't), refresh single-flight on it.
-- [ ] **AE8.** Parallel `classifyBundle`/list (16); remove every `vfs.list(...).catch(() => [])` on the read path; errors propagate.
-- [ ] **AE9.** Patch paths for `upsertConcept`, `deleteConcept`, `addLink`, `addRawSource`; rebuild paths for `mergeConcepts`, import, `clearDocument`, `initBundle`, lint; `exportBundle` on the queue (rebuild only on drift). `recordSource`, `links.json`, `appendLog` under the queue.
-- [ ] **AE10.** Delete `derivedCache`, `graphCache`, `markGraphDirty`, `ensureGraph`; `isStale` evaluated at read.
+- [x] **AE7.** The model (§12.2) and `queue(bundle)`: serial, re-entrant by construction (public functions enqueue; internals don't), refresh single-flight on it.
+- [x] **AE8.** Parallel `classifyBundle`/list (16); remove every `vfs.list(...).catch(() => [])` on the read path; errors propagate.
+- [x] **AE9.** Patch paths for `upsertConcept`, `deleteConcept`, `addLink`, `addRawSource`; rebuild paths for `mergeConcepts`, import, `clearDocument`, `initBundle`, lint; `exportBundle` on the queue (rebuild only on drift). `recordSource`, `links.json`, `appendLog` under the queue.
+- [x] **AE10.** Delete `derivedCache`, `graphCache`, `markGraphDirty`, `ensureGraph`; `isStale` evaluated at read.
+- [x] **AE11.** (found while doing AE8) an unparseable `links.json` or `raw/sources.json` was read as empty and overwritten by the next write — both now throw and are left untouched (`tests/derived-model.test.mjs` AE7).
 
 ### Phase AF — first-added date and the bundle TOC (ADR-017)
 
