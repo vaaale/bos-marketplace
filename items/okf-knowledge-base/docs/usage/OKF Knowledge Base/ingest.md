@@ -93,7 +93,9 @@ A source that is already in a knowledge base is not ingested twice — the Inges
 - **One document** — in the bundle's **Documents** list, the ↻ button on its row; or **Re-ingest — replace it** in the Ingest dialog when it answers "Already ingested". The assistant can do the same with `okf_ingest({…, reingest: true})` when you ask it to.
 - **The whole knowledge base** — **Re-ingest all** in the bundle's toolbar. Every document is queued for re-ingest; the queue keeps them from all running at once.
 
-A re-ingest fetches the document again from its original source (its URL when it has one), and rewrites it under the **same id**. Its chapters are **cleared when its run starts** — while it is still queued, the old document is untouched — and `raw/` keeps every version of the source. If a re-ingest fails, the document stays empty until you re-ingest it again; the job says why.
+A re-ingest fetches the document again from its original source (its URL when it has one), and rewrites it under the **same id**. The current version **stays** — readable and searchable — until the run **completes**; only then are chapters the new version no longer has removed. A re-ingest that fails or is cancelled changes nothing, and one that completes without writing anything for the document keeps it as it was (its job says so). `raw/` keeps every version of the source.
+
+A source whose document is gone — deleted, or lost — is not "already ingested": ingesting it again simply starts a new run.
 
 ## PDFs and other documents without Markdown headings
 

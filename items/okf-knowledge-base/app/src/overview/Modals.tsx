@@ -185,8 +185,8 @@ export function IngestModal({ bundle, onClose, onStarted }: { bundle: string; on
               <>
                 <b>Already ingested.</b> This source is in the bundle&apos;s provenance as <code>{started.docId}</code> —
                 no run was started, and no duplicate document was created. <b>Re-ingest</b> replaces it with a fresh
-                ingest of the same source: its chapters are cleared when the run starts, and <code>raw/</code> keeps
-                every version.
+                ingest of the same source: the current version stays until the new run completes, a failed or cancelled run
+                changes nothing, and <code>raw/</code> keeps every version.
               </>
             ) : (
               <>
@@ -264,8 +264,8 @@ export function ReingestModal({
       <h3>{docId ? `Re-ingest “${title || docId}”?` : `Re-ingest all ${docCount ?? ""} document(s) in ${bundle}?`}</h3>
       <div className="desc" style={{ marginTop: 6 }}>
         {docId ? "The document is" : "Each document is"} fetched again from its original source and rewritten under the
-        same id. {docId ? "Its" : "A document's"} chapters, stub and chunk cache are <b>cleared when its run starts</b>;{" "}
-        <code>raw/</code> keeps every version. Runs are queued and start a few at a time — watch them in the{" "}
+        same id. {docId ? "The current version stays" : "Each current version stays"} until its run{" "}
+        <b>completes</b> — a failed or cancelled run changes nothing; <code>raw/</code> keeps every version. Runs are queued and start a few at a time — watch them in the{" "}
         <b>Jobs</b> tab.
       </div>
       {error ? <div className="app-error" style={{ margin: "12px 0 0" }}>{error}</div> : null}

@@ -2374,3 +2374,20 @@ paging, the graph's labels/fade/fit/controls).
   - **migration on load**: an inline `trajectory` is moved to its file (compacted per FR-057) and the records rewritten without it. An empty inline one is dropped without touching the file — what an older service writes back after reading a new store. Backward-compatible both ways (`data/` is shared across versions): an older service reads the new records as runs with no trajectory and keeps working.
 - **Consequences.** Memory grows with the live runs, not with the history: the production burst that died now peaks at 87–103 MB with three concurrent runs (102 MB with six), migration of the 13 MB store included. Deleting a job, or the history cap dropping one, removes its trajectory file. `listJobs`' unused `includeTrajectory` option is gone. Proven by `tests/job-store-memory.test.mjs` AP1–AP6; the e2e trajectory tests (U4/U5) seed the old inline shape, so they also exercise the migration against the real `/api/fs`.
 
+## 14. Re-ingest replaces on success (revision 2026-10-14)
+
+### ADR-024 — A re-ingest removes nothing until its run completes; dedup holds only while the document exists (FR-064, FR-018)
+
+- **Context.** FR-064 had a re-ingest clear the document — stub, chapters, chunk cache — when its run started. On production (`medium`, 2026-10-13 17:56) a re-ingest cleared an article and its 9 chapters and never wrote it back. The ledger still listed the source, so FR-018 answered `already_ingested` to every later `okf_ingest` of it, and `okf_read_toc` said `document not found` — until an agent, 22 hours later, worked out that it had to force `reingest: true`. Any re-ingest that fails, is cancelled, is reaped or dies with the worker lost its document the same way; the usage docs even said so ("the document stays empty until you re-ingest it again").
+- **Options.**
+  - **(a) Stage under a temporary id and swap on completion.** Atomic, but the ingest agent writes chapter ids under the document's id, chapter links and the TOC name them, and the swap would rename every chapter — a large change to the agent's contract for the same outcome. Rejected.
+  - **(b) Clear nothing; on completion remove the chapters the run did not rewrite.** The document is never missing; a failed run can leave chapters it already overwrote mixed with old ones, which is visible and recoverable, unlike absence. Chosen.
+  - **(c) As (b), but judge "rewritten" by file modification time.** No plumbing — but on a filesystem with coarse timestamps a chapter written just after the run started reads as older than the start and would be deleted. Rejected for (b) with recorded attribution.
+- **Decision.** **(b)**:
+  - `runJob` no longer clears. The chunk cache needs no clearing: `writeChunks` replaces it when the new source is registered (acquisition) or prepared (`raw/`).
+  - every `okf_upsert_concept` passes BOS's `caller` (`{runId, agentId}`); `noteRunWrite` attributes the write to the job running that run (`jobForRun`). In memory only — a run cannot outlive its worker, and a run with no driver is never completed.
+  - on `completed`, `replaceDocumentOnSuccess` (under the bundle lock) removes the document's chapters not in that set, commits them out of the model, and logs `document_replace`; the summary carries `replaced: {docId, removed}`. If the run wrote **nothing** for the document, nothing is removed and `replaced.note` says so. If the removal itself fails the job is `failed` with an error saying the new version is written and which old chapters remain.
+  - a job cancelled between the stream's `done` and completion replaces nothing.
+  - **FR-018**: `triggerIngest` treats a ledger entry as `already_ingested` only while `documentExists`; otherwise the source is ingested again from its origin like a new one.
+- **Consequences.** A document is never absent because of a re-ingest. `clearDocument` and the `document_clear` log event are gone. Proven by `tests/reingest-and-queue.test.mjs` AQ1–AQ4. The `okf-ingest-workflow` skill also stops agents from sleep-polling a run (`run_command sleep`), seen in the same production conversation.
+

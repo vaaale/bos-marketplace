@@ -17,8 +17,8 @@ okf_ingest({bundle: "<name>", source: "https://example.com/article"})
 
 It returns at once with one of:
 
-- **`status: "queued"`** + a `jobId` — the run is queued and the service starts it when a slot is free (at most the service's `maxConcurrentRuns` run at a time). Nothing else for you to call. Follow it with `okf_list_jobs({jobId})`, or point the user at the app's **Jobs** tab: it ends `completed` with a summary, or `failed` with a reason.
-- **`status: "already_ingested"`** + the existing `docId` — the source is already in the bundle; no run started. Read it with `okf_read_toc({bundle, docId})`. **Only if the user asks to re-ingest it**, call again with `reingest: true`: the document is re-acquired from its origin and rewritten under the same id (its chapters are cleared when the run starts; `raw/` keeps every version).
+- **`status: "queued"`** + a `jobId` — the run is queued and the service starts it when a slot is free (at most the service's `maxConcurrentRuns` run at a time). Nothing else for you to call. Follow it with `okf_list_jobs({jobId})`, or point the user at the app's **Jobs** tab: it ends `completed` with a summary, or `failed` with a reason. A run takes minutes — **do not wait for it in a loop** (no `sleep` via `run_command`, no repeated polling): tell the user it is running and where to watch it, and check once if they ask.
+- **`status: "already_ingested"`** + the existing `docId` — the source is already in the bundle; no run started. Read it with `okf_read_toc({bundle, docId})`. **Only if the user asks to re-ingest it**, call again with `reingest: true`: the document is re-acquired from its origin and rewritten under the same id. The current version stays readable until the run completes, and a failed or cancelled run changes nothing; `raw/` keeps every version. (A source whose document is gone is never `already_ingested` — it is simply queued again.)
 
 Several sources? Issue the `okf_ingest` calls together — the queue keeps them from all running at once. Re-ingesting a whole bundle is the app's **Re-ingest all** button (Overview → the bundle).
 
