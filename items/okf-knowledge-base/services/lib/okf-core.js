@@ -903,18 +903,66 @@ function tocMarkdown(toc, stampIso) {
   return stringifyDocument(fm, lines.join("\n") + "\n");
 }
 
-function bundleIndexMarkdown(bundleName, title, description, classified, terms) {
+/**
+ * The bundle's table of contents (FR-069, ADR-017): one entry per document,
+ * newest first by when it was FIRST added to the bundle, ties by id. The one
+ * function behind both `okf_read_toc({bundle})` and the stored `index.md`, so
+ * the two can never disagree.
+ */
+function bundleTocEntries(model) {
+  const { classified } = model;
+  const added = model.addedByDoc || new Map();
+  const entries = [];
+  for (const doc of classified.documents.values()) {
+    const chapters = classified.chapters.filter((c) => c.docId === doc.id);
+    const fm = doc.frontmatter || {};
+    entries.push({
+      id: doc.id,
+      title: doc.title,
+      chapters: chapters.length,
+      summary: doc.summary || "",
+      addedAt: added.get(doc.id) || fm.created_at || fm.updated_at || null,
+      attention: chapters.some((c) => c.stale || c.status === "deprecated"),
+    });
+  }
+  // null (no known time) sorts last; ISO strings compare chronologically
+  return entries.sort((a, b) => {
+    if (a.addedAt !== b.addedAt) {
+      if (!a.addedAt) return 1;
+      if (!b.addedAt) return -1;
+      return a.addedAt < b.addedAt ? 1 : -1;
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
+/** When each document was first added, from the provenance ledger: the
+ *  earliest `firstIngestedAt` (else `ingestedAt`) of its non-asset entries. */
+function addedByDocFromLedger(ledger) {
+  const out = new Map();
+  for (const entry of Object.values((ledger && ledger.sources) || {})) {
+    if (!entry || entry.kind === "asset" || !entry.docId) continue;
+    const t = entry.firstIngestedAt || entry.ingestedAt;
+    if (!t) continue;
+    const prev = out.get(entry.docId);
+    if (!prev || t < prev) out.set(entry.docId, t);
+  }
+  return out;
+}
+
+function bundleIndexMarkdown(bundleName, title, description, model) {
   const lines = [`# ${title || bundleName}`, ""];
   if (description) lines.push(description, "");
   lines.push("## Documents", "");
-  if (!classified.documents.size) lines.push("_No documents yet._");
-  for (const doc of classified.documents.values()) {
-    const n = classified.chapters.filter((c) => c.docId === doc.id).length;
-    lines.push(`- [${doc.title}](concepts/${doc.id}.md) — ${n} chapter${n === 1 ? "" : "s"}${doc.summary ? ` · ${doc.summary}` : ""}`);
+  const toc = bundleTocEntries(model);
+  if (!toc.length) lines.push("_No documents yet._");
+  for (const d of toc) {
+    lines.push(`- [${d.title}](concepts/${d.id}.md) — ${d.chapters} chapter${d.chapters === 1 ? "" : "s"}${d.summary ? ` · ${d.summary}` : ""}`);
   }
-  lines.push("", "## Concepts covered", "");
-  lines.push(terms.length ? terms.map((t) => `\`${t.name}\``).join(" · ") : "_No concept terms yet._");
-  lines.push("", "*The authoritative routing table is [`concept-index.md`](concept-index.md); this overview is derived from it.*");
+  // The vocabulary grows without bound with the bundle; the full list lives in
+  // the routing table, not in this overview.
+  const n = model.terms.length;
+  lines.push("", "## Concepts", "", `${n} concept term${n === 1 ? "" : "s"} — see [\`concept-index.md\`](concept-index.md), the authoritative routing table this overview is derived from.`);
   return lines.join("\n") + "\n";
 }
 
@@ -924,7 +972,7 @@ function bundleIndexMarkdown(bundleName, title, description, classified, terms) 
  * it re-derives, so a chapter turns stale without anyone writing to it
  * (ADR-016.6).
  */
-function deriveModel(bundleName, entries, indexGeneratedAt) {
+function deriveModel(bundleName, entries, indexGeneratedAt, ledgerInfo) {
   const classified = classifyParsed(entries);
   const terms = buildConceptIndex(classified);
   const tocByDoc = new Map();
@@ -945,6 +993,8 @@ function deriveModel(bundleName, entries, indexGeneratedAt) {
   return {
     bundle: bundleName,
     entries,
+    ledgerSig: ledgerInfo ? ledgerInfo.sig : null,
+    addedByDoc: ledgerInfo ? ledgerInfo.addedByDoc : new Map(),
     terms,
     tocByDoc,
     classified,
@@ -953,6 +1003,25 @@ function deriveModel(bundleName, entries, indexGeneratedAt) {
     indexGeneratedAt,
     needsRegeneration: classified.needsRegeneration,
   };
+}
+
+/** The ledger's signature and first-added map — re-read only when the file's
+ *  signature differs from `current`'s. */
+async function ledgerInfoFor(bDir, current) {
+  let st = null;
+  try {
+    st = await vfs.stat(safeJoin(bDir, "raw", "sources.json"));
+  } catch (err) {
+    if (!isMissing(err)) throw err;
+  }
+  const sig = st ? { size: st.size || 0, modified: st.modified || 0 } : null;
+  if (current && sameSig(current.ledgerSig, sig)) return { sig, addedByDoc: current.addedByDoc, changed: false };
+  return { sig, addedByDoc: sig ? addedByDocFromLedger(await readLedger(bDir)) : new Map(), changed: true };
+}
+
+function sameSig(a, b) {
+  if (!a || !b) return a === b;
+  return a.size === b.size && a.modified === b.modified;
 }
 
 /** The document a concept id belongs to, in either model. */
@@ -1003,7 +1072,7 @@ async function writeDerived(bDir, bundleName, model, docIds) {
   const titleMatch = /^#\s+(.+)$/m.exec(existingIndex);
   await vfs.writeText(
     safeJoin(bDir, "index.md"),
-    bundleIndexMarkdown(bundleName, titleMatch ? titleMatch[1] : bundleName, "", model.classified, model.terms),
+    bundleIndexMarkdown(bundleName, titleMatch ? titleMatch[1] : bundleName, "", model),
   );
   model.indexGeneratedAt = stamp;
 }
@@ -1054,7 +1123,7 @@ async function refreshModel(bundleRoot, bundleName, { allowRebuild = true } = {}
   let model;
   if (!current) {
     const entries = await readEntries(bDir, sigs);
-    model = deriveModel(bundleName, entries, null);
+    model = deriveModel(bundleName, entries, null, await ledgerInfoFor(bDir, null));
     const stored = await storedIndexStamp(bDir, model.classified);
     if (stored) model.indexGeneratedAt = stored;
     else if (allowRebuild) await writeDerived(bDir, bundleName, model, null);
@@ -1066,8 +1135,15 @@ async function refreshModel(bundleRoot, bundleName, { allowRebuild = true } = {}
       if (!e || e.sig.size !== sig.size || e.sig.modified !== sig.modified) changed.set(id, sig);
     }
     const removed = Array.from(current.entries.keys()).filter((id) => !sigs.has(id));
+    const ledger = await ledgerInfoFor(bDir, current);
     if (!changed.size && !removed.length) {
-      model = Date.now() >= current.nextStaleAt ? deriveModel(bundleName, current.entries, current.indexGeneratedAt) : current;
+      if (ledger.changed) {
+        // the order of the bundle TOC (and so index.md) follows the ledger
+        model = deriveModel(bundleName, current.entries, current.indexGeneratedAt, ledger);
+        if (allowRebuild) await writeDerived(bDir, bundleName, model, []);
+      } else {
+        model = Date.now() >= current.nextStaleAt ? deriveModel(bundleName, current.entries, current.indexGeneratedAt, ledger) : current;
+      }
     } else {
       const entries = new Map(current.entries);
       for (const id of removed) entries.delete(id);
@@ -1076,7 +1152,7 @@ async function refreshModel(bundleRoot, bundleName, { allowRebuild = true } = {}
         if (fresh.has(id)) entries.set(id, fresh.get(id));
         else entries.delete(id);
       }
-      model = deriveModel(bundleName, entries, current.indexGeneratedAt);
+      model = deriveModel(bundleName, entries, current.indexGeneratedAt, ledger);
       const touched = [...changed.keys(), ...removed].map((id) => docIdOf(id, current, model));
       if (allowRebuild) await writeDerived(bDir, bundleName, model, touched);
     }
@@ -1112,7 +1188,7 @@ async function commitConcepts(bundleRoot, bundleName, changes) {
     const { frontmatter, body } = parseFrontmatter(raw);
     entries.set(id, entryOf(frontmatter, body, { size: st.size || 0, modified: st.modified || 0 }));
   });
-  const model = deriveModel(bundleName, entries, before.indexGeneratedAt);
+  const model = deriveModel(bundleName, entries, before.indexGeneratedAt, await ledgerInfoFor(bDir, before));
   await writeDerived(bDir, bundleName, model, changes.map(({ id }) => docIdOf(id, before, model)));
   models.set(bDir, model);
   const ctx = turn.getStore();
@@ -1131,7 +1207,7 @@ async function rebuildDerived(bundleRoot, bundleName) {
   return withBundle(bDir, async () => {
     forgetBundle(bDir);
     const entries = await readEntries(bDir, await listConceptSignatures(bDir));
-    const model = deriveModel(bundleName, entries, null);
+    const model = deriveModel(bundleName, entries, null, await ledgerInfoFor(bDir, null));
     await writeDerived(bDir, bundleName, model, null);
     models.set(bDir, model);
     turn.getStore().refreshed.add(bDir);
@@ -1248,7 +1324,28 @@ async function search(bundleRoot, bundleName, query, limit) {
 
 // ── derived read views (design.md §6.2) ──────────────────────────────────
 
-async function readToc(bundleRoot, bundleName, docId) {
+const TOC_PAGE = { default: 50, max: 200 };
+
+/** Clamp a requested page size; say so when it was clamped. */
+function pageOf(total, { offset, limit } = {}, { default: dflt, max }) {
+  const off = Math.max(0, Number.isFinite(Number(offset)) ? Math.floor(Number(offset)) : 0);
+  const asked = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : dflt;
+  const lim = Math.min(asked, max);
+  return { offset: off, limit: lim, ...(asked > max ? { clamped: true, maxLimit: max } : {}) };
+}
+
+/**
+ * Table of contents at two levels (FR-004, as amended 2026-10-14):
+ *   no docId -> the bundle TOC (FR-069): documents, newest first, paged;
+ *   a docId  -> that document's chapters, as always.
+ */
+async function readToc(bundleRoot, bundleName, docId, opts = {}) {
+  if (docId === undefined || docId === null || docId === "") {
+    const model = await getModel(bundleRoot, bundleName);
+    const all = bundleTocEntries(model);
+    const page = pageOf(all.length, opts, TOC_PAGE);
+    return { bundle: bundleName, total: all.length, ...page, documents: all.slice(page.offset, page.offset + page.limit) };
+  }
   validateConceptId(docId);
   const model = await getModel(bundleRoot, bundleName);
   const toc = model.tocByDoc.get(docId);
@@ -2091,7 +2188,13 @@ async function findSource(bundleRoot, bundleName, source) {
 async function recordSource(bDir, source, entry) {
   const ledger = await readLedger(bDir);
   const key = normalizeSourceKey(source);
-  ledger.sources[key] = { ...(ledger.sources[key] || {}), ...entry, sourceKey: key };
+  const existing = ledger.sources[key] || {};
+  // When the source FIRST entered the bundle — set once, never overwritten.
+  // A re-ingest re-acquires the source and records it again, which used to
+  // move `ingestedAt` and, with it, the document's place in the bundle TOC
+  // (ADR-017). An entry from before this field falls back to the time it has.
+  const firstIngestedAt = existing.firstIngestedAt || existing.ingestedAt || entry.ingestedAt;
+  ledger.sources[key] = { ...existing, ...entry, ...(firstIngestedAt ? { firstIngestedAt } : {}), sourceKey: key };
   await writeLedger(bDir, ledger);
   return ledger.sources[key];
 }
@@ -4507,6 +4610,7 @@ module.exports = {
   triggerIngest,
   acquisitionFirstSteps,
   buildIngestTask,
+  bundleTocEntries,
   // the run queue, re-ingest
   pumpQueue,
   setMaxConcurrentRuns,

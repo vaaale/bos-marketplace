@@ -330,9 +330,9 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 ### Phase AF — first-added date and the bundle TOC (ADR-017)
 
 **Tests first** — `tests/bundle-toc.test.mjs`:
-- [ ] **AF1.** `recordSource` keeps `firstIngestedAt` across a re-acquire; a legacy entry without it falls back to its `ingestedAt`.
-- [ ] **AF2.** A 500-document bundle pages completely through `okf_read_toc({bundle})` (default 50, max 200, `clamped`/`maxLimit` when over), newest first, ties by id, each entry `{id, title, chapters, summary, addedAt, attention}`, **no vocabulary**; the order is **unchanged after a real URL re-ingest** of the oldest document driven through `okf_add_raw_source` (not a hand-written ledger).
-- [ ] **AF3.** `index.md` lists documents in the same order as AF2 and replaces "Concepts covered" with the term count + a link to `concept-index.md`.
+- [x] **AF1.** `recordSource` keeps `firstIngestedAt` across a re-acquire; a legacy entry without it falls back to its `ingestedAt`.
+- [x] **AF2.** A 500-document bundle pages completely through `okf_read_toc({bundle})` (default 50, max 200, `clamped`/`maxLimit` when over), newest first, ties by id, each entry `{id, title, chapters, summary, addedAt, attention}`, **no vocabulary**; the order is **unchanged after a real URL re-ingest** of the oldest document driven through `okf_add_raw_source` (not a hand-written ledger).
+- [x] **AF3.** `index.md` lists documents in the same order as AF2 and replaces "Concepts covered" with the term count + a link to `concept-index.md`.
 
 **Implement**: `recordSource` `firstIngestedAt`; `addedAt` resolution (ledger → `created_at` → `updated_at`); `bundleToc()`; `readToc(bundle)` without `docId`; `bundleIndexMarkdown()` from `bundleToc()`.
 
