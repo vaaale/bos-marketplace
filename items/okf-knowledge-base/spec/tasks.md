@@ -424,4 +424,4 @@ The production OOM (design.md §13). TDD: AP1 reproduced the crash in a worker w
 - [x] **AP3.** Existing tests moved to the new location (`job-trajectory`, `job-trajectory-reload`, `reap-stale-jobs`); full suite green (148).
 - [x] **AP4.** Docs: `docs/dev/OKF Knowledge Base/architecture.md` (the job store), `data-model.md` (layout, record); spec FR-057; design ADR-013 notes + §13 ADR-023.
 - [ ] **AP5.** On the deployment: merge, restart the OKF service (the first load migrates the 13 MB store — check `.jobs/trajectories/` and that `jobs.json` shrank), rerun the full e2e suite.
-
+- [x] **AP6.** e2e run hygiene, found by AP5's rerun: the trigger, return-time, progress and Ingest-modal tests started REAL runs and left them going; with the run queue's cap of 2, FR-044's run sat queued and its poll blamed the stream. Each now cancels its run (`stopRun`); FR-044 waits for a free slot first (`waitForFreeRunSlot`, reporting who holds the queue) and has its own 16-minute timeout — under the default 30 s its 10-minute terminal-state poll could never wait for a real run.
