@@ -148,14 +148,34 @@ async function resolveServiceBase(shell: APIRequestContext): Promise<string> {
       // CURRENT port on every request, so a restart mid-suite does not
       // strand this base — and with the pin cookie it is the PINNED
       // version's service, not base's.
-      if (cfg.httpPath) return new URL(cfg.httpPath, BASE).toString();
-      if (cfg.port) return `http://127.0.0.1:${cfg.port}/`;
+      const base = cfg.httpPath ? new URL(cfg.httpPath, BASE).toString() : cfg.port ? `http://127.0.0.1:${cfg.port}/` : null;
+      if (base) return await untilServing(shell, base);
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
   throw new Error(
     `The ${SERVICE_ID} service never reported a bound port. Start it (Settings → Plugins) before running this suite.`,
   );
+}
+
+/**
+ * A base is resolved only once the service ANSWERS on it. Right after a
+ * restart, BOS already reports the route while the new worker is still
+ * binding, and a request in that window falls through to BOS's own HTML page
+ * — C1 failed on exactly that (`Unexpected token '<', "<!doctype "...`) 70 ms
+ * after the job-control fixtures restarted the service (production,
+ * 2026-10-14). The service's JSON `GET /config` is the readiness signal.
+ */
+async function untilServing(shell: APIRequestContext, base: string): Promise<string> {
+  let last = "";
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const res = await shell.get(new URL("config", base).toString());
+    const type = res.headers()["content-type"] || "";
+    if (res.ok() && type.includes("application/json")) return base;
+    last = `${res.status()} ${type}`;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`The ${SERVICE_ID} service is routed at ${base} but never answered there (last: ${last}).`);
 }
 
 const B = {
