@@ -382,6 +382,24 @@
   .g-node.sel .g-circ { stroke-width:2.6; filter:drop-shadow(0 0 6px rgba(255,255,255,.35)); }
   .g-node.dim { opacity:.24; }
   .g-node.dimmed { opacity:.3; }
+  /* ── legibility (FR-073, 2026-10-14) ──
+     edge labels only on the hovered node's edges; node labels BELOW the node —
+     documents always, everything else when zoomed in, hovered, selected or a
+     search hit; a search FADES the rest (and hides their edges) instead of
+     merely dimming it. */
+  .g-elab { display:none; }
+  .g-elab.hot { display:inline; }
+  .g-node .g-tx { display:none; font-size:calc(10px / var(--gk, 1)); }
+  .g-node.doc .g-tx { font-size:calc(11.5px / var(--gk, 1)); }
+  .g-elbl { font-size:calc(9.5px / var(--gk, 1)); }
+  .g-node.doc .g-tx, .g-svg.zoomed .g-node .g-tx, .g-node.hot .g-tx, .g-node.sel .g-tx, .g-node.match .g-tx, .g-node.near .g-tx { display:inline; }
+  .g-svg.searching .g-node.faded .g-tx { display:none; }
+  .g-node.faded { opacity:.09; }
+  .g-edge.faded { opacity:.03; }
+  .g-ctl { position:absolute; right:10px; top:10px; display:flex; flex-direction:column; gap:4px; z-index:2; }
+  .g-ctl button { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border-radius:6px; border:1px solid var(--border); background:rgba(15,18,24,.85); color:var(--muted); cursor:pointer; font-size:13px; }
+  .g-ctl button:hover { color:var(--text); background:var(--panel2); }
+  .g-hint { position:absolute; left:10px; bottom:8px; font-size:11px; color:var(--muted); background:rgba(15,18,24,.8); border:1px solid var(--border); border-radius:6px; padding:3px 8px; z-index:2; }
   .g-node.match .g-ring { opacity:.95; }
   .g-node.match .g-circ { filter: drop-shadow(0 0 7px rgba(255,255,255,.5)); }
   .q-content.graph-mode { display:flex; flex-direction:column; overflow:hidden; padding:12px; gap:0; }
@@ -405,6 +423,23 @@
   .s-term .st { font-family:ui-monospace,Menlo,monospace; color:var(--text); }
   .s-go { position:absolute; right:14px; top:13px; color:var(--muted); font-size:11px; display:inline-flex; align-items:center; gap:3px; }
   .srow:hover .s-go { color:var(--accent); }
+  /* ── retrieval at scale (US14, 2026-10-14) ── */
+  .pager { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:12px; color:var(--muted); }
+  .pager .spacer { flex:1; }
+  .pager .btn[disabled] { opacity:.4; cursor:default; }
+  .doc-row .d-sum { font-size:12px; color:var(--muted); margin-top:2px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .doc-row.synthetic { cursor:default; }
+  mark.hl { background: rgba(167,139,250,.28); color: var(--text); border-radius:3px; padding:0 2px; }
+  .mk { font-size:10.5px; padding:1px 7px; border-radius:20px; border:1px solid var(--border); color:var(--muted); background:var(--panel2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .mk.term { color: var(--violet); border-color: rgba(167,139,250,.35); }
+  .mk.person { color: var(--teal); border-color: rgba(45,212,191,.35); }
+  .mk.title, .mk.summary { color: var(--sky, #7dd3fc); border-color: rgba(125,211,252,.3); }
+  .mk.text { color: var(--amber); border-color: rgba(251,191,36,.3); }
+  .s-excerpt { font-size:12.5px; color:var(--muted); margin-top:6px; padding-left:9px; border-left:2px solid var(--border); }
+  .hit-group { margin-bottom:12px; }
+  .hit-group > .hg-head { font-size:12.5px; font-weight:600; margin:0 0 6px; display:flex; gap:8px; align-items:center; }
+  .hit-group > .hg-head .hg-sum { font-weight:400; color:var(--muted); font-size:12px; }
+  .hit-group .srow { margin-left:14px; }
 </style>
 </head>
 <body>
@@ -414,7 +449,7 @@
       <span class="glyph">🧠</span>
       <div>
         <div class="tb-title">OKF Knowledge Base</div>
-        <div class="tb-sub">Open Knowledge Format bundles · concept-anchored, chapter-granular retrieval · a dock-openable master-detail app</div>
+        <div class="tb-sub">Open Knowledge Format bundles · chapter-granular retrieval · browse the table of contents or search the full text · a dock-openable master-detail app</div>
       </div>
     </div>
     <div class="tb-right">
@@ -422,6 +457,7 @@
       <div class="seg" id="modeSeg">
         <button data-mode="populated" class="on">Populated</button>
         <button data-mode="empty">Empty</button>
+        <button data-mode="large" title="Retrieval at scale (US14): a bundle of 312 documents and 2,437 terms — shows the paged bundle TOC and concept index">Large bundle</button>
       </div>
     </div>
   </header>
@@ -487,7 +523,7 @@
           </div>
           <div class="search q-search">
             <span id="q-search-ic"></span>
-            <input id="qsearchInput" placeholder="Search knowledge base…" oninput="onQSearchInput(this.value)">
+            <input id="qsearchInput" placeholder="Search terms, titles, summaries and full text — the same okf_search the agent runs…" oninput="onQSearchInput(this.value)">
             <span class="clear" id="q-clear"></span>
           </div>
           <div class="q-viewtoggle" id="q-viewtoggle">
@@ -735,6 +771,40 @@ const BUNDLES = {
 };
 
 /* explicit okf_add_link edges (mockup: a few cross-chapter links the prose references) */
+/* Retrieval at scale (US14): a document's summary (≤ 2 sentences / ~300 chars,
+   FR-070) and when it was FIRST ADDED to the bundle — the bundle TOC's sort key
+   (newest first, Clarifications 2026-10-14). */
+const DOC_META = {
+  "deployment":     { added:"2026-09-14", summary:"What must be true before anything ships to production, and how a canary is promoted or rolled back." },
+  "security":       { added:"2026-09-02", summary:"Secrets handling, dependency hygiene and incident reporting for every service." },
+  "api-design":     { added:"2026-08-01", summary:"How public HTTP APIs are named, versioned, error-reported and rate-limited." },
+  "code-review":    { added:"2026-07-22", summary:"Review turnaround, approval and merge rules, and the checklist every reviewer applies." },
+  "error-handling": { added:"2026-06-30", summary:"Retries, idempotency and timeouts: how services fail predictably." },
+  "remote-work":    { added:"2026-05-10", summary:"Who may work remotely, core hours, and equipment." },
+  "onboarding":     { added:"2026-04-18", summary:"A new hire's first two weeks: accounts, buddy, and first tasks." },
+  "benefits":       { added:"2026-03-01", summary:"Health, pension and leave benefits, and how to claim them." }
+};
+const PAGE = { toc:50, terms:100 };           // FR-069 / FR-006 defaults
+/* "Large bundle" mode: synthetic rows standing in for a 312-document,
+   2,431-term bundle, so the paging is visible. Not clickable. */
+function largeDocs(){
+  const topics=['inference','quantization','agents','retrieval','evaluation','fine-tuning','tokenizers','attention','serving','safety','benchmarks','datasets'];
+  const out=[];
+  for(let i=0;i<304;i++){
+    const t=topics[i%topics.length], n=304-i;
+    const d=new Date(Date.UTC(2026,9,13)-i*86400000*0.9).toISOString().slice(0,10);
+    out.push({id:'synthetic-'+n, title:'Article '+n+' — notes on '+t, chapters:3+(i%9), added:d, summary:'A medium-length article about '+t+': what changed, what it costs, and what the benchmarks leave out.', synthetic:true});
+  }
+  return out;
+}
+function largeTerms(){
+  const a=['active','sparse','gated','linear','long','multi','token','vocab','kv','memory','router','expert','prefill','decode','batch','flash','rope','muon'];
+  const b=['attention','cache','scaling','parameters','context','experts','quantization','embedding','offload','kernel','budget','window','norm','loss'];
+  const out=[];
+  for(let i=0;i<2423 && out.length<2423;i++){ out.push({name:a[i%a.length]+'-'+b[Math.floor(i/a.length)%b.length]+(i>=a.length*b.length?'-'+Math.floor(i/(a.length*b.length)):''), kind:'topic', count:1+(i%7), covers:[], synthetic:true}); }
+  return out;
+}
+
 const EXPLICIT_LINKS = {
   engineering: [
     ['error-handling/error-response','error-handling/logging'],
@@ -870,7 +940,7 @@ let state = {
   mode:'populated', view:'list', bundleId:'engineering', tab:'conceptIndex',
   docId:null, chapterId:null, expandedTerm:null, termQuery:'', showSrc:{}, deleteId:null,
   appTab:'overview', jobOpen:null, trajOpen:{},
-  qBundle:'engineering', qView:'graph', qsearch:'',
+  qBundle:'engineering', qView:'graph', qsearch:'', qGroup:false, docPage:0, termPage:0,
   pane:{kind:null, bundleId:'engineering', docId:null, chId:null, term:null}, paneShowSrc:false
 };
 
@@ -940,10 +1010,12 @@ function renderList(){
 function renderDetail(){
   document.getElementById('view-list').classList.add('hidden');
   document.getElementById('view-detail').classList.remove('hidden');
-  const b=BUNDLES[state.bundleId]; const st=bundleStats(b);
+  const b=BUNDLES[state.bundleId]; let st=bundleStats(b);
   const idx=conceptIndex(b);
+  // Large bundle demo: the counts of the 312-document bundle it stands in for.
+  if(state.mode==='large' && state.bundleId==='engineering') st={docs:st.docs+largeDocs().length, chapters:st.chapters+largeDocs().reduce((n,d)=>n+d.chapters,0), concepts:idx.length+largeTerms().length, stale:st.stale};
   const tabs=[
-    ['conceptIndex','Concept Index',I('layers',15),idx.length],
+    ['conceptIndex','Concept Index',I('layers',15),st.concepts],
     ['documents','Documents',I('list',15),st.docs],
     ['health','Health','',st.stale],
     ['io','Import / Export','',0]
@@ -978,18 +1050,24 @@ function renderDetail(){
 
 function renderConceptIndex(b,idx){
   let q=(state.termQuery||'').toLowerCase().trim();
-  let list=idx.filter(t=>!q || t.name.toLowerCase().includes(q) || t.covers.some(c=>c.desc.toLowerCase().includes(q)));
+  // FR-006: the filter matches TERM NAMES and runs in the service
+  // (okf_list_concepts({bundle, query})); the result is paged, 100 at a time.
+  const vocab=state.mode==='large' && state.bundleId==='engineering' ? idx.concat(largeTerms()) : idx;
+  let list=vocab.filter(t=>!q || t.name.toLowerCase().includes(q));
   if(q && state.expandedTerm && !list.some(t=>t.name===state.expandedTerm)) state.expandedTerm=null;
   let h='<div class="search">'+I('search',15)
-    + '<input placeholder="Search terms (concept-anchored — matches the vocabulary + people, not full text)…" value="'+escapeHtml(state.termQuery)+'" oninput="onTermQuery(this.value)">'
+    + '<input placeholder="Filter terms by name…" value="'+escapeHtml(state.termQuery)+'" oninput="state.termPage=0;onTermQuery(this.value)">'
     + (state.termQuery?'<span class="clear" onclick="state.termQuery=\'\';renderDetail()">'+I('x',14)+'</span>':'')
     + '</div>';
-  h+='<div class="note">'+I('info',14)+'<span><b>Concept index</b> — the bundle-level routing table. Each row is a <span style="color:var(--violet)">concept term</span> (the searchable vocabulary) or a <span style="color:var(--teal)">person-kind term</span> (a salient person the bundle is about — shown in teal); expand it to see the <b>(document, chapter)</b> pairs it covers, each with a one-line description. This is O(V) — bounded by distinct terms, not by documents. <b>Derived &amp; regenerable</b> from chapter frontmatter; rebuild any time.</span></div>';
+  h+='<div class="note">'+I('info',14)+'<span><b>Concept index</b> — the bundle-level routing table. Each row is a <span style="color:var(--violet)">concept term</span> (the searchable vocabulary) or a <span style="color:var(--teal)">person-kind term</span> (a salient person the bundle is about — shown in teal); expand it to see the <b>(document, chapter)</b> pairs it covers, each with a one-line description. The vocabulary grows with the bundle, so it is <b>filtered by name and paged</b> ('+PAGE.terms+' at a time) — the same <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_list_concepts</code> an ingest uses to reuse a term. To find <i>content</i>, use the Query tab\'s search. <b>Derived &amp; regenerable</b> from chapter frontmatter.</span></div>';
   if(!list.length){
     h+='<div class="empty" style="padding:40px"><h3 style="font-size:15px">No concept terms match</h3><p>'+(q?'Try a broader term, or read the full vocabulary — the vocabulary grows organically as documents are ingested.':'')+'</p></div>';
     return h;
   }
-  h+='<div class="count" style="margin-bottom:10px">'+list.length+' of '+idx.length+' terms</div>';
+  const toff=Math.min(state.termPage*PAGE.terms, Math.max(0,list.length-1));
+  const total=list.length;
+  list=list.slice(toff,toff+PAGE.terms);
+  h+='<div class="count" style="margin-bottom:10px">'+(q? total.toLocaleString()+' of '+vocab.length.toLocaleString()+' terms match' : vocab.length.toLocaleString()+' terms')+'</div>';
   h+=list.map(t=>{
     const open = state.expandedTerm===t.name;
     let body='';
@@ -1011,23 +1089,40 @@ function renderConceptIndex(b,idx){
       + '<span class="t-cnt">'+t.count+' chapter'+(t.count!==1?'s':'')+'</span>'
       + '</div>'+body+'</div>';
   }).join('');
+  h+=pager(toff,PAGE.terms,total,'state.termPage--;renderDetail()','state.termPage++;renderDetail()','terms');
   return h;
 }
 
+function bundleToc(b){
+  // FR-069: one entry per document — id, title, chapter count, summary —
+  // newest first by when it was first added, ties by id.
+  const real=b.docs.map(d=>({id:d.id, title:d.title, chapters:d.chapters.length, added:(DOC_META[d.id]||{}).added||d.updated, summary:(DOC_META[d.id]||{}).summary||'', attention:d.chapters.some(c=>c.status!=='ok')}));
+  const all=state.mode==='large' && state.bundleId==='engineering' ? real.concat(largeDocs()) : real;
+  return all.sort((x,y)=> x.added<y.added?1 : x.added>y.added?-1 : (x.id<y.id?-1:1));
+}
+function pager(offset,limit,total,onPrev,onNext,noun){
+  const from=total? offset+1:0, to=Math.min(offset+limit,total);
+  return '<div class="pager"><span>'+from+'–'+to+' of '+total.toLocaleString()+' '+noun+'</span><span class="spacer"></span>'
+    +'<button class="btn" '+(offset<=0?'disabled':'onclick="'+onPrev+'"')+'>Previous</button>'
+    +'<button class="btn" '+(to>=total?'disabled':'onclick="'+onNext+'"')+'>Next</button></div>';
+}
 function renderDocuments(b){
   if(state.chapterId && state.docId) return renderChapter(b);
   if(state.docId) return renderDocToc(b);
-  let h='<div class="note">'+I('info',14)+'<span><b>Documents</b> — the ingested sources in this bundle. Each has a stored <b>table of contents</b> (a level-2 drill-down an agent uses to fetch specific chapters). Click a document to open its TOC.</span></div>';
-  h+='<div class="doc-list">'+b.docs.map(d=>{
-    const cc=d.chapters.length; const tc=d.chapters.reduce((n,c)=>n+c.concepts.length,0);
-    const st=d.chapters.some(c=>c.status!=='ok');
-    return '<div class="doc-row" onclick="openDoc(\''+d.id+'\')">'
-      + '<span class="d-ic">'+I('doc',18)+'</span>'
-      + '<div><div class="d-title">'+escapeHtml(d.title)+'</div><div class="d-meta">'+cc+' chapters · '+tc+' concept refs'+(st?' · <span style="color:var(--amber)">needs attention</span>':'')+'</div></div>'
-      + '<span class="d-upd">'+d.updated+'</span>'
-      + '<span class="d-go">View TOC '+I('back',12,'')+'</span>'
-      + '</div>';
-  }).join('')+'</div>';
+  const toc=bundleToc(b);
+  const off=Math.min(state.docPage*PAGE.toc, Math.max(0,toc.length-1));
+  let h='<div class="note">'+I('info',14)+'<span><b>Documents</b> — the bundle\'s <b>table of contents</b>, newest first: each document with its short summary and chapter count. This is exactly what an agent gets from <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_read_toc({bundle})</code>, '+PAGE.toc+' per page. Open a document for its own TOC — its chapters.</span></div>';
+  h+='<div class="doc-list">'+toc.slice(off,off+PAGE.toc).map(d=>
+    '<div class="doc-row'+(d.synthetic?' synthetic':'')+'"'+(d.synthetic?' title="Synthetic row (Large bundle demo)"':' onclick="openDoc(\''+d.id+'\')"')+'>'
+    + '<span class="d-ic">'+I('doc',18)+'</span>'
+    + '<div style="min-width:0"><div class="d-title">'+escapeHtml(d.title)+'</div>'
+    + (d.summary?'<div class="d-sum">'+escapeHtml(d.summary)+'</div>':'')
+    + '<div class="d-meta">'+d.chapters+' chapters'+(d.attention?' · <span style="color:var(--amber)">needs attention</span>':'')+'</div></div>'
+    + '<span class="d-upd" title="first added to this bundle">added '+d.added+'</span>'
+    + (d.synthetic?'':'<span class="d-go">View TOC '+I('back',12,'')+'</span>')
+    + '</div>'
+  ).join('')+'</div>';
+  h+=pager(off,PAGE.toc,toc.length,'state.docPage--;renderDetail()','state.docPage++;renderDetail()','documents');
   return h;
 }
 
@@ -1116,7 +1211,7 @@ function renderIO(b){
 /* ---------------- overview actions ---------------- */
 function goList(){ state.view='list'; state.docId=null; state.chapterId=null; render(); }
 function openBundle(id){ state.view='detail'; state.bundleId=id; state.tab='conceptIndex'; state.docId=null; state.chapterId=null; state.expandedTerm=null; state.termQuery=''; render(); }
-function setTab(t){ state.tab=t; state.docId=null; state.chapterId=null; state.expandedTerm=null; render(); }
+function setTab(t){ state.docPage=0; state.termPage=0; state.tab=t; state.docId=null; state.chapterId=null; state.expandedTerm=null; render(); }
 function openDoc(id){ state.tab='documents'; state.docId=id; state.chapterId=null; render(); }
 function openChapter(docId,chId){ state.tab='documents'; state.docId=docId; state.chapterId=chId; render(); }
 function toggleTerm(name){ state.expandedTerm = state.expandedTerm===name? null : name; render(); }
@@ -1327,22 +1422,28 @@ function deleteJob(id){
 }
 
 /* ================= QUERY ================= */
-const L = { k:5200, rest:120, center:0.02, damp:0.8, maxV:9, ticks:150 }; // force-sim params: Coulomb k, spring rest length, centering, damping, velocity cap, ticks
+// force-sim params (FR-073 "spread out", 2026-10-14). Coulomb k; spring rest
+// length PER EDGE KIND (a chapter sits close to its document, a term further
+// out); a weak centering pull; damping; a speed cap; more ticks with cooling;
+// and a COLLISION pass that keeps every pair of circles (plus padding) apart.
+const L = { k:12000, rest:{contain:70, cover:150, link:130}, spring:0.03, center:0.004, damp:0.82, maxV:14, ticks:420, pad:22, labelZoom:1.25, fitMargin:48, kMin:0.2, kMax:3 };
 let G = { nodes:[], byId:{}, edges:[], nbr:new Map(), view:{x:0,y:0,k:1}, raf:0, drag:null, pan:null, moved:false, center:{x:0,y:0}, lastW:0, lastH:0, retry:false, resizeObs:null };
 const GEDGE_META = { contain:{label:'contains'}, cover:{label:'covers'}, link:{label:'related'} };
 
 function graphData(bundleId){
   const b=BUNDLES[bundleId];
-  const docs=b.docs.map(d=>({id:d.id,label:d.title,type:'doc'}));
+  // Node ids are NAMESPACED by kind (FR-073): a document called "deployment"
+  // and the concept term "deployment" are two nodes, not one with two faces.
+  const docs=b.docs.map(d=>({id:'doc:'+d.id,docId:d.id,label:d.title,type:'doc'}));
   const chaps=[];
-  b.docs.forEach(d=>d.chapters.forEach(c=>chaps.push({id:d.id+'/'+c.id,docId:d.id,chId:c.id,label:c.title,type:'chap'})));
+  b.docs.forEach(d=>d.chapters.forEach(c=>chaps.push({id:'chap:'+d.id+'/'+c.id,docId:d.id,chId:c.id,label:c.title,type:'chap'})));
   const idx=conceptIndex(b);
-  const concepts=idx.filter(t=>t.kind==='topic').map(t=>({id:t.name,label:t.name,type:'concept',count:t.count}));
-  const persons=idx.filter(t=>t.kind==='person').map(t=>({id:t.name,label:t.name,type:'person',count:t.count}));
-  const containment=chaps.map(c=>({from:c.docId,to:c.id,kind:'contain'}));
+  const concepts=idx.filter(t=>t.kind==='topic').map(t=>({id:'term:'+t.name,term:t.name,label:t.name,type:'concept',count:t.count}));
+  const persons=idx.filter(t=>t.kind==='person').map(t=>({id:'term:'+t.name,term:t.name,label:t.name,type:'person',count:t.count}));
+  const containment=chaps.map(c=>({from:'doc:'+c.docId,to:c.id,kind:'contain'}));
   const coverage=[];
-  idx.forEach(t=>t.covers.forEach(c=>coverage.push({from:c.docId+'/'+c.chId,to:t.name,kind:'cover'})));
-  const links=(EXPLICIT_LINKS[bundleId]||[]).map(l=>({from:l[0],to:l[1],kind:'link'}));
+  idx.forEach(t=>t.covers.forEach(c=>coverage.push({from:'chap:'+c.docId+'/'+c.chId,to:'term:'+t.name,kind:'cover'})));
+  const links=(EXPLICIT_LINKS[bundleId]||[]).map(l=>({from:'chap:'+l[0],to:'chap:'+l[1],kind:'link'}));
   return {docs,chaps,concepts,persons,containment,coverage,links};
 }
 function nodeRadius(n){ if(n.type==='doc') return 22; if(n.type==='concept'||n.type==='person') return 14+Math.min(9,(n.count||1)*2.2); return 15; }
@@ -1363,15 +1464,20 @@ function renderGraph(g){
   if(G.resizeObs){ G.resizeObs.disconnect(); G.resizeObs=null; }
   const all=g.docs.concat(g.chaps).concat(g.concepts).concat(g.persons||[]);
   const center=G.center;
-  const baseR=Math.max(120,Math.min(W,H)/2 - 74);
-  const byType={doc:0,chap:0,concept:0,person:0};
-  G.nodes=all.map(n=>{
-    const total=g[n.type==='doc'?'docs':n.type==='chap'?'chaps':n.type==='person'?'persons':'concepts'].length;
-    const i=byType[n.type]++; const a=(i/total)*Math.PI*2+(n.type==='doc'?0:n.type==='chap'?1.2:n.type==='person'?3.4:2.3);
-    const rr=baseR*(n.type==='doc'?0.28:n.type==='chap'?0.58:0.9);
-    return Object.assign({},n,{r:nodeRadius(n),fixed:false,fx:null,fy:null,vx:0,vy:0,
-      x:center.x+Math.cos(a)*rr+(Math.random()-.5)*10, y:center.y+Math.sin(a)*rr*0.82+(Math.random()-.5)*10});
-  });
+  // Seed by STRUCTURE, not by category ring: documents spread on a wide ring,
+  // each chapter on a small ring around its own document, each term at the
+  // centroid of the chapters it covers. The simulation then only refines it.
+  const R=Math.max(160, Math.sqrt(all.length)*46);
+  const pos={};
+  g.docs.forEach((d,i)=>{ const a=i/g.docs.length*Math.PI*2; pos[d.id]={x:center.x+Math.cos(a)*R, y:center.y+Math.sin(a)*R}; });
+  const chOf={}; g.chaps.forEach(c=>{ (chOf[c.docId]=chOf[c.docId]||[]).push(c); });
+  Object.keys(chOf).forEach(docId=>{ const p0=pos['doc:'+docId]||center; chOf[docId].forEach((c,i,arr)=>{ const a=i/arr.length*Math.PI*2; pos[c.id]={x:p0.x+Math.cos(a)*80, y:p0.y+Math.sin(a)*80}; }); });
+  const coverOf={}; g.coverage.forEach(e=>{ (coverOf[e.to]=coverOf[e.to]||[]).push(e.from); });
+  (g.concepts.concat(g.persons||[])).forEach(t=>{ const ps=(coverOf[t.id]||[]).map(id=>pos[id]).filter(Boolean);
+    const x=ps.length? ps.reduce((s,p)=>s+p.x,0)/ps.length : center.x, y=ps.length? ps.reduce((s,p)=>s+p.y,0)/ps.length : center.y;
+    pos[t.id]={x:x+(center.x-x)*0.15, y:y+(center.y-y)*0.15}; });
+  G.nodes=all.map(n=>Object.assign({},n,{r:nodeRadius(n),fixed:false,fx:null,fy:null,vx:0,vy:0,
+    x:(pos[n.id]||center).x+(Math.random()-.5)*8, y:(pos[n.id]||center).y+(Math.random()-.5)*8}));
   G.byId={}; G.nodes.forEach(n=>G.byId[n.id]=n);
   const mk=(from,to,kind)=>({from,to,kind,el:null,wrap:null});
   G.edges=[].concat(g.containment.map(e=>mk(e.from,e.to,'contain')),
@@ -1381,8 +1487,8 @@ function renderGraph(g){
   G.edges.forEach(e=>{ G.nbr.get(e.from).add(e.to); G.nbr.get(e.to).add(e.from); });
   G.view={x:0,y:0,k:1}; gHover=null;
   renderGraphSVG();
-  for(let i=0;i<L.ticks;i++) stepGraph();
-  applyTransform();
+  for(let i=0;i<L.ticks;i++) stepGraph(1-i/L.ticks*0.95);   // cooling: alpha 1 → 0.05
+  fitView(null);
   drawGraph();
   attachGraphInteractions(svg);
   G.resizeObs=new ResizeObserver(()=>{
@@ -1393,9 +1499,9 @@ function renderGraph(g){
   });
   G.resizeObs.observe(stage);
 }
-function stepGraph(){
+function stepGraph(alpha){
+  alpha=alpha==null? 0.3 : alpha;
   const ns=G.nodes; if(!ns.length) return;
-  let cx=0, cy=0; ns.forEach(n=>{ cx+=n.x; cy+=n.y; }); cx/=ns.length; cy/=ns.length;
   for(let i=0;i<ns.length;i++){
     const a=ns[i]; let fx=0, fy=0;
     for(let j=0;j<ns.length;j++){ if(i===j) continue; const b=ns[j];
@@ -1407,17 +1513,38 @@ function stepGraph(){
   }
   G.edges.forEach(e=>{ const a=G.byId[e.from], b=G.byId[e.to];
     let dx=b.x-a.x, dy=b.y-a.y; const d=Math.max(1,Math.hypot(dx,dy));
-    const f=(d-L.rest)*0.02, ux=dx/d, uy=dy/d;
+    const f=(d-L.rest[e.kind])*L.spring, ux=dx/d, uy=dy/d;
     a._fx+=f*ux; a._fy+=f*uy; b._fx-=f*ux; b._fy-=f*uy;
   });
   ns.forEach(n=>{
     n._fx-=(n.x-G.center.x)*L.center; n._fy-=(n.y-G.center.y)*L.center;
     if(n.fixed){ n.x=n.fx; n.y=n.fy; n.vx=0; n.vy=0; return; }
-    n.vx=(n.vx+n._fx)*L.damp; n.vy=(n.vy+n._fy)*L.damp;
+    n.vx=(n.vx+n._fx*alpha)*L.damp; n.vy=(n.vy+n._fy*alpha)*L.damp;
     const sp=Math.hypot(n.vx,n.vy); if(sp>L.maxV){ n.vx*=L.maxV/sp; n.vy*=L.maxV/sp; }
     n.x+=n.vx; n.y+=n.vy;
   });
+  // collision: no two circles (plus label padding) overlap
+  for(let i=0;i<ns.length;i++) for(let j=i+1;j<ns.length;j++){
+    const a=ns[i], b=ns[j]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||0.01;
+    const min=a.r+b.r+L.pad; if(d>=min) continue;
+    const push=(min-d)/2, ux=dx/d, uy=dy/d;
+    if(!a.fixed){ a.x-=ux*push; a.y-=uy*push; } if(!b.fixed){ b.x+=ux*push; b.y+=uy*push; }
+  }
 }
+/** Zoom/pan so the given nodes (all when null) fill the stage, labels included. */
+function fitView(ids){
+  const host=document.getElementById('graphStage'); if(!host) return;
+  const W=host.clientWidth, H=host.clientHeight;
+  const ns=ids? G.nodes.filter(n=>ids.has(n.id)) : G.nodes; if(!ns.length) return;
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  ns.forEach(n=>{ x0=Math.min(x0,n.x-n.r-40); x1=Math.max(x1,n.x+n.r+40); y0=Math.min(y0,n.y-n.r); y1=Math.max(y1,n.y+n.r+22); });
+  const k=Math.max(L.kMin, Math.min(ids? 1.6 : 1.2, Math.min((W-2*L.fitMargin)/(x1-x0), (H-2*L.fitMargin)/(y1-y0))));
+  G.view.k=k; G.view.x=W/2-(x0+x1)/2*k; G.view.y=H/2-(y0+y1)/2*k;
+  applyTransform();
+}
+function zoomBy(f){ const host=document.getElementById('graphStage'); if(!host) return; const W=host.clientWidth/2, H=host.clientHeight/2;
+  const nk=Math.max(L.kMin, Math.min(L.kMax, G.view.k*f)); G.view.x=W-(W-G.view.x)*(nk/G.view.k); G.view.y=H-(H-G.view.y)*(nk/G.view.k); G.view.k=nk; applyTransform(); }
+function fitResults(){ const q=(state.qsearch||'').trim(); fitView(q? graphMatchSet(q) : null); }
 function drawGraph(){
   const host=document.getElementById('graphStage'); const svg=host&&host.querySelector('.g-svg');
   if(!svg) return;
@@ -1455,7 +1582,7 @@ function renderGraphSVG(){
     h+='<g class="g-node '+n.type+sel+'" data-id="'+n.id+'"><title>'+escapeHtml(n.label)+'</title>'
       +'<circle class="g-ring" r="'+(n.r+5)+'" stroke="'+ringCol+'"/>'
       +'<circle class="g-circ" r="'+n.r+'"/>'
-      +'<text class="g-tx" text-anchor="middle" dominant-baseline="central">'+escapeHtml(n.label)+'</text></g>';
+      +'<text class="g-tx" text-anchor="middle" y="'+(n.r+11)+'">'+escapeHtml(trunc(n.label,28))+'</text></g>';
   });
   h+='</g></g>';
   svg.innerHTML=h;
@@ -1465,19 +1592,19 @@ function renderGraphSVG(){
   G.nodes.forEach(n=>{ n.el=svg.querySelector('.g-nodes .g-node[data-id="'+n.id+'"]'); });
   drawGraph();
 }
-function applyTransform(){ const host=document.getElementById('graphStage'); const svg=host&&host.querySelector('.g-svg'); if(!svg) return; const sel=svg.querySelector('.g-sel'); if(sel) sel.setAttribute('transform','translate('+G.view.x+','+G.view.y+') scale('+G.view.k+')'); }
+function applyTransform(){ const host=document.getElementById('graphStage'); const svg=host&&host.querySelector('.g-svg'); if(!svg) return; const sel=svg.querySelector('.g-sel'); if(sel) sel.setAttribute('transform','translate('+G.view.x+','+G.view.y+') scale('+G.view.k+')'); svg.classList.toggle('zoomed', G.view.k>=L.labelZoom); svg.style.setProperty('--gk', G.view.k); }
 function graphSVG(){ const host=document.getElementById('graphStage'); return host?host.querySelector('.g-svg'):null; }
 function screenToWorld(svg,sx,sy){ const r=svg.getBoundingClientRect(); return { x:((sx-r.left)-G.view.x)/G.view.k, y:((sy-r.top)-G.view.y)/G.view.k }; }
 let gHover=null;
 function setGraphHover(id){
   if(id===gHover) return; gHover=id;
   if(!id){
-    G.nodes.forEach(n=>{ if(n.el) n.el.classList.remove('dim','hot'); });
+    G.nodes.forEach(n=>{ if(n.el) n.el.classList.remove('dim','hot','near'); });
     G.edges.forEach(e=>{ if(e.el) e.el.classList.remove('dim','hot'); if(e.wrap) e.wrap.classList.remove('dim','hot'); });
     return;
   }
   const near=G.nbr.get(id)||new Set();
-  G.nodes.forEach(n=>{ if(!n.el) return; const near2=near.has(n.id); n.el.classList.toggle('hot', n.id===id); n.el.classList.toggle('dim', !near2); });
+  G.nodes.forEach(n=>{ if(!n.el) return; const near2=near.has(n.id); n.el.classList.toggle('hot', n.id===id); n.el.classList.toggle('near', near2 && n.id!==id); n.el.classList.toggle('dim', !near2); });
   G.edges.forEach(e=>{ const inc=(e.from===id||e.to===id); if(e.el) e.el.classList.toggle('hot',inc), e.el.classList.toggle('dim',!inc); if(e.wrap) e.wrap.classList.toggle('hot',inc), e.wrap.classList.toggle('dim',!inc); });
 }
 function attachGraphInteractions(svg){
@@ -1497,7 +1624,7 @@ function attachGraphInteractions(svg){
   });
   svg.addEventListener('wheel',e=>{
     e.preventDefault();
-    const nk=Math.max(0.4, Math.min(2.6, G.view.k*Math.exp(-e.deltaY*0.0016)));
+    const nk=Math.max(L.kMin, Math.min(L.kMax, G.view.k*Math.exp(-e.deltaY*0.0016)));
     const r=svg.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
     G.view.x=px-(px-G.view.x)*(nk/G.view.k); G.view.y=py-(py-G.view.y)*(nk/G.view.k); G.view.k=nk;
     applyTransform();
@@ -1507,9 +1634,9 @@ function attachGraphInteractions(svg){
     const gEl=e.target.closest('.g-node'); if(!gEl) return;
     const n=G.byId[gEl.getAttribute('data-id')];
     openPane(n.type==='doc'?'doc':(n.type==='concept'||n.type==='person')?'concept':'chap',
-      n.type==='doc'? n.id : (n.type==='chap'? n.docId : null),
+      (n.type==='doc'||n.type==='chap')? n.docId : null,
       n.type==='chap'? n.chId : null,
-      (n.type==='concept'||n.type==='person')? n.id : null);
+      (n.type==='concept'||n.type==='person')? n.term : null);
   });
   svg.addEventListener('mouseover',e=>{ const gEl=e.target.closest('.g-node'); setGraphHover(gEl? G.byId[gEl.getAttribute('data-id')].id : null); });
 }
@@ -1533,9 +1660,9 @@ window.addEventListener('mouseup',()=>{
 });
 function isNodeSelected(id){
   const p=state.pane;
-  if(p.kind==='doc') return id===p.docId;
-  if(p.kind==='concept') return id===p.term;
-  if(p.kind==='chap') return id===(p.docId+'/'+p.chId);
+  if(p.kind==='doc') return id==='doc:'+p.docId;
+  if(p.kind==='concept') return id==='term:'+p.term;
+  if(p.kind==='chap') return id==='chap:'+p.docId+'/'+p.chId;
   return false;
 }
 function legendHtml(){
@@ -1567,6 +1694,7 @@ function tableRows(bundleId){
 }
 function nodeMatches(r,q){ const ql=(q||'').toLowerCase().trim(); return !ql || r.name.toLowerCase().includes(ql); }
 function renderTableView(bundleId, q){
+  if((q||'').trim()) return renderHits(bundleId, q);
   const all=tableRows(bundleId);
   const rows=all.filter(r=>nodeMatches(r,q));
   const ql=(q||'').trim();
@@ -1593,22 +1721,31 @@ function renderTableView(bundleId, q){
   h+='</tbody></table>';
   return h;
 }
+function graphMatchSet(q){
+  const ql=(q||'').toLowerCase().trim(); const ids=hitNodeIds(state.qBundle,q);
+  G.nodes.forEach(n=>{ if(n.type==='doc' && n.label.toLowerCase().includes(ql)) ids.add(n.id); });
+  return ids;
+}
 function applyGraphSearch(q){
   const ql=(q||'').toLowerCase().trim();
+  const svg=graphSVG(); if(svg) svg.classList.toggle('searching', !!ql);
+  const ids=ql? graphMatchSet(q) : new Set();
   G.nodes.forEach(n=>{
     if(!n.el) return;
-    const match=!ql || n.label.toLowerCase().includes(ql);
-    n.el.classList.toggle('match', !!ql && match);
-    n.el.classList.toggle('dimmed', !!ql && !match);
+    const match=!!ql && ids.has(n.id);
+    n.el.classList.toggle('match', match);
+    n.el.classList.toggle('faded', !!ql && !match);
+    n.el.classList.remove('dimmed');
   });
   G.edges.forEach(e=>{
     if(!e.el) return;
-    if(!ql){ e.el.classList.remove('dim'); return; }
-    const a=G.byId[e.from], b=G.byId[e.to];
-    const am=a && a.label.toLowerCase().includes(ql);
-    const bm=b && b.label.toLowerCase().includes(ql);
-    e.el.classList.toggle('dim', !am && !bm);
+    const both=ids.has(e.from) && ids.has(e.to);
+    e.el.classList.toggle('faded', !!ql && !both);
+    e.el.classList.toggle('dim', false);
   });
+  const hint=document.getElementById('g-hint');
+  if(hint) hint.textContent= ql? (ids.size? ids.size+' of '+G.nodes.length+' nodes match — zoomed to the results' : 'No node matches — showing the whole graph') : G.nodes.length+' nodes · scroll or + to zoom in for every label';
+  if(G.nodes.length) fitView(ql && ids.size? ids : null);
 }
 function updateSearchClear(){
   const clear=document.getElementById('q-clear');
@@ -1620,52 +1757,99 @@ function updateMatchCount(){
   if(state.mode==='empty'){ el.textContent=''; return; }
   const q=state.qsearch.trim().toLowerCase();
   if(!q){ el.textContent=''; return; }
-  const n=tableRows(state.qBundle).filter(r=>r.name.toLowerCase().includes(q)).length;
-  el.textContent=n+' match'+(n!==1?'es':'');
+  const hits=searchHits(state.qBundle,q);
+  const by={}; hits.forEach(r=>{ by[r.kind]=(by[r.kind]||0)+1; });
+  el.textContent= hits.length? hits.length+' chapter'+(hits.length!==1?'s':'')+' · '+Object.keys(by).map(k=>by[k]+' '+KIND_LABEL[k]).join(' · ') : 'no match';
 }
-function searchBundle(bundleId,q){
-  const b=BUNDLES[bundleId]; const idx=conceptIndex(b);
-  const tokens=String(q||'').toLowerCase().split(/[^\w-]+/).filter(Boolean);
-  if(!tokens.length) return [];
-  const rows=[]; const seen=new Set();
-  for(const term of idx){
-    const termHit=tokens.some(tok=>term.name.toLowerCase().includes(tok));
-    for(const cov of term.covers){
-      const descHit=tokens.some(tok=>cov.desc.toLowerCase().includes(tok));
-      if(termHit||descHit){
-        const key=cov.docId+'/'+cov.chId;
-        if(!seen.has(key)){ seen.add(key); rows.push({docId:cov.docId,docTitle:cov.docTitle,chId:cov.chId,chTitle:cov.chTitle,desc:cov.desc,status:cov.status,matched:term.name,kind:term.kind}); }
-      }
-    }
-  }
-  return rows;
+/* ── okf_search, retrieval at scale (FR-001/FR-002, US14) ─────────────────
+   One search over concept & person terms, titles, summaries AND the full text
+   of every chapter (inline-asset interpretations included). Term, title and
+   summary matches rank above body-only matches. A body match carries an
+   excerpt: the sentence with the match plus at most one either side, ≤ 400
+   chars. Default 10 hits; grouped: 10 documents × ≤ 5 chapters. */
+const SEARCH = { limit:10, groupDocs:10, perDoc:5, excerptMax:400 };
+const KIND_RANK = { term:4, person:4, title:3, summary:2, text:1 };
+const KIND_LABEL = { term:'concept', person:'person', title:'title', summary:'summary', text:'full text' };
+function chapterPlain(c){
+  return c.blocks.map(b=>b.t==='md'? b.v : ((b.caption||'')+'. '+(b.interpretation||''))).join('\n\n')
+    .replace(/^#+\s*(.*)$/gm,'$1.').replace(/^>\s?/gm,'').replace(/^-\s/gm,'').replace(/\*\*|`|\*/g,'').replace(/\[([^\]]*)\]\([^)]*\)/g,'$1');
 }
-function renderSearchHost(){
-  let h='<div class="search">'+I('search',15)
-    +'<input id="qsearchInput" placeholder="Search this knowledge base (concept-anchored)…" value="'+escapeHtml(state.qsearch)+'" oninput="onQSearchInput(this.value)" onkeydown="if(event.key===\'Enter\'){runQSearch();}">'
-    +(state.qsearch?'<span class="clear" onclick="clearQSearch()">'+I('x',14)+'</span>':'')
-    +'</div>';
-  h+='<div class="q-suggest">Try a concept term: '+['rollback','idempotency','versioning','monitoring','logging'].map(s=>'<button class="sug" onclick="runQSearch(\''+s+'\')">'+s+'</button>').join(' ')+'</div>';
-  h+='<div class="note">'+I('info',14)+'<span><b>Concept-anchored</b> — this runs the same deterministic <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_search</code> pass the agent uses: it matches the bundle\'s <span style="color:var(--violet)">concept vocabulary</span> and the one-line descriptions in the index, <b>not full text</b>. Each result is a TOC row (document › chapter) with the concept/person term that matched. Click a result to open the full chapter in the reader pane.</span></div>';
-  if(!state.qsearchRun){
-    h+='<div class="empty" style="padding:36px"><h3 style="font-size:15px">Run a search</h3><p>Type a concept term or a phrase from a stored description. Results mirror exactly what the agent gets from <b>okf_search</b>.</p></div>';
-    return h;
-  }
-  const rows=searchBundle(state.qBundle,state.qsearch);
-  if(!rows.length){
-    h+='<div class="empty" style="padding:36px"><h3 style="font-size:15px">No concept terms matched</h3><p>The search is concept-anchored (it matches the vocabulary + stored descriptions, not full text). Widen the query, or read the bundle\'s concept index in Overview.</p></div>';
-    return h;
-  }
-  h+='<div class="count" style="margin:0 0 10px">'+rows.length+' result'+(rows.length!==1?'s':'')+' for “'+escapeHtml(state.qsearch)+'”</div>';
-  h+='<div class="srow-list">'+rows.map(r=>
-    '<div class="srow'+(r.kind==='person'?' person':'')+'" onclick="openPane(\'chap\',\''+r.docId+'\',\''+r.chId+'\')">'
-    +'<div class="s-loc"><span class="doc">'+escapeHtml(r.docTitle)+'</span><span class="arrow">›</span>'+escapeHtml(r.chTitle)+' '+statusPill(r.status)+'</div>'
-    +'<div class="s-desc">'+escapeHtml(r.desc)+'</div>'
-    +'<div class="s-term"><span class="t-key'+(r.kind==='person'?' person':'')+'">'+(r.kind==='person'?'matched person':'matched concept')+'</span><span class="st">'+escapeHtml(r.matched)+'</span></div>'
-    +'<span class="s-go">open '+I('back',12)+'</span>'
-    +'</div>'
-  ).join('')+'</div>';
+function qTokens(q){ return String(q||'').toLowerCase().split(/\s+/).filter(Boolean); }
+function hasAll(text,toks){ const t=String(text||'').toLowerCase(); return toks.every(k=>t.includes(k)); }
+function highlight(text,toks){
+  let h=escapeHtml(text);
+  toks.forEach(k=>{ const re=new RegExp('('+escapeHtml(k).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'); h=h.replace(re,'<mark class="hl">$1</mark>'); });
   return h;
+}
+function excerptFor(text,toks){
+  const sents=text.split(/(?<=[.!?])\s+|\n+/).map(x=>x.trim()).filter(Boolean);
+  let i=sents.findIndex(x=>hasAll(x,toks));
+  if(i<0) i=sents.findIndex(x=>toks.some(k=>x.toLowerCase().includes(k)));
+  if(i<0) return '';
+  let ex=sents.slice(Math.max(0,i-1),i+2).join(' ');
+  if(ex.length>SEARCH.excerptMax){
+    const at=ex.toLowerCase().indexOf(toks[0]);
+    const start=Math.max(0,Math.min(at-SEARCH.excerptMax/2, ex.length-SEARCH.excerptMax));
+    const room=SEARCH.excerptMax-(start>0?1:0)-1;               // ≤ 400 incl. the ellipses
+    ex=(start>0?'…':'')+ex.slice(start,start+room)+'…';
+  }
+  return ex;
+}
+function searchHits(bundleId,q){
+  const b=BUNDLES[bundleId]; const toks=qTokens(q);
+  if(!toks.length) return [];
+  const idx=conceptIndex(b);
+  const hits=[];
+  b.docs.forEach(d=>d.chapters.forEach(c=>{
+    const term=idx.find(t=>hasAll(t.name.replace(/-/g,' '),toks) && t.covers.some(cv=>cv.docId===d.id&&cv.chId===c.id));
+    let kind=null, matched=null;
+    if(term){ kind=term.kind==='person'?'person':'term'; matched=term.name; }
+    else if(hasAll(c.title,toks)) kind='title';
+    else if(hasAll(c.summary,toks)) kind='summary';
+    const body=chapterPlain(c);
+    const inText=hasAll(body,toks);
+    if(!kind && inText) kind='text';
+    if(!kind) return;
+    hits.push({docId:d.id, docTitle:d.title, chId:c.id, chTitle:c.title, summary:c.summary, status:c.status, kind, matched,
+      excerpt: kind==='text'? excerptFor(body,toks) : '', added:(DOC_META[d.id]||{}).added||d.updated});
+  }));
+  return hits.sort((x,y)=> KIND_RANK[y.kind]-KIND_RANK[x.kind] || (x.added<y.added?1:x.added>y.added?-1:0) || (x.chId<y.chId?-1:1));
+}
+function hitRow(r,toks){
+  return '<div class="srow'+(r.kind==='person'?' person':'')+'" onclick="openPane(\'chap\',\''+r.docId+'\',\''+r.chId+'\')">'
+    +'<div class="s-loc"><span class="doc">'+escapeHtml(r.docTitle)+'</span><span class="arrow">›</span>'+(r.kind==='title'?highlight(r.chTitle,toks):escapeHtml(r.chTitle))+' '+statusPill(r.status)+'</div>'
+    +'<div class="s-desc">'+(r.kind==='summary'?highlight(r.summary,toks):escapeHtml(r.summary))+'</div>'
+    +(r.excerpt?'<div class="s-excerpt">'+highlight(r.excerpt,toks)+'</div>':'')
+    +'<div class="s-term"><span class="mk '+r.kind+'">'+KIND_LABEL[r.kind]+'</span>'+(r.matched?'<span class="st">'+escapeHtml(r.matched)+'</span>':'')+'</div>'
+    +'<span class="s-go">open '+I('back',12)+'</span>'
+    +'</div>';
+}
+function renderHits(bundleId,q){
+  const all=searchHits(bundleId,q); const toks=qTokens(q);
+  let h='<div class="pager" style="margin:0 0 10px"><span>'+(all.length? all.length+' chapter'+(all.length!==1?'s':'')+' match “'+escapeHtml(q.trim())+'”' : '')+'</span><span class="spacer"></span>'
+    +'<div class="seg"><button class="'+(state.qGroup?'':'on')+'" onclick="state.qGroup=false;renderQuery()">Chapters</button><button class="'+(state.qGroup?'on':'')+'" onclick="state.qGroup=true;renderQuery()">By document</button></div></div>';
+  if(!all.length){
+    return h+'<div class="empty" style="padding:36px"><h3 style="font-size:15px">Nothing matched</h3><p>Searched concept &amp; person terms, titles, summaries and the <b>full text</b> of every chapter. Rephrase, or browse the bundle\'s <b>Documents</b> — its table of contents — in Overview.</p></div>';
+  }
+  if(!state.qGroup){
+    h+='<div class="srow-list">'+all.slice(0,SEARCH.limit).map(r=>hitRow(r,toks)).join('')+'</div>';
+    if(all.length>SEARCH.limit) h+='<div class="count">Showing the top '+SEARCH.limit+' of '+all.length+' — refine the query to narrow it.</div>';
+    return h;
+  }
+  const byDoc=[]; const seen={};
+  all.forEach(r=>{ if(!seen[r.docId]){ seen[r.docId]={docId:r.docId,docTitle:r.docTitle,hits:[]}; byDoc.push(seen[r.docId]); } seen[r.docId].hits.push(r); });
+  h+=byDoc.slice(0,SEARCH.groupDocs).map(g=>
+    '<div class="hit-group"><div class="hg-head">'+I('doc',14)+'<span style="cursor:pointer" onclick="openPane(\'doc\',\''+g.docId+'\')">'+escapeHtml(g.docTitle)+'</span><span class="hg-sum">'+g.hits.length+' matching chapter'+(g.hits.length!==1?'s':'')+'</span></div>'
+    + g.hits.slice(0,SEARCH.perDoc).map(r=>hitRow(r,toks)).join('')
+    + (g.hits.length>SEARCH.perDoc?'<div class="count" style="margin-left:14px">+'+(g.hits.length-SEARCH.perDoc)+' more in this document</div>':'')
+    +'</div>'
+  ).join('');
+  return h;
+}
+function hitNodeIds(bundleId,q){
+  const ids=new Set();
+  searchHits(bundleId,q).forEach(r=>{ ids.add('doc:'+r.docId); ids.add('chap:'+r.docId+'/'+r.chId); if(r.matched) ids.add('term:'+r.matched); });
+  return ids;
 }
 function onQSearchInput(v){
   state.qsearch=v;
@@ -1680,7 +1864,6 @@ function onQSearchInput(v){
   updateMatchCount();
 }
 function setQView(v){ if(state.qView===v) return; state.qView=v; state.paneShowSrc=false; renderQuery(); }
-function runQSearch(q){ state.qsearch=(q!=null? q : state.qsearch); state.qsearchRun=state.qsearch.trim()!==''; renderQuery(); }
 function clearQSearch(){
   state.qsearch='';
   updateSearchClear();
@@ -1696,7 +1879,6 @@ function clearQSearch(){
   if(inp) inp.focus();
 }
 function onQBundle(v){ state.qBundle=v; state.pane={kind:null,bundleId:v,docId:null,chId:null,term:null}; state.paneShowSrc=false; renderQuery(); }
-function setQSub(s){ state.qSubtab=s; state.paneShowSrc=false; renderQuery(); }
 
 function refreshGraphSelection(){ G.nodes.forEach(n=>{ if(n.el) n.el.classList.toggle('sel', isNodeSelected(n.id)); }); }
 function onGraphPaneChanged(){
@@ -1726,8 +1908,8 @@ function renderQuery(){
   } else if(state.qView==='graph'){
     const g=graphData(state.qBundle);
     content.innerHTML='<div class="g-legend">'+legendHtml()+'</div>'
-      +'<div id="graphStage" class="graph-stage"><svg class="g-svg"></svg></div>'
-      +'<div class="note">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>contains</b> (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>covers</b> (chapter → the concept/person term it covers, via the concept index), and <b>related</b> (explicit <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_add_link</code> edges). Force-directed layout — <b>drag</b> a node, <b>scroll</b> to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbors. Click any node to open it in the reader pane. Type in the search box above to highlight matching nodes (everything else dims to 30%).</span></div>';
+      +'<div id="graphStage" class="graph-stage"><div class="g-ctl"><button title="Zoom in" onclick="zoomBy(1.3)">+</button><button title="Zoom out" onclick="zoomBy(1/1.3)">−</button><button title="Fit (the search results, when searching)" onclick="fitResults()">⤢</button></div><span class="g-hint" id="g-hint"></span><svg class="g-svg"></svg></div>'
+      +'<div class="note">'+I('info',14)+'<span><b>Knowledge graph</b> — derived from stored content (FR-045): <b>contains</b> (document → its chapters, via <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">parent</code>), <b>covers</b> (chapter → the concept/person term it covers, via the concept index), and <b>related</b> (explicit <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_add_link</code> edges). Force-directed layout — <b>drag</b> a node, <b>scroll</b> to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbors. Click any node to open it in the reader pane. Labels: documents always; everything else when you zoom in, hover or search. Type in the search box above: the chapters <code style="font-family:monospace;font-size:11px;background:var(--panel2);padding:1px 5px;border-radius:4px">okf_search</code> finds — by term, title, summary or full text — light up with their documents and matched terms; everything else fades out and the view zooms to the results (⤢ re-fits). Switch to <b>Table</b> to read the ranked hits with their excerpts.</span></div>';
     renderGraph(g);
     applyGraphSearch(state.qsearch);
   } else {

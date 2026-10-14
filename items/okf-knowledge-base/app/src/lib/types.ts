@@ -45,21 +45,50 @@ export interface ConceptTerm {
 /** A concept term's kind (ADR-011). Absent on a legacy index = `topic`. */
 export type TermKind = "topic" | "person";
 
-export interface DocumentRow {
+/** One entry of the bundle's table of contents (FR-069, ADR-017). */
+export interface BundleTocEntry {
   id: string;
   title: string;
-  summary: string;
   chapters: number;
-  conceptRefs: number;
-  updated: string | null;
-  needsAttention: boolean;
-  source: ConceptSource | null;
+  summary: string;
+  /** When the document was FIRST added to the bundle (the TOC's order). */
+  addedAt: string | null;
+  /** Any chapter stale or deprecated. */
+  attention: boolean;
 }
 
+/** A page of results — every list the app shows is bounded by one (NFR-011). */
+export interface Paged {
+  total: number;
+  offset: number;
+  limit: number;
+  clamped?: boolean;
+  maxLimit?: number;
+}
+
+export interface BundleToc extends Paged {
+  bundle: string;
+  documents: BundleTocEntry[];
+}
+
+/** One vocabulary term on a page of okf_list_concepts (ADR-019). */
+export interface VocabTerm {
+  term: string;
+  kind: TermKind;
+  count: number;
+  /** At most 5 of the chapters it covers; `coversTotal` is how many. */
+  covers: { docId: string; docTitle: string; chId: string; title: string; description: string; status: string; stale: boolean }[];
+  coversTotal: number;
+}
+
+export interface VocabPage extends Paged {
+  terms: VocabTerm[];
+  indexGeneratedAt?: string | null;
+}
+
+/** The bundle detail is counts only — each tab pages its own list (ADR-021). */
 export interface BundleDetail {
   health: BundleHealth;
-  documents: DocumentRow[];
-  conceptIndex: ConceptTerm[];
   indexGeneratedAt: string | null;
 }
 
@@ -98,29 +127,57 @@ export interface ConceptRead {
   source: ConceptSource | null;
 }
 
-/** One row of okf_search's output — identical on both surfaces (FR-036). */
+/** What made a search hit a hit (ADR-018). */
+export type MatchKind = "term" | "person" | "title" | "summary" | "text";
+
+/** One hit of okf_search — identical on both surfaces (FR-036). A
+ *  document-level hit has `chId: ""`. */
 export interface SearchRow {
   docId: string;
   docTitle: string;
   chId: string;
   chTitle: string;
   description: string;
-  matchedConcept: string;
-  /** The kind of the term that matched — additive; the search ALGORITHM is
-   *  unchanged, a person's name is an ordinary term-name hit (SC-016). */
-  kind?: TermKind;
+  /** The term that matched; on a non-term match, the chapter's own term (as
+   *  a description match always was). Null for a concept with no terms. */
+  matchedConcept: string | null;
+  kind: TermKind | null;
   status: string;
   stale: boolean;
+  matchKind: MatchKind;
+  matchedWords: string[];
+  /** Where a full-text match is — at most three sentences. Not the content. */
+  excerpt?: string;
 }
+
+export interface SearchGroup {
+  docId: string;
+  docTitle: string;
+  total: number;
+  hits: SearchRow[];
+}
+
+interface SearchMeta {
+  count: number;
+  total: number;
+  searched: string[];
+  clamped?: boolean;
+  maxLimit?: number;
+}
+export type SearchResult = SearchMeta & { rows: SearchRow[] };
+export type GroupedSearchResult = SearchMeta & { groups: SearchGroup[] };
 
 export type GraphNodeType = "doc" | "chap" | "concept" | "person";
 export type GraphEdgeKind = "containment" | "coverage" | "link";
 
 export interface GraphNode {
+  /** The NAMESPACED key — `doc:…`, `chap:…`, `concept:…`, `person:…` — so a
+   *  document and a term with the same name are two nodes (FR-073(f)). Edges
+   *  reference it. Map back to content through docId / chId / term. */
   id: string;
-  /** `<type>:<id>` — stable across the two node types that can share an id
-   *  (a document whose id is also a concept term). */
   key?: string;
+  /** A term node's name (original case). */
+  term?: string;
   type: GraphNodeType;
   label: string;
   description?: string;

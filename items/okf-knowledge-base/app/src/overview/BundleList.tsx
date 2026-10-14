@@ -107,7 +107,7 @@ export default function BundleList({ bundles, onOpen, onNew, onImport, onDelete 
       <div className="note" style={{ marginTop: 14 }}>
         <Icon name="info" size={14} />
         <span>
-          <b>Concepts</b> = distinct concept terms in the bundle's concept index (the O(V) routing table).{" "}
+          <b>Concepts</b> = distinct concept terms in the bundle's concept index (the vocabulary ingest extends and the Concept Index pages through).{" "}
           <b>Stale / Deprecated</b> = chapters past their lifecycle threshold. Open a bundle to browse its concept index
           and document tables of contents.
         </span>

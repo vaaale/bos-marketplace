@@ -27,9 +27,9 @@ This is why there is no `okf_read_bundle_schema` tool and no per-bundle `schema.
 
 ### A new derived view
 
-The two derived artifacts (`concept-index.md`, `toc/<docId>.md`) are rebuilt by `rebuildDerived()` in `okf-core.js` on every write path that can change them, from `classifyBundle()`'s walk of chapter frontmatter. A third derived artifact goes there, alongside `buildConceptIndex` / `buildToc`:
+The derived artifacts (`concept-index.md`, `toc/<docId>.md`, `index.md`) come from the per-bundle model in `okf-core.js` (architecture.md, "The model"): `deriveModel()` computes everything from the model's concepts, and `writeDerived()` writes it — the whole set on a rebuild, a single document's TOC after a write to that document. A new derived artifact goes there, alongside `buildConceptIndex` / `buildToc`:
 
-- Build it in `classifyBundle`'s output, write it in `rebuildDerived`, stamp it `index_generated_at`.
+- Compute it in `deriveModel()` (pure, no I/O), write it in `writeDerived()`, stamp it `index_generated_at`. Say which writes change it, so `commitConcepts()` rewrites only what it must.
 - Include it in `exportBundle`. If it isn't in the export, re-import produces a bundle that is silently missing it.
 - Make it **regenerable and never the sole source of truth**. The moment a derived artifact holds something the content can't reproduce, every self-healing property in this design is gone.
 
@@ -56,7 +56,7 @@ If it is genuinely a new agent capability, declare it in `lib/tools.js`, give it
 
 Add a route in `http-bridge.js` over existing `core` functions, a typed client in `app/src/lib/serviceClient.ts`, and the component. Three rules:
 
-- **No new runtime dependency.** The app has zero, including the force-directed graph (`query/forceSim.ts` is an in-app Coulomb + spring + centering simulation, not d3). Adding one for a view is a bad trade.
+- **No new runtime dependency.** The app has zero, including the force-directed graph (`lib/graphlayout.mjs` is an in-app simulation with collision, not d3 — plain JS so `node --test` runs it). Adding one for a view is a bad trade.
 - **Reach the service only through `serviceClient.ts`.** It is the single place that knows `httpPath`-else-`runtime.port` and the `window.__bos` broker fallback. A second place that learns it is a second place that breaks under the Supervisor.
 - **Nothing hardcodes what the service declares.** The tool badge reads `GET /tools`. A literal there goes stale silently.
 

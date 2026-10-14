@@ -12,20 +12,20 @@ Arguments are validated against each `inputSchema` in the 039 bridge **before** 
 
 | Tool | Input | Returns |
 |---|---|---|
-| `okf_search` *(readOnly)* | `{bundle, query, limit?}` | `{rows: [{docId, docTitle, chId, chTitle, description, matchedConcept, kind, status, stale}], count}` |
-| `okf_read_toc` *(readOnly)* | `{bundle, docId}` | `{docId, docTitle, chapters: [{id, title, summary, concepts, status}]}` |
+| `okf_search` *(readOnly)* | `{bundle, query, limit?, groupBy?}` | `{rows: [{docId, docTitle, chId, chTitle, description, matchedConcept, kind, status, stale, matchKind, matchedWords, excerpt?}], count, total, searched}` — or `groups` with `groupBy: "document"` |
+| `okf_read_toc` *(readOnly)* | `{bundle, docId?, offset?, limit?}` | no `docId`: the bundle's documents, newest first, paged; a `docId`: `{docId, docTitle, chapters: [{id, title, summary, concepts, status}]}` |
 | `okf_read_concept` *(readOnly)* | `{bundle, id}` | `{id, type, frontmatter, body, links, assets, source}` — the **full** body |
-| `okf_list_concepts` *(readOnly)* | `{bundle, type?, status?, kind?}` | the vocabulary: `[{term, kind, count, covers: [...]}]`, plus document and chapter listings |
+| `okf_list_concepts` *(readOnly)* | `{bundle, query?, kind?, status?, offset?, limit?}` | a page of the vocabulary: `{terms: [{term, kind, count, covers: [≤ 5], coversTotal}], total}` |
 
-`okf_search` is the entry point. Rows are **pointers, not content** — follow with `okf_read_concept` (whole chapter or document) or `okf_read_toc` (a document's chapter list). Retrieval is always whole documents or whole chapters; no tool here returns a snippet.
+Two ways in: **browse** the bundle's table of contents (`okf_read_toc({bundle})`) or **search** it (`okf_search`). Hits are **pointers, not content** — follow with `okf_read_toc({bundle, docId})` (a document's chapters) and `okf_read_concept` (the whole chapter or document). An excerpt shows where a match is; reading is always whole documents or whole chapters. The procedure an agent follows is the item's `okf-lookup` skill.
 
-The match is deterministic and concept-anchored, over term names and the index's one-line descriptions — **not full text**. A paraphrase that misses both returns nothing, and an empty result is a real answer: widen the query, or read the vocabulary with `okf_list_concepts` and route from there.
+The search is deterministic and covers terms, titles, summaries and full text (tools.md). Any query word may match, so a natural-language paraphrase still routes; an empty result names what was searched and is not proof of absence until a rephrase and the bundle TOC agree.
 
 ### The additive `kind` (ADR-011)
 
 Every term the index holds carries a `kind` — `topic`, or `person` for a salient person the bundle registered at ingest (the author, a named key figure).
 
-- **`okf_search`** rows carry that `kind`, so a caller can tell a person hit from a topic hit. The matching **algorithm is unchanged**: a person's name is an ordinary term-name hit, there is no second search path, and a caller that ignores the field sees exactly what it saw before.
+- **`okf_search`** rows carry that `kind`, so a caller can tell a person hit from a topic hit (`matchKind: "person"` when a person term matched). A person's name is an ordinary term match — and, since 2026-10-14, also found in full text when no ingest registered it.
 - **`okf_list_concepts`** returns `kind` on every term and accepts an optional **`kind` filter** (`topic` | `person` | `all`, default `all`) — `{bundle, kind: "person"}` lists just the people the bundle knows about.
 
 Both changes are **additive and backward compatible**, and the surface count is **unchanged** — person extraction rides on the already-declared tools, and there is no `okf_*` tool specific to persons.
@@ -122,7 +122,7 @@ The pre-redesign surface declared 31. Six were added — `okf_search`, `okf_read
 |---|---|
 | `okf_bundle_status` | folded into `okf_list_bundles` health |
 | `okf_find_concepts` | `okf_search` |
-| `okf_read_index` | the index is a browsable `.md`; `okf_list_concepts` returns the vocabulary |
+| `okf_read_index` | the index is a browsable `.md`; `okf_list_concepts` pages through the vocabulary, `okf_read_toc({bundle})` lists the documents |
 | `okf_read_bundle_schema` | the `okf-bundle-schema` **skill**; a per-bundle `schema.md` override is just a file to `file_read` |
 | `okf_append_log` | `log.md` is internal now |
 | `okf_get_as_of` | — |

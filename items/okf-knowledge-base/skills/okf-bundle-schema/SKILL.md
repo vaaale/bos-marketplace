@@ -1,6 +1,6 @@
 ---
 name: OKF bundle conventions
-description: The ingest, query and lint conventions for OKF knowledge bundles — chapter decomposition, concept-term assignment, person extraction, one-line summaries, the inline-asset block, and how the two-level derived index is maintained.
+description: The ingest and lint conventions for OKF knowledge bundles (querying one is the okf-lookup skill) — chapter decomposition, concept-term assignment, person extraction, one-line summaries, the inline-asset block, and how the two-level derived index is maintained.
 when_to_use: When ingesting a source into an OKF bundle, querying one, or linting one.
 created_by: seed
 ---
@@ -38,7 +38,7 @@ One chapter = one section a human would look up on its own.
 - **Split at the source's own section structure.** The author already decided where the ideas divide; respect that rather than imposing your own outline. The service has already found those sections — the `headings` list in each chunk — including the numbered and conventional section titles of a document with no Markdown `#` headings (a converted PDF). If what it found does not match the document, merge or use `whole`; never rebuild or re-type the source to add headings.
 - A fragment that only makes sense inside its neighbour isn't its own chapter — fold it in.
 - Match the granularity the bundle already uses. Read an existing TOC before deciding.
-- **Extend before you create.** `okf_list_concepts` first. Two chapters covering the same idea under two near-identical terms is the single most damaging thing you can do to a bundle's routing, and only `okf_merge_concepts` can undo it.
+- **Extend before you create.** Query the vocabulary first — `okf_list_concepts({bundle, query: "<part of the term>"})`; it is paged, and a large bundle's whole vocabulary is thousands of terms. Two chapters covering the same idea under two near-identical terms is the single most damaging thing you can do to a bundle's routing, and only `okf_merge_concepts` can undo it.
 
 ## Chapter frontmatter
 
@@ -81,7 +81,7 @@ A concept term is **not a file** — it is a key in `concept-index.md`, derived 
 
 - Terms are lowercase, hyphenated, and name a *topic*, not a document (`rollback`, `rate-limiting`, `api-design` — not `the-deployment-doc`).
 - Two to four per chapter is usually right. One is often too coarse to route; eight means the chapter is doing too much.
-- The vocabulary grows organically. That is intended — but check it first (`okf_list_concepts`) so it grows by extension, not duplication.
+- The vocabulary grows organically. That is intended — but check it first (`okf_list_concepts({bundle, query})`) so it grows by extension, not duplication.
 - Near-duplicates are fixed with `okf_merge_concepts`, which rewrites every affected chapter's `concepts` **and `person_terms`** (a person term is a term — merging "D. Córdoba" into "Diego Córdoba" rewrites both arrays), then the index and TOCs follow from the rebuild.
 - A term that names a **person** does not follow the lowercase-hyphenated rule and does not live in `concepts` — see **Person terms** below.
 
@@ -134,7 +134,7 @@ The point is that the interpretation is written **once, at ingest, as stored tex
 
 ## Ingest
 
-1. Read the conventions (this skill; the bundle's `schema.md` if it has one) and `okf_list_concepts` to see the existing vocabulary.
+1. Read the conventions (this skill; the bundle's `schema.md` if it has one) and `okf_list_concepts({bundle, query})` for each topic you are about to tag.
 2. **Acquire the source with `output_path` pinned.** URL → `web_fetch({url, output_path})`; PDF/DOCX/PPTX/XLSX → `file_to_markdown({path, output_path})`; plain text → straight to `okf_add_raw_source({sourcePath})`. Then `okf_add_raw_source` registers it into `raw/`, which is append-only and never edited. Dropping `output_path` and passing the document back as `content` re-emits the whole thing as output tokens — it is the one mistake that makes this pipeline pointless.
 3. **Read the source one chunk at a time** — see *Chunks* below. `okf_add_raw_source`'s response carries `chunks`; read those, not the whole `rawFile`.
 4. Decide chapter boundaries at the sections the service found — each chunk's `headings` list. Only a source where it found none is one chapter (`{whole: true}`).
@@ -242,11 +242,7 @@ The agent's final message becomes the run's report in the Jobs tab, so it has to
 
 ## Query
 
-1. **`okf_search(bundle, query)` first.** It returns TOC rows — document, chapter, one-line description, the concept term that matched, and that term's `kind` (`topic` or `person`). The match is deterministic and concept-anchored: it runs over the vocabulary and the stored descriptions, **not full text**. A person's name is an ordinary term-name hit: searching "Córdoba" needs no special call.
-2. **An empty result is a real answer.** It means nothing in the vocabulary matched, not that the bundle is empty. Widen the query, or read the vocabulary with `okf_list_concepts` and route semantically from there (`okf_list_concepts({bundle, kind: "person"})` lists just the people the bundle knows about). Never invent a row.
-3. Then fetch **full** content: `okf_read_toc(docId)` for a document's chapter list, `okf_read_concept(id)` for the entire chapter or document. Retrieval is whole documents or whole chapters — never a snippet.
-4. Weigh what you find by its `status` and `stale_after`, and say so when it matters ("this is `deprecated` and `stale_after` has passed"). Cite the chapters you used by id.
-5. Scope matters: search the bundle that holds the knowledge you want. Bundles are the unit of curation *and* of retrieval scope — checking a design against a rules bundle means querying that bundle, not everything.
+Using a bundle as a source — browsing it, searching it, reading what answers, and citing it — is the **`okf-lookup`** skill. Load it (`skill_load okf-lookup`) rather than improvising: it is the one place that procedure lives.
 
 ## Lint
 

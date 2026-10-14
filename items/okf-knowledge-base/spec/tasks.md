@@ -280,3 +280,135 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 - [ ] **AB1.** Stage the changed item facets (`services/lib/okf-core.js`, `services/lib/tools.js`, `services/lib/delegate-bridge.js`, `config/okf-knowledge-base.json`, `services/service.json`, `agents/okf-ingest/AGENT.md`, `skills/okf-bundle-schema/SKILL.md`, `docs/`) into a fresh staging dir; **`app_build({name:"OKF Knowledge Base", dir:<staging>, id:"okf-knowledge-base"})`** (id preserved — in-place update). **No `src/` file in this scope-add. No app change.**
 - [ ] **AB2.** Restart the service (`POST /api/services/okf-knowledge-base {"action":"restart"}`); confirm `GET /tools` is **21**, `GET /config` includes `jobFinalizeTimeoutMs` + `maxTotalTimeoutMs`, and `okf_add_raw_source` on a test source produces `headings.json` alongside the chunks.
 - [ ] **AB3.** Run the full e2e suite (`BOS_PREVIEW_URL` + `npx playwright test e2e/okf-knowledge-base.spec.ts`) — AA1–AA7 **plus** all prior phases' tests pass.
+
+---
+
+## Retrieval at scale + legible graph scope-add (US14, FR-068–FR-073, SC-020–SC-024) — appended 2026-10-14
+
+**Baseline**: every prior scope-add and fix, on marketplace branch `okf-retrieval-at-scale`. **Design**: `design.md` ADR-015 – ADR-022 + §12 (authoritative). **Plan**: Scope-add 5. **UI contract**: `mockup.html`.
+
+**Invariants — do not deviate**:
+- **No new tools** (21, SC-007); **no new dependency**; nothing written to disk for search (SC-023).
+- **Test first, every phase**: write the phase's tests, run them, watch them fail for the stated reason, then implement. A test that passes before its implementation is rewritten.
+- **Kept contracts stay green unchanged**: e2e US1 AS1 (`"what is our rollback policy"` → canary, `matchedConcept: "rollback"`), description anchoring (e2e 422-426), author-by-name (e2e 1376-1377).
+- **No swallowed errors** in anything touched: a failed listing or read propagates (AGENTS.md §1.2); the `vfs.list(...).catch(() => [])` sites in `okf-core.js` are removed, not moved.
+- **One mechanism**: the model replaces `derivedCache` *and* `graphCache`; `bundleToc()` feeds both the tool and `index.md`; `graphlayout.mjs` is the one layout.
+
+**Dependency order**: **AC** (prereqs) → **AD** (test harness) → **AE** (model + queue) → **AF** (ledger + bundle TOC) and **AG** (search) in either order → **AH** (vocabulary, detail, summary cap) → **AI** (tool/route surfaces) → **AJ** (graph core + layout) → **AK** (app) → **AL** (agent text) `[P]` from AI on → **AM** (docs) → **AN** (e2e) → **AO** (install, measure, verify).
+
+---
+
+### Phase AC — prerequisites outside the item (`bos-core`)
+
+- [x] **AC1.** `vfs.list` leaves out an entry gone between `readdir` and `stat` (ENOENT only), shared by `vfs.list` and `LocalFS` via `src/os/fs/dir-entries.ts` — `bos/vfs-list-vanished-entry` `99832327e`, test `tests/os/vfs-list-vanished-entry.test.ts`.
+- [x] **AC2.** Seeded assistant's `okf_*` tools = the 21-tool surface; deferred ids current — `bos/okf-agent-tools` `1b0e72d7e`, test `tests/agent/okf-tool-allowlist.test.ts`.
+- [ ] **AC3.** (user) Edit production's `data/agents/assistant/AGENT.md` by hand to the same lists.
+- [ ] **AC4.** Merge AC1/AC2 into `claude` before this item is installed anywhere (AO).
+
+### Phase AD — the test harness can see what the design claims
+
+- [x] **AD1.** `tests/memfs-server.mjs` — `list` returns `size` and `modified` (mtime ms, bumped on every write) like `/api/fs`; add a per-op **request counter** with reset (`/__counts`), and a hook to make one `list` fail (for AE3).
+- [x] **AD2.** `tests/fixtures/gen-bundle.mjs` — writes a generated bundle into the memfs: N documents × M chapters, terms, person terms, one name present **only** in one chapter body, a document and a term sharing a name, ledger entries with `ingestedAt`.
+
+### Phase AE — the incremental model, one serial queue per bundle (ADR-016)
+
+**Tests first** — `tests/derived-model.test.mjs`:
+- [x] **AE1.** A chapter write on a 3,000-chapter bundle issues **O(1)** concept reads (memfs counter: the written file + its stat), and rewrites only `concept-index.md`, that document's `toc/`, and `index.md`.
+- [x] **AE2.** A file changed behind the service's back (written straight into the memfs) — changed, added, deleted — is reflected by the next `search`/`readToc`/`listConcepts`, and that document's stored `toc/` is rewritten.
+- [x] **AE3.** A failed `list` during refresh **rejects** the read and leaves the model as it was (never an empty bundle).
+- [x] **AE4.** Two concurrent writers (two simulated runs: upserts + `recordSource` + `addLink`) lose no chapter, ledger entry or link; a search issued mid-write never sees a half-patched model; concurrent reads share one refresh (counter).
+- [x] **AE5.** A chapter whose `stale_after` passes shows `stale` on the next read with no write in between.
+- [x] **AE6.** Backlinks (`okf_backlinks`, `deleteConcept({rewriteBacklinks})`) come from the model — no second full read (counter).
+
+**Implement** — `services/lib/okf-core.js`:
+- [x] **AE7.** The model (§12.2) and `queue(bundle)`: serial, re-entrant by construction (public functions enqueue; internals don't), refresh single-flight on it.
+- [x] **AE8.** Parallel `classifyBundle`/list (16); remove every `vfs.list(...).catch(() => [])` on the read path; errors propagate.
+- [x] **AE9.** Patch paths for `upsertConcept`, `deleteConcept`, `addLink`, `addRawSource`; rebuild paths for `mergeConcepts`, import, `clearDocument`, `initBundle`, lint; `exportBundle` on the queue (rebuild only on drift). `recordSource`, `links.json`, `appendLog` under the queue.
+- [x] **AE10.** Delete `derivedCache`, `graphCache`, `markGraphDirty`, `ensureGraph`; `isStale` evaluated at read.
+- [x] **AE11.** (found while doing AE8) an unparseable `links.json` or `raw/sources.json` was read as empty and overwritten by the next write — both now throw and are left untouched (`tests/derived-model.test.mjs` AE7).
+
+### Phase AF — first-added date and the bundle TOC (ADR-017)
+
+**Tests first** — `tests/bundle-toc.test.mjs`:
+- [x] **AF1.** `recordSource` keeps `firstIngestedAt` across a re-acquire; a legacy entry without it falls back to its `ingestedAt`.
+- [x] **AF2.** A 500-document bundle pages completely through `okf_read_toc({bundle})` (default 50, max 200, `clamped`/`maxLimit` when over), newest first, ties by id, each entry `{id, title, chapters, summary, addedAt, attention}`, **no vocabulary**; the order is **unchanged after a real URL re-ingest** of the oldest document driven through `okf_add_raw_source` (not a hand-written ledger).
+- [x] **AF3.** `index.md` lists documents in the same order as AF2 and replaces "Concepts covered" with the term count + a link to `concept-index.md`.
+
+**Implement**: `recordSource` `firstIngestedAt`; `addedAt` resolution (ledger → `created_at` → `updated_at`); `bundleToc()`; `readToc(bundle)` without `docId`; `bundleIndexMarkdown()` from `bundleToc()`.
+
+### Phase AG — search (ADR-015, ADR-018)
+
+**Tests first** — `tests/full-text-search.test.mjs`:
+- [x] **AG1. (SC-020)** A name present only in one chapter body → that chapter, `matchKind: "text"`, the name in `excerpt`; "Cordoba" finds "Córdoba" and the reverse; `api` does not match "rapid".
+- [x] **AG2.** A document stub's author is found by name (`chId: ""`, as today).
+- [x] **AG3.** `"what is our rollback policy"` → canary first, `matchedConcept: "rollback"`; `"migrations reviewed"` → pre-deploy, `matchedConcept: "deployment"` (anchored); a query of only stop words still searches.
+- [x] **AG4.** Ranking: every-word matches above partial ones; term > title > summary > text within equal coverage; ties by `addedAt` then id; identical input → byte-identical output (FR-002).
+- [x] **AG5.** Excerpt ≤ 3 sentences and ≤ 400 characters **including** ellipses; taken from the original text (a ligature/Hangul fixture proves folding never shifts it).
+- [x] **AG6.** `limit` default 10, max 50 (`clamped`); `total`, `searched`, `matchedWords`; `groupBy: "document"` → ≤ 10 groups ordered by best hit, ≤ 5 hits each, `total` per group.
+- [x] **AG7. (SC-023)** The bundle's file listing is identical before and after a search.
+
+**Implement**: `fold`, stop words, word-start regexes, `searchFullText` (§12.3) over `model.chapters ∪ model.docs`, BM25-style score, per-sentence excerpt, grouping; `search()` returns the ADR-018 object; `searchIndex` removed (term matching is part of the scan). *AG7 passed before the implementation — search wrote nothing then either — and is kept as the guard that the new search still writes nothing.*
+
+### Phase AH — vocabulary, bundle detail, summary cap (ADR-019, ADR-021, ADR-020)
+
+**Tests first** — `tests/paged-vocabulary.test.mjs`:
+- [x] **AH1.** `listConcepts({query, kind, status, offset, limit})` — folded substring on the name, default 100 / max 500, `covers` ≤ 5 + `coversTotal`, `total`; `type` answers with the pointer, not a list.
+- [x] **AH2.** `bundleDetail` returns `{health, indexGeneratedAt}` only.
+- [x] **AH3.** Upserting a **document** stub with a summary of 3 sentences, or 321 characters, is rejected with the limit in the message; a chapter summary is not checked; a stored long summary is never rewritten.
+
+**Implement** in `okf-core.js`.
+
+### Phase AI — tool and route surfaces
+
+**Tests first** — extend `tests/ingest-agent-contract.test.mjs` / add `tests/tool-surface.test.mjs`:
+- [x] **AI1.** Still exactly 21 declarations; `okf_search` description no longer says "NOT full text" and names `groupBy`; `okf_read_toc` declares `docId` optional; `okf_list_concepts` declares `query`/`offset`/`limit`; the no-match note (~378) names what was searched.
+- [x] **AI2.** `GET /bundles/<b>/toc`, `GET /bundles/<b>/concepts`, search with `groupBy`, slim `GET /bundles/<b>` — each returns exactly the tool's object (one core function, two surfaces).
+
+**Implement**: `services/lib/tools.js` DECLARATIONS + handlers; `services/lib/http-bridge.js`; `services/service.json` group description.
+
+### Phase AJ — the graph: identity and layout (ADR-022)
+
+**Tests first** — `tests/graph-identity.test.mjs`, `tests/graph-layout.test.mjs`:
+- [x] **AJ1. (SC-024)** `core.graph()` on a bundle with document "deployment" and term "deployment" → two nodes (`doc:deployment`, `concept:deployment`), each with its own edges; edges reference keys.
+- [x] **AJ2. (SC-024)** `graphlayout.mjs`: after settle, no two circles overlap (distance ≥ r₁+r₂) on a generated 400-node graph; a chapter ends nearer its own document than the median node; `fitBox(ids)` covers exactly those nodes plus label margin.
+- [x] **AJ3.** `matchSet(hits, nodes, query)` = hit chapters + their documents + matched terms + documents whose title contains the query.
+
+**Implement**: namespaced ids in `core.graph()`; `app/src/lib/graphlayout.mjs` + `.d.mts` (seeding, per-kind springs, cooling, collision, `fitBox`, `matchSet`, a `step()` the app drives in animation-frame chunks); `forceSim.ts` becomes a thin adapter over it or is removed.
+
+### Phase AK — the app (per `mockup.html`)
+
+- [x] **AK1.** `lib/serviceClient.ts`, `types.ts` — `fetchBundleToc`, `fetchConcepts`, search `groupBy` + new row fields, slim detail.
+- [x] **AK2.** `overview/Overview.tsx`, `BundleDetail.tsx` — counts from the slim detail; tabs load their own pages.
+- [x] **AK3.** `overview/DocumentsView.tsx` — the paged bundle TOC (summary, chapter count, "added", attention, Previous/Next).
+- [x] **AK4.** `overview/ConceptIndexView.tsx` — server-side filter + paging; the merge picker is a type-ahead over `/concepts?query=`.
+- [x] **AK5.** `query/SearchHits.tsx` (new) — ranked hits, match-kind badge, highlighted excerpt, Chapters / By document, "Nothing matched" naming what was searched.
+- [x] **AK6.** `query/QueryTab.tsx`, `TableView.tsx` — a query shows `SearchHits` in Table; no bundle-detail fetch; `matchedConcept` handled when null.
+- [x] **AK7.** `query/ReaderPane.tsx` — the term view via `/concepts?query=<term>&limit=1` and the search route.
+- [x] **AK8.** `query/GraphView.tsx` + `index.css` — keyed ids; fit on load; + / − / fit controls and hint; edge labels on hover only; labels below nodes at constant size (documents always; others zoomed ≥ 1.25, hovered + neighbours, selected, matched); search fades the rest (nodes ~9 %, edges ~3 %) and fits the matches; clearing re-fits all.
+- [x] **AK9.** Rebuild `app/dist/` (esbuild, BOS `buildAppDir` options); `tsc` over `app/src` clean.
+- [x] **AK10.** (found in AK verification) label collision culling — FR-073(d) revised; verified in Chrome against the real bridge on a 300-document bundle.
+
+### Phase AL — agent-facing text `[P]` once AI's shapes are fixed
+
+- [x] **AL1.** `skills/okf-lookup/SKILL.md` (new) — FR-071's process: choose the bundle (`okf_list_bundles`); **browse** (`okf_read_toc({bundle})`, paged) or **search** (`okf_search`, `groupBy` for "which documents"); the document's TOC; read only the chapters that answer; cite chapter id + `source`; flag stale/deprecated; keep KB content apart from own knowledge; an empty search is not absence until a rephrase and the TOC agree; a lookup writes nothing, starts no ingest, never reads `raw/`.
+- [x] **AL2.** `skills/okf-bundle-schema/SKILL.md` — §Query → one-line pointer to `okf-lookup`; "extend before you create" → `okf_list_concepts({query})`.
+- [x] **AL3.** `agents/okf-ingest/AGENT.md` — vocabulary checks by query (`okf_list_concepts({query})`, `okf_search`), never the whole list; the document summary cap (≤ 2 sentences, ≤ 300 characters).
+- [x] **AL4.** `tests/ingest-agent-contract.test.mjs` — the prompt never tells the agent to list the whole vocabulary; it states the summary cap; `okf-lookup` exists and names only tools on the surface.
+
+### Phase AM — docs
+
+- [x] **AM1.** `docs/dev/OKF Knowledge Base/` — `tools.md` (search, two-level TOC, paged vocabulary, slim detail), the model/queue/refresh and its signature limits, the graph.
+- [x] **AM2.** `docs/usage/OKF Knowledge Base/` — browsing vs searching, what the badges mean, the graph controls; troubleshooting: an mtime-preserving copy needs `okf_lint` to be seen.
+
+### Phase AN — e2e (`e2e/okf-knowledge-base.spec.ts`)
+
+- [x] **AN1.** SC-020–SC-024 end to end against the running service (bundle fixtures written via the API at run time).
+- [x] **AN2.** Move the assertions ADR-018/021 deliberately change: default row counts; `detail.documents`/`detail.conceptIndex` (~532, 542, 1387+, 1767) → the paged routes; the merge flow (~575-583) through the type-ahead; graph ids.
+- [ ] **AN3.** US1 AS1, e2e 422-426 and 1376-1377 pass **unchanged**; full suite green. *Locally (2026-10-14), against the real http-bridge + memfs behind a stand-in for BOS's config and `/api/fs` routes: every service-level test passes, including all changed and new ones and the kept contracts. Still to run on a BOS preview (AO2): the 18 tests that open the app through the desktop dock, the run-lifecycle tests that need BOS's delegate/restart routes, and FR-020's asset bytes (`/api/fs/raw`).*
+
+### Phase AO — install, measure, verify
+
+- [ ] **AO1.** AC4 done (both `bos-core` fixes merged and deployed).
+- [ ] **AO2.** All `tests/*.test.mjs` green; e2e green on a preview.
+- [ ] **AO3.** On the deployment: time one `/api/fs` `list` and `read`, a refresh of the largest real bundle, and p95 of 20 searches; record them in `design.md` §12.6 against ADR-015/016's numbers. Above the thresholds → stop and revise the design (§10 risk 12), don't tune around it.
+- [ ] **AO4.** Merge `okf-retrieval-at-scale` into the marketplace's `main`; restart the OKF service; `GET /tools` = 21; open the app: Documents paged, Concept Index filtered, a search shows hits with excerpts, the graph spreads, fits and focuses.

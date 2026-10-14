@@ -7,14 +7,18 @@
 
 import React from "react";
 import { Icon } from "../lib/icons";
-import { fetchToc } from "../lib/serviceClient";
-import type { DocToc, DocumentRow } from "../lib/types";
+import { fetchBundleToc, fetchToc } from "../lib/serviceClient";
+import type { BundleToc, BundleTocEntry, DocToc } from "../lib/types";
 import ChapterView from "./ChapterView";
 import { StatusPill } from "./Overview";
 
+/** Documents per page — the same default an agent's okf_read_toc({bundle}) uses. */
+const PAGE = 50;
+
 interface Props {
   bundle: string;
-  documents: DocumentRow[];
+  /** Changes whenever the bundle may have changed (a refresh, a re-ingest). */
+  refreshKey: unknown;
   docId: string | null;
   chId: string | null;
   onOpenDoc: (docId: string) => void;
@@ -22,11 +26,35 @@ interface Props {
   onBackToDocs: () => void;
   onBackToToc: () => void;
   onJumpToTerm: (term: string) => void;
-  onReingestDoc: (doc: DocumentRow) => void;
+  onReingestDoc: (doc: BundleTocEntry) => void;
 }
 
+/**
+ * The Documents tab IS the bundle's table of contents (FR-036/FR-069): one
+ * page at a time, newest first by when each document was first added — the
+ * same entries, order and page size an agent gets from okf_read_toc({bundle}).
+ * It never loads the whole bundle.
+ */
 export default function DocumentsView(props: Props) {
-  const { bundle, documents, docId, chId, onOpenDoc, onOpenChapter, onBackToDocs, onBackToToc, onJumpToTerm, onReingestDoc } = props;
+  const { bundle, refreshKey, docId, chId, onOpenDoc, onOpenChapter, onBackToDocs, onBackToToc, onJumpToTerm, onReingestDoc } = props;
+  const [offset, setOffset] = React.useState(0);
+  const [page, setPage] = React.useState<BundleToc | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    setOffset(0);
+  }, [bundle]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    fetchBundleToc(bundle, offset, PAGE)
+      .then((p) => !cancelled && setPage(p))
+      .catch((e) => !cancelled && setError((e as Error).message));
+    return () => {
+      cancelled = true;
+    };
+  }, [bundle, offset, refreshKey]);
 
   if (docId && chId) {
     return (
@@ -35,59 +63,89 @@ export default function DocumentsView(props: Props) {
         docId={docId}
         chId={chId}
         onBack={onBackToToc}
-        backLabel={documents.find((d) => d.id === docId)?.title || docId}
+        backLabel={page?.documents.find((d) => d.id === docId)?.title || docId}
       />
     );
   }
   if (docId) return <TocView bundle={bundle} docId={docId} onBack={onBackToDocs} onOpenChapter={onOpenChapter} onJumpToTerm={onJumpToTerm} />;
 
+  if (error) return <div className="app-error">Could not read this bundle's table of contents: {error}</div>;
+  if (!page) return <div className="app-loading">Loading the table of contents…</div>;
+
+  const from = page.total ? page.offset + 1 : 0;
+  const to = Math.min(page.offset + page.documents.length, page.total);
   return (
     <div data-testid="documents-view">
       <div className="note">
         <Icon name="info" size={14} />
         <span>
-          <b>Documents</b> — the ingested sources in this bundle. Each has a stored <b>table of contents</b> (the
-          level-2 drill-down an agent uses to fetch specific chapters). Click a document to open its TOC.
+          <b>Documents</b> — the bundle's <b>table of contents</b>, newest first: each document with its short summary
+          and chapter count. This is exactly what an agent gets from <code>okf_read_toc({"{bundle}"})</code>, {PAGE} per
+          page. Open a document for its own TOC — its chapters.
         </span>
       </div>
-      {!documents.length ? (
+      {!page.total ? (
         <div className="empty" style={{ padding: 40 }} data-testid="documents-empty">
           <h3 style={{ fontSize: 15 }}>No documents yet</h3>
           <p>Ingest a source — the okf-ingest agent decomposes it into chapters and writes this document's TOC.</p>
         </div>
       ) : (
-        <div className="doc-list">
-          {documents.map((d) => (
-            <div key={d.id} className="doc-row" onClick={() => onOpenDoc(d.id)} data-testid={`doc-row-${d.id}`}>
-              <span className="d-ic">
-                <Icon name="doc" size={18} />
-              </span>
-              <div>
-                <div className="d-title">{d.title}</div>
-                <div className="d-meta">
-                  {d.chapters} chapters · {d.conceptRefs} concept refs
-                  {d.needsAttention ? <span style={{ color: "var(--amber)" }}> · needs attention</span> : null}
+        <>
+          <div className="doc-list">
+            {page.documents.map((d) => (
+              <div key={d.id} className="doc-row" onClick={() => onOpenDoc(d.id)} data-testid={`doc-row-${d.id}`}>
+                <span className="d-ic">
+                  <Icon name="doc" size={18} />
+                </span>
+                <div style={{ minWidth: 0 }}>
+                  <div className="d-title">{d.title}</div>
+                  {d.summary ? <div className="d-sum">{d.summary}</div> : null}
+                  <div className="d-meta">
+                    {d.chapters} chapter{d.chapters === 1 ? "" : "s"}
+                    {d.attention ? <span style={{ color: "var(--amber)" }}> · needs attention</span> : null}
+                  </div>
                 </div>
+                <span className="d-upd" title="first added to this bundle">
+                  {d.addedAt ? `added ${d.addedAt.slice(0, 10)}` : "—"}
+                </span>
+                <button
+                  className="ibtn"
+                  title="Re-ingest this document from its original source"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onReingestDoc(d);
+                  }}
+                  data-testid={`doc-reingest-${d.id}`}
+                >
+                  <Icon name="refresh" size={15} />
+                </button>
+                <span className="d-go">
+                  View TOC <Icon name="back" size={12} />
+                </span>
               </div>
-              <span className="d-upd">{d.updated ? d.updated.slice(0, 10) : "—"}</span>
-              <button
-                className="ibtn"
-                title="Re-ingest this document from its original source"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onReingestDoc(d);
-                }}
-                data-testid={`doc-reingest-${d.id}`}
-              >
-                <Icon name="refresh" size={15} />
-              </button>
-              <span className="d-go">
-                View TOC <Icon name="back" size={12} />
-              </span>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+          <Pager from={from} to={to} total={page.total} noun="documents" onPrev={offset > 0 ? () => setOffset(Math.max(0, offset - PAGE)) : null} onNext={to < page.total ? () => setOffset(offset + PAGE) : null} />
+        </>
       )}
+    </div>
+  );
+}
+
+/** "1–50 of 312 documents   [Previous] [Next]" — shared by the paged lists. */
+export function Pager({ from, to, total, noun, onPrev, onNext }: { from: number; to: number; total: number; noun: string; onPrev: (() => void) | null; onNext: (() => void) | null }) {
+  return (
+    <div className="pager" data-testid="pager">
+      <span>
+        {from}–{to} of {total.toLocaleString()} {noun}
+      </span>
+      <span className="spacer" />
+      <button className="btn" disabled={!onPrev} onClick={onPrev || undefined} data-testid="pager-prev">
+        Previous
+      </button>
+      <button className="btn" disabled={!onNext} onClick={onNext || undefined} data-testid="pager-next">
+        Next
+      </button>
     </div>
   );
 }

@@ -195,3 +195,44 @@ src/app/api/subagents/[runId]/abort/route.ts
 3. **`lastEventAt` is per-job-record + persisted** (`.jobs/<id>.md`) — one additive line in ADR-013's existing trajectory loop; the reaper reads it.
 4. **`maxTotalTimeoutMs` is new config** (default 6 h) alongside `jobFinalizeTimeoutMs` (default 30 min, re-described as inactivity) in `service.json` configSchema + `config/`.
 5. **The mockup is unchanged** — no `ui-designer` task; no app code change.
+
+## Scope-add 5 — retrieval at scale + a legible graph (US14, FR-001/002/004/006/036/042/043 amended, FR-068–FR-073, SC-020–SC-024)
+
+**Design**: `design.md` **ADR-015 – ADR-022** and **§12** — authoritative; architect-reviewed, one revision round applied (all five must-fix findings and the should-improves addressed). **UI contract**: `mockup.html` (Large bundle mode, Documents = bundle TOC, paged Concept Index, Query search hits, the graph) — binding for *what the screens show*; where it computes (search, layout constants) `design.md` §12.3 and ADR-022 are binding (§12.8). **No new tools** (21 stays 21, SC-007). **No new dependency.** Item-only; depends on two `bos-core` fixes shipped separately (below).
+
+### Technical approach (in build order — each step is test-first)
+
+1. **The model before anything uses it (ADR-016).** Replace `derivedCache` + `graphCache` with one per-bundle model and one serial queue: parallel first read, per-read single-flight refresh by `(size, modified)` signatures, write paths that patch instead of rebuilding, staleness computed at read time, listing/read errors propagated (the `listConceptIds` swallow goes). Everything below reads from it. This is the step that changes write cost from O(bundle) round trips to O(1); it ships even if nothing else did.
+2. **Ledger + bundle TOC (ADR-017).** `recordSource` gains a never-overwritten `firstIngestedAt` and runs on the queue; `bundleToc()` feeds both `okf_read_toc({bundle})` and `index.md` (which drops its unbounded term list).
+3. **Search (ADR-015, ADR-018).** `searchFullText` over chapters and document stubs: folding, stop words, word-start matching, any-word with coverage-first ranking, tiers, BM25-style score, excerpts per sentence of the original text, `groupBy`, clamping. Today's row fields keep their meaning. Term matching is part of the one scan; the old term-only `searchIndex` was removed rather than kept beside it (one search, not two).
+4. **Paged vocabulary, slim detail, summary cap (ADR-019, ADR-021, ADR-020).**
+5. **Surfaces.** `tools.js` declarations and handlers (the descriptions live there, not in `service.json`), `http-bridge.js` routes, the `service.json` group text.
+6. **Graph (ADR-022).** `core.graph()` ids become the namespaced keys; the app's layout moves to a pure `app/src/lib/graphlayout.mjs` (+ `.d.mts`) — the same pattern as `mdparse.mjs` — so `node --test` can prove "no overlap" and "two nodes for one name" without a browser.
+7. **App.** Documents, Concept Index (+ merge type-ahead), `SearchHits`, Query/Table/Reader wiring, CSS; rebuild `dist/`.
+8. **Agent-facing text.** `okf-lookup` skill (new), `okf-bundle-schema` pointer, `okf-ingest` AGENT.md (vocabulary by query, summary cap).
+9. **Docs, e2e, measurement.**
+
+### Testing strategy
+
+- **Offline unit tests first** (`tests/*.test.mjs`, `node --test`, the memfs server): every behaviour in §12.6. `tests/memfs-server.mjs` gains `size`/`modified` on `list` and a request counter, so "a write issues O(1) reads" is asserted, not estimated. A generator (`tests/fixtures/gen-bundle.mjs`) builds the 500-document and 3,000-chapter bundles in the memfs.
+- **Kept contracts are re-asserted, not rewritten**: e2e US1 AS1 (`"what is our rollback policy"`), the description anchoring (e2e 422-426) and the author-by-name path (e2e 1376-1377) must pass unchanged. Only the assertions ADR-018/021 deliberately change move (default row counts; `detail.documents`/`detail.conceptIndex` → paged routes).
+- **Graph**: `tests/graph-layout.test.mjs` on `graphlayout.mjs`.
+- **e2e** against a running BOS (preview): SC-020–SC-024 end to end, plus the full existing suite.
+- **On the deployment, once**: the `/api/fs` round trip and a search's p95 on the real bundle, against ADR-015/016's numbers (§10 risk 12).
+
+### Prerequisites outside the item (`bos-core`)
+
+| | Branch | State |
+|---|---|---|
+| `vfs.list` leaves out an entry renamed away mid-listing (ENOENT only) | `bos/vfs-list-vanished-entry` (`99832327e`) | done, unmerged |
+| Seeded assistant holds the 21-tool OKF surface; deferred ids current | `bos/okf-agent-tools` (`1b0e72d7e`) | done, unmerged |
+| Production's hand-edited `data/agents/assistant/AGENT.md` | by hand | pending (user) |
+
+The item's freshness check (step 1) is only reliable on a BOS that has the first fix; the item must not ship to a deployment without it.
+
+### Open items carried into `tasks.md`
+
+1. **Stop-word list** is fixed and English (ADR-015); a bundle in another language matches without it (the fallback "never drop everything" covers a query made only of stop words).
+2. **Settle off the paint path** (ADR-022): the app runs the 420 ticks in animation-frame chunks; `graphlayout.mjs` exposes a step function so the test drives it synchronously.
+3. **Eviction of idle bundle models** (§10 risk 13) is *not* built — measured first.
+4. **`log.md` growth** (ADR-016) is *not* changed — measured first.

@@ -7,16 +7,17 @@ Declared under the **Knowledge Base** tool group via the 039 Service Tool Exposu
 ## Retrieval
 
 ### `okf_search` — *readOnly*
-`{bundle, query, limit?}` → `{bundle, query, rows[], count, note}`
+`{bundle, query, limit?, groupBy?}` → `{bundle, query, rows[], count, total, searched, clamped?, maxLimit?, note}` — or, with `groupBy: "document"`, `groups: [{docId, docTitle, total, hits[]}]` instead of `rows`.
 
-Each row: `{docId, docTitle, chId, chTitle, description, matchedConcept, status, stale}`.
+Each row: `{docId, docTitle, chId, chTitle, description, matchedConcept, kind, status, stale, matchKind, matchedWords, excerpt?}` — a document-level hit has `chId: ""`.
 
-Concept-anchored, deterministic search over the bundle's concept index. Matches query tokens against concept-term **names** and the index's one-line **descriptions** — not full text. Rows are TOC pointers, not content; follow with `okf_read_concept` or `okf_read_toc`. Identical input returns byte-identical rows. Empty is a valid result: no row is ever invented.
+Search over concept and person **terms**, chapter **titles**, **summaries** and the **full text** of every chapter and document stub (inline-asset interpretations included) — a linear scan over the bundle's in-memory model (design.md ADR-015). Matching folds case and accents ("Cordoba" finds "Córdoba") and matches at the start of a word (`api` does not match "rapid"). **Any** query word may match; rows matching more words rank first, then by tier (term > title > summary > full text), a BM25-style score, the document's first-added date and id — identical input, byte-identical output. `matchKind` says what matched; `matchedConcept` is the matched term, or — on a non-term match — the chapter's own term, as a description match always was. A full-text match carries an `excerpt`: the sentence with the match plus at most one either side, ≤ 400 characters, cut from the original text. `limit` defaults to 10 (max 50; a larger request is clamped and says so); with `groupBy`, it counts documents, each with at most 5 hits. Hits are pointers, not content — follow with `okf_read_concept` or `okf_read_toc`. An empty result names what was searched; no row is ever invented.
 
 ### `okf_read_toc` — *readOnly*
-`{bundle, docId}` → `{docId, docTitle, chapters: [{id, title, summary, concepts, status}], indexGeneratedAt, artifact}`
+Two levels:
 
-A document's stored table of contents — the level-2 drill-down. `artifact` names the `.md` file it came from.
+- `{bundle, offset?, limit?}` → `{bundle, total, offset, limit, clamped?, maxLimit?, documents: [{id, title, chapters, summary, addedAt, attention}]}` — the **bundle's table of contents**: every document, newest first by when it was first added (the ledger's `firstIngestedAt`, so a re-ingest does not move it), 50 per page (max 200). No vocabulary. `index.md` lists the documents in the same order from the same function.
+- `{bundle, docId}` → `{docId, docTitle, chapters: [{id, title, summary, concepts, status}], indexGeneratedAt, artifact}` — a document's stored table of contents. `artifact` names the `.md` file it came from.
 
 ### `okf_read_concept` — *readOnly*
 `{bundle, id}` → `{id, type, frontmatter, body, links, assets, source}`
@@ -24,9 +25,9 @@ A document's stored table of contents — the level-2 drill-down. `artifact` nam
 One concept **in full** — a document stub (`<docId>`) or a chapter (`<docId>/<chId>`). `body` is the complete markdown, never truncated. `assets` lists each stored inline-asset block with its path, kind, and the **interpretation written at ingest**, so the caller gets a diagram's knowledge without re-running vision. `source` is the provenance target: the original URL if there is one, else the stored `raw/` path.
 
 ### `okf_list_concepts` — *readOnly*
-`{bundle, type?, status?}` → `{terms, documents, chapters, indexGeneratedAt, needsRegeneration}`
+`{bundle, query?, kind?, status?, offset?, limit?}` → `{terms: [{term, kind, count, covers: [≤ 5], coversTotal}], total, offset, limit, clamped?, indexGeneratedAt, needsRegeneration}`
 
-The concept **vocabulary** — each term with its chapter count and the (document, chapter) pairs it covers — plus the document and chapter listings. Use it to route semantically when `okf_search` comes back empty, and before coining a new term so the vocabulary grows by extension rather than duplication.
+The concept **vocabulary**, filtered by `query` (a case- and accent-insensitive substring of the term name) and paged — 100 per page, max 500 — because a large bundle has thousands of terms. Each term carries its kind, its count and up to 5 of the chapters it covers. Its job is reuse: query for a term before coining a new one. Documents and chapters are `okf_read_toc`'s — `type` answers with a pointer there rather than a list.
 
 ## Concepts
 
@@ -158,8 +159,8 @@ The pre-redesign surface declared 31. **3 added**, **16 removed by name**, net *
 | Removed | Where it went |
 |---|---|
 | `okf_bundle_status` | folded into `okf_list_bundles` health |
-| `okf_find_concepts` | → `okf_search` (concept-anchored, explainable) |
-| `okf_read_index` | the index is a `.md` artifact; the app renders it, `okf_list_concepts` returns it |
+| `okf_find_concepts` | → `okf_search` (now terms, titles, summaries and full text) |
+| `okf_read_index` | the index is a `.md` artifact; the app renders it, `okf_list_concepts` pages through it, `okf_read_toc({bundle})` lists the documents |
 | `okf_read_bundle_schema` | → the `okf-bundle-schema` skill; a per-bundle `schema.md` is just a file |
 | `okf_append_log` | the log is internal operational history |
 | `okf_get_as_of` | point-in-time reads dropped; `raw/` versioning is the durable record |

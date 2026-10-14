@@ -5,7 +5,7 @@
 
 import React from "react";
 import { Icon } from "../lib/icons";
-import type { BundleDetail, DocumentRow } from "../lib/types";
+import type { BundleDetail, BundleTocEntry } from "../lib/types";
 import ConceptIndexView from "./ConceptIndexView";
 import DocumentsView from "./DocumentsView";
 import HealthView from "./HealthView";
@@ -22,7 +22,7 @@ interface Props {
   onDelete: () => void;
   onReload: () => void;
   onReingestAll: () => void;
-  onReingestDoc: (doc: DocumentRow) => void;
+  onReingestDoc: (doc: BundleTocEntry) => void;
 }
 
 export default function BundleDetailView({ bundleName, detail, onBack, onIngest, onImport, onDelete, onReload, onReingestAll, onReingestDoc }: Props) {
@@ -130,7 +130,7 @@ export default function BundleDetailView({ bundleName, detail, onBack, onIngest,
       {tab === "conceptIndex" ? (
         <ConceptIndexView
           bundle={bundleName}
-          terms={detail.conceptIndex}
+          refreshKey={detail}
           indexGeneratedAt={detail.indexGeneratedAt}
           initialQuery={jumpTerm}
           onChanged={onReload}
@@ -145,7 +145,7 @@ export default function BundleDetailView({ bundleName, detail, onBack, onIngest,
       {tab === "documents" ? (
         <DocumentsView
           bundle={bundleName}
-          documents={detail.documents}
+          refreshKey={detail}
           onReingestDoc={onReingestDoc}
           docId={docId}
           chId={chId}

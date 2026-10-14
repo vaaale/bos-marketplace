@@ -4,36 +4,33 @@
 //   ────────────────────────────────────────────────────────────────
 //   [ graph or table ]   ║ resizer ║   [ reader pane ]
 //
-// ── How the shared search works (the part worth being precise about) ─────
+// ── How the shared search works ─────────────────────────────────────────
 //
-// FR-043 requires the field to run "the same concept-anchored search the
-// agent uses" AND to reflect in BOTH views. Those two pull in different
-// directions: okf_search returns TOC ROWS (chapters), but the Graph and the
-// Table are over NODES (documents, chapters, concept terms). So:
+// FR-043 (as amended 2026-10-14): the field runs the same okf_search the agent
+// runs — terms, titles, summaries and full text — server-side, debounced, and
+// reflects it in BOTH views:
 //
-//   1. The query goes to the service's /search route — the identical
-//      core.search() the okf_search tool runs. No client-side matching.
-//   2. Its rows are expanded into a NODE MATCH SET: each matched chapter,
-//      its parent document, and the concept term that matched it. The
-//      "matched concept" strip shows those terms, so the user can see the
-//      routing that produced the highlight.
-//   3. Node labels containing the query are added too, so typing a document
-//      title finds that document even when no concept term matches — the
-//      mockup's behaviour, and the thing a user expects from a search box.
+//   • Table: the ranked hits themselves (SearchHits), with what matched and,
+//     for a full-text match, the excerpt; "By document" groups them.
+//   • Graph: the hits' chapters, their documents and the matched terms light
+//     up (lib/graphlayout.mjs matchSet), the rest fades and the view zooms to
+//     them (FR-073 e).
 //
-// One match set, two renderings: the Table filters to it, the Graph
-// highlights it and dims everything else to 30%. That is what makes the
-// views genuinely mirror each other.
+// A failed search is shown as a failure — never read as "no hits".
 
 import React from "react";
 import { Icon } from "../lib/icons";
-import { fetchBundleDetail, fetchGraph, search as runSearch } from "../lib/serviceClient";
-import type { BundleDetail, BundleGraph, BundleHealth, GraphNode, SearchRow, TermKind } from "../lib/types";
+import { matchSet } from "../lib/graphlayout.mjs";
+import { fetchGraph, search as runSearch, searchByDocument } from "../lib/serviceClient";
+import type { BundleGraph, BundleHealth, GraphNode, GroupedSearchResult, SearchResult, SearchRow } from "../lib/types";
 import GraphView from "./GraphView";
 import TableView from "./TableView";
+import SearchHits from "./SearchHits";
 import ReaderPane, { type PaneTarget } from "./ReaderPane";
 
 const SEARCH_DEBOUNCE_MS = 220;
+/** The search's maximum page: the graph lights up every hit it is given. */
+const SEARCH_LIMIT = 50;
 const MIN_PANE_PX = 300;
 
 interface Props {
@@ -45,9 +42,11 @@ interface Props {
 export default function QueryTab({ bundles, bundle, onBundle }: Props) {
   const [view, setView] = React.useState<"graph" | "table">("graph");
   const [query, setQuery] = React.useState("");
-  const [rows, setRows] = React.useState<SearchRow[] | null>(null);
+  const [result, setResult] = React.useState<SearchResult | null>(null);
+  const [grouped, setGrouped] = React.useState<GroupedSearchResult | null>(null);
+  const [byDocument, setByDocument] = React.useState(false);
+  const [searchError, setSearchError] = React.useState<string | null>(null);
   const [graph, setGraph] = React.useState<BundleGraph | null>(null);
-  const [detail, setDetail] = React.useState<BundleDetail | null>(null);
   const [target, setTarget] = React.useState<PaneTarget | null>(null);
   const [resizeToken, setResizeToken] = React.useState(0);
   const [error, setError] = React.useState<string | null>(null);
@@ -58,65 +57,49 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
     if (!bundle) return;
     let cancelled = false;
     setGraph(null);
-    setDetail(null);
     setTarget(null);
     setError(null);
-    Promise.all([fetchGraph(bundle), fetchBundleDetail(bundle)])
-      .then(([g, d]) => {
-        if (cancelled) return;
-        setGraph(g);
-        setDetail(d);
-      })
+    fetchGraph(bundle)
+      .then((g) => !cancelled && setGraph(g))
       .catch((e) => !cancelled && setError((e as Error).message));
     return () => {
       cancelled = true;
     };
   }, [bundle]);
 
-  // ── the shared search: debounced, server-side, concept-anchored ────────
+  // ── the shared search: debounced, server-side — the same okf_search the
+  // agent runs (FR-043). A failure is shown, never read as "no hits".
   React.useEffect(() => {
     if (!bundle) return;
     const q = query.trim();
+    setSearchError(null);
     if (!q) {
-      setRows(null);
+      setResult(null);
+      setGrouped(null);
       return;
     }
     let cancelled = false;
     const t = setTimeout(() => {
-      runSearch(bundle, q, 200)
-        .then((res) => !cancelled && setRows(res.rows))
-        .catch(() => !cancelled && setRows([]));
+      runSearch(bundle, q, SEARCH_LIMIT)
+        .then((res) => !cancelled && setResult(res))
+        .catch((e) => !cancelled && setSearchError((e as Error).message));
+      if (byDocument) {
+        searchByDocument(bundle, q)
+          .then((res) => !cancelled && setGrouped(res))
+          .catch((e) => !cancelled && setSearchError((e as Error).message));
+      }
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [bundle, query]);
+  }, [bundle, query, byDocument]);
 
+  // the nodes the hits light up: chapters, their documents, matched terms
   const matches = React.useMemo<Set<string> | null>(() => {
-    const q = query.trim().toLowerCase();
-    if (!q || !graph) return null;
-    const set = new Set<string>();
-    for (const r of rows || []) {
-      set.add(`${r.docId}/${r.chId}`);
-      set.add(r.docId);
-      set.add(r.matchedConcept);
-      // a PERSON term's node id is the lowercased name (its label keeps the
-      // original case), so match on both spellings — a person node then
-      // highlights/dims exactly like a concept node (ADR-011)
-      set.add(r.matchedConcept.toLowerCase());
-    }
-    for (const n of graph.nodes) if (n.label.toLowerCase().includes(q)) set.add(n.id);
-    return set;
-  }, [rows, graph, query]);
-
-  // the "matched …" strip: one entry per distinct term that routed a row,
-  // carrying the term's kind so a person reads as a person (ADR-011)
-  const matchedConcepts = React.useMemo(() => {
-    const byName = new Map<string, TermKind>();
-    for (const r of rows || []) if (!byName.has(r.matchedConcept)) byName.set(r.matchedConcept, r.kind || "topic");
-    return Array.from(byName, ([name, kind]) => ({ name, kind }));
-  }, [rows]);
+    if (!query.trim() || !graph || !result) return null;
+    return matchSet(result.rows, graph.nodes, query);
+  }, [result, graph, query]);
 
   // ── the mouse-resizable divider ────────────────────────────────────────
   React.useEffect(() => {
@@ -157,20 +140,35 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
     };
   }, [bundle]);
 
+  // A node's id is its namespaced key; the reader pane wants the content
+  // reference, which every node carries (docId / chId / term).
   const selectNode = React.useCallback((n: GraphNode) => {
     setTarget(
       n.type === "doc"
-        ? { kind: "doc", docId: n.id, chId: null, term: null }
+        ? { kind: "doc", docId: n.docId || null, chId: null, term: null }
         : n.type === "chap"
-          ? { kind: "chap", docId: n.docId || n.id.split("/")[0], chId: n.chId || n.id.split("/").slice(1).join("/"), term: null }
+          ? { kind: "chap", docId: n.docId || null, chId: n.chId || null, term: null }
           // a person node opens the SAME term view as a concept term — the
           // pane labels it "Person" off the term's own kind (ADR-011)
-          : { kind: "concept", docId: null, chId: null, term: n.id },
+          : { kind: "concept", docId: null, chId: null, term: n.term || n.label },
     );
   }, []);
 
-  const selectedId =
-    target?.kind === "doc" ? target.docId : target?.kind === "chap" ? `${target.docId}/${target.chId}` : target?.term ?? null;
+  const openRow = React.useCallback((r: SearchRow) => {
+    setTarget(r.chId ? { kind: "chap", docId: r.docId, chId: r.chId, term: null } : { kind: "doc", docId: r.docId, chId: null, term: null });
+  }, []);
+
+  const selectedId = React.useMemo(() => {
+    if (!target || !graph) return null;
+    const n = graph.nodes.find((g) =>
+      target.kind === "doc"
+        ? g.type === "doc" && g.docId === target.docId
+        : target.kind === "chap"
+          ? g.type === "chap" && g.docId === target.docId && g.chId === target.chId
+          : (g.type === "concept" || g.type === "person") && String(g.term || g.label).toLowerCase() === String(target.term).toLowerCase(),
+    );
+    return n ? n.id : null;
+  }, [target, graph]);
 
   if (!bundles.length) {
     return (
@@ -205,14 +203,14 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
             </label>
             <div className="q-spacer" />
             <span className="count" data-testid="query-match-count">
-              {query.trim() && matches ? `${matches.size} match${matches.size === 1 ? "" : "es"}` : ""}
+              {query.trim() && result ? matchSummary(result) : ""}
             </span>
           </div>
 
           <div className="search q-search">
             <Icon name="search" size={15} />
             <input
-              placeholder="Search knowledge base (concept-anchored — the same okf_search the agent runs)…"
+              placeholder="Search terms, titles, summaries and full text — the same okf_search the agent runs…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               data-testid="query-search"
@@ -240,19 +238,21 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
 
           {query.trim() ? (
             <div className="q-suggest" data-testid="matched-concepts">
-              {rows === null ? (
+              {searchError ? (
+                <span className="app-error" style={{ margin: 0 }}>
+                  The search failed: {searchError}
+                </span>
+              ) : !result ? (
                 <span>Searching…</span>
-              ) : matchedConcepts.length ? (
+              ) : matchedTerms(result.rows).length ? (
                 <>
-                  <span>
-                    okf_search matched {rows.length} chapter{rows.length === 1 ? "" : "s"} via:
-                  </span>
-                  {matchedConcepts.map((t) => (
+                  <span>Matched terms:</span>
+                  {matchedTerms(result.rows).map((t) => (
                     <span
                       className={`chip${t.kind === "person" ? " person" : ""}`}
                       key={`${t.kind}:${t.name}`}
                       title={t.kind === "person" ? "matched person" : "matched concept"}
-                      data-testid={`matched-${t.kind}-${t.name}`}
+                      data-testid={`matched-${t.kind === "person" ? "person" : "topic"}-${t.name}`}
                       onClick={() => setTarget({ kind: "concept", docId: null, chId: null, term: t.name })}
                     >
                       <span className="cdot" />
@@ -261,11 +261,10 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
                     </span>
                   ))}
                 </>
+              ) : result.total ? (
+                <span>No concept term matched — the hits came from titles, summaries or full text.</span>
               ) : (
-                <span>
-                  No concept term matched — the search matches the vocabulary and the stored descriptions, not full
-                  text. Node names matching “{query.trim()}” are still highlighted.
-                </span>
+                <span>Nothing matched in terms, titles, summaries or full text.</span>
               )}
             </div>
           ) : null}
@@ -285,13 +284,19 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
               resizeToken={resizeToken}
             />
           ) : (
-            <TableView
-              nodes={graph.nodes}
-              matches={matches}
-              query={query}
-              selectedId={selectedId}
-              onSelect={selectNode}
-            />
+            query.trim() ? (
+              <SearchHits
+                query={query}
+                result={result}
+                grouped={grouped}
+                byDocument={byDocument}
+                onByDocument={setByDocument}
+                onOpen={openRow}
+                onOpenDoc={(docId) => setTarget({ kind: "doc", docId, chId: null, term: null })}
+              />
+            ) : (
+              <TableView nodes={graph.nodes} selectedId={selectedId} onSelect={selectNode} />
+            )
           )}
         </div>
       </div>
@@ -302,7 +307,10 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
         <ReaderPane
           bundle={bundle || ""}
           target={target}
-          terms={detail?.conceptIndex || []}
+          onSearch={(q) => {
+            setQuery(q);
+            setView("table");
+          }}
           onOpenChapter={(docId, chId) =>
             // a person term can be covered at DOCUMENT level (the author):
             // such a cover row carries an empty chId, and opens the document
@@ -313,4 +321,24 @@ export default function QueryTab({ bundles, bundle, onBundle }: Props) {
       </div>
     </>
   );
+}
+
+/** "7 chapters · 2 concept · 5 full text" — how the hits matched. */
+function matchSummary(r: SearchResult): string {
+  if (!r.total) return "no match";
+  const by = new Map<string, number>();
+  for (const row of r.rows) by.set(row.matchKind, (by.get(row.matchKind) || 0) + 1);
+  const label: Record<string, string> = { term: "concept", person: "person", title: "title", summary: "summary", text: "full text" };
+  return `${r.total} chapter${r.total === 1 ? "" : "s"} · ${Array.from(by, ([k, n]) => `${n} ${label[k]}`).join(" · ")}`;
+}
+
+/** The distinct terms that MATCHED (not those a hit is merely anchored to). */
+function matchedTerms(rows: SearchRow[]): { name: string; kind: "topic" | "person" }[] {
+  const out = new Map<string, "topic" | "person">();
+  for (const r of rows) {
+    if ((r.matchKind === "term" || r.matchKind === "person") && r.matchedConcept && !out.has(r.matchedConcept)) {
+      out.set(r.matchedConcept, r.matchKind === "person" ? "person" : "topic");
+    }
+  }
+  return Array.from(out, ([name, kind]) => ({ name, kind }));
 }

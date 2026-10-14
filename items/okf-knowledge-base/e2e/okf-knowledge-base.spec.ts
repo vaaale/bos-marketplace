@@ -176,7 +176,34 @@ const B = {
   // sliced into chapters by the service, and the verbatim-slice invariant
   // (SC-019) is asserted against their raw/ bytes
   efficiency: "e2e-okf-efficiency",
+  // retrieval at scale (US14): full-text search, the paged bundle TOC, and
+  // freshness after a change made outside the service
+  scale: "e2e-okf-scale",
 };
+
+/**
+ * A bundle's WHOLE vocabulary, paged through okf_list_concepts' route (ADR-019)
+ * — the bundle detail carries counts only since 2026-10-14 (ADR-021). Shaped
+ * like the old detail.conceptIndex rows (covers: at most 5 per term).
+ */
+async function vocabulary(bundle: string): Promise<{ name: string; kind: string; count: number; covers: { docId: string; chId: string }[] }[]> {
+  const out: { name: string; kind: string; count: number; covers: { docId: string; chId: string }[] }[] = [];
+  for (let offset = 0; ; offset += 500) {
+    const page = await (await api.get(`bundles/${bundle}/concepts?offset=${offset}&limit=500`)).json();
+    out.push(...page.terms.map((t: { term: string; kind: string; count: number; covers: { docId: string; chId: string }[] }) => ({ name: t.term, kind: t.kind, count: t.count, covers: t.covers })));
+    if (offset + page.terms.length >= page.total) return out;
+  }
+}
+
+/** A bundle's every document, paged through okf_read_toc({bundle})'s route. */
+async function documentsOf(bundle: string): Promise<{ id: string; title: string; chapters: number }[]> {
+  const out: { id: string; title: string; chapters: number }[] = [];
+  for (let offset = 0; ; offset += 200) {
+    const page = await (await api.get(`bundles/${bundle}/toc?offset=${offset}&limit=200`)).json();
+    out.push(...page.documents);
+    if (offset + page.documents.length >= page.total) return out;
+  }
+}
 
 async function del(bundle: string): Promise<void> {
   await api.delete(`bundles/${bundle}`).catch(() => undefined);
@@ -356,11 +383,12 @@ test("US2 AS2/FR-008: every ingested document has a stored TOC listing chapters,
 
 test("FR-011/SC-006: the index is O(V) — sized by distinct terms, not by documents or chapters", async () => {
   const detail = await (await api.get(`bundles/${B.main}`)).json();
-  const terms = detail.conceptIndex.map((t: { name: string }) => t.name).sort();
+  const vocab = await vocabulary(B.main);
+  const terms = vocab.map((t) => t.name).sort();
   expect(terms).toEqual(["api-design", "deployment", "monitoring", "naming", "rollback", "versioning"]);
   // 6 terms covering 4 chapters across 2 documents, and one term covers two
   // chapters — the table is keyed by term, not by chapter
-  const apiDesign = detail.conceptIndex.find((t: { name: string }) => t.name === "api-design");
+  const apiDesign = vocab.find((t) => t.name === "api-design")!;
   expect(apiDesign.count).toBe(2);
   expect(detail.health.conceptTerms).toBe(6);
 });
@@ -528,8 +556,7 @@ test("US6 AS1/SC-008: merging terms consolidates the index, every affected TOC a
   ];
   expect((await api.post(`bundles/${B.merge}/import`, { data: { files } })).ok()).toBeTruthy();
 
-  const before = await (await api.get(`bundles/${B.merge}`)).json();
-  expect(before.conceptIndex.map((t: { name: string }) => t.name).sort()).toEqual(["rate-limit", "rate-limiting"]);
+  expect((await vocabulary(B.merge)).map((t) => t.name).sort()).toEqual(["rate-limit", "rate-limiting"]);
 
   // the real merge — the same core.mergeConcepts() okf_merge_concepts runs
   const merged = await (await api.post(`bundles/${B.merge}/merge`, { data: { from: "rate-limit", to: "rate-limiting" } })).json();
@@ -538,9 +565,9 @@ test("US6 AS1/SC-008: merging terms consolidates the index, every affected TOC a
   expect(merged.tocsRebuilt).toContain("limits");
 
   // the concept index consolidates to ONE canonical entry covering the union
-  const after = await (await api.get(`bundles/${B.merge}`)).json();
-  expect(after.conceptIndex.map((t: { name: string }) => t.name)).toEqual(["rate-limiting"]);
-  expect(after.conceptIndex[0].count).toBe(2);
+  const after = await vocabulary(B.merge);
+  expect(after.map((t) => t.name)).toEqual(["rate-limiting"]);
+  expect(after[0].count).toBe(2);
 
   // every affected chapter's frontmatter was rewritten
   const quotas = await (await api.get(`bundles/${B.merge}/concept/limits/quotas`)).json();
@@ -553,8 +580,12 @@ test("US6 AS1/SC-008: merging terms consolidates the index, every affected TOC a
 
   // US6 AS2: a query that previously matched EITHER term now routes through
   // the single canonical term to the union of the chapters
+  // (the document itself, titled "Rate Limits", is also a hit since documents
+  // are searched too — FR-068 — but the two chapters matching EVERY word rank
+  // above it)
   const q = await (await api.get(`bundles/${B.merge}/search?query=rate-limiting`)).json();
-  expect(q.rows.map((r: { chId: string }) => r.chId).sort()).toEqual(["bursts", "quotas"]);
+  expect(q.rows.filter((r: { chId: string }) => r.chId).map((r: { chId: string }) => r.chId).sort()).toEqual(["bursts", "quotas"]);
+  expect(q.rows.slice(0, 2).every((r: { chId: string }) => r.chId)).toBe(true);
 });
 
 test("US6: merging is reachable from the app's Concept Index", async ({ page }) => {
@@ -575,7 +606,9 @@ test("US6: merging is reachable from the app's Concept Index", async ({ page }) 
   await expect(app.getByTestId("term-rate-limit")).toBeVisible();
 
   await app.getByTestId("merge-term-rate-limit").click();
-  await app.getByTestId("merge-target-rate-limit").selectOption("rate-limiting");
+  // the canonical term is TYPED (a type-ahead over the vocabulary): a select of
+  // every term would not fit a large bundle, and a page of them hides the right one
+  await app.getByTestId("merge-target-rate-limit").fill("rate-limiting");
   await app.getByTestId("merge-confirm-rate-limit").click();
 
   await expect(app.getByTestId("term-rate-limit")).toHaveCount(0);
@@ -688,12 +721,13 @@ test("FR-045: the knowledge graph is derived on read — 3 node types, 3 typed d
   expect(kinds.has("coverage")).toBe(true);
 
   // containment runs document -> chapter, from `parent`
-  const contains = g.edges.find((e: { kind: string; to: string }) => e.kind === "containment" && e.to === "deployment/canary");
-  expect(contains.from).toBe("deployment");
+  // node ids are namespaced by kind (FR-073(f)) — `doc:`, `chap:`, `concept:`
+  const contains = g.edges.find((e: { kind: string; to: string }) => e.kind === "containment" && e.to === "chap:deployment/canary");
+  expect(contains.from).toBe("doc:deployment");
   expect(contains.label).toBe("contains");
 
   // coverage runs chapter -> concept term, from the index
-  const covers = g.edges.find((e: { kind: string; from: string; to: string }) => e.kind === "coverage" && e.from === "deployment/canary" && e.to === "rollback");
+  const covers = g.edges.find((e: { kind: string; from: string; to: string }) => e.kind === "coverage" && e.from === "chap:deployment/canary" && e.to === "concept:rollback");
   expect(covers.label).toBe("covers");
 
   // every edge is directed and labelled, and never dangles
@@ -704,8 +738,12 @@ test("FR-045: the knowledge graph is derived on read — 3 node types, 3 typed d
   }
 
   // concept-term nodes carry their coverage count (it drives the node radius)
-  const term = g.nodes.find((n: any) => n.type === "concept" && n.id === "api-design");
+  const term = g.nodes.find((n: any) => n.type === "concept" && n.id === "concept:api-design");
   expect(term.count).toBe(2);
+  expect(term.term).toBe("api-design");
+  // the document "deployment" and the concept term "deployment" are TWO nodes
+  expect(g.nodes.filter((n: any) => n.id === "doc:deployment").length).toBe(1);
+  expect(g.nodes.filter((n: any) => n.id === "concept:deployment").length).toBe(1);
 });
 
 // ════════════════════════════════════════════════════════════════════════
@@ -857,6 +895,14 @@ test("the sub-agent may enrich progress on a live run, and nothing more", async 
   await api.post(`bundles/${B.main}/import`, { data: { files: [{ path: "raw/e2e-progress.md", content: "# progress probe\n" }] } });
   const started = await (await api.post("jobs", { data: { bundle: B.main, source: "raw/e2e-progress.md" } })).json();
 
+  // An agent can only report progress once its run is RUNNING; until then the
+  // launcher owns the field (it writes "starting the okf-ingest agent" itself).
+  // Posting before that raced the launcher's own update.
+  for (let i = 0; i < 100; i++) {
+    const j = await (await api.get(`jobs/${started.jobId}`)).json();
+    if (j.status !== "queued" && j.progress !== "starting the okf-ingest agent") break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
   const ok = await api.post(`jobs/${started.jobId}`, { data: { progress: "writing 3 of 6 chapters" } });
   // either it took the progress, or the run already finished (terminal states
   // clear progress) — both are correct; a 500 would not be
@@ -1159,7 +1205,7 @@ test("US9/FR-042: the Query tab's Graph fills its pane with category-coloured no
   expect(await app.locator('.g-edge[marker-end]').count()).toBe(await app.locator(".g-edge").count());
 });
 
-test("FR-043/US9 AS2: the shared search reflects in BOTH views — Table filters, Graph highlights and dims", async ({ page }) => {
+test("FR-043/US9 AS2: the shared search reflects in BOTH views — Table shows the hits, Graph focuses on them", async ({ page }) => {
   const app = await openApp(page);
   await app.getByTestId("tab-query").click();
   await app.getByTestId("query-bundle-select").selectOption(B.main);
@@ -1168,28 +1214,32 @@ test("FR-043/US9 AS2: the shared search reflects in BOTH views — Table filters
   const totalNodes = await app.locator(".g-node").count();
   await app.getByTestId("query-search").fill("rollback");
 
-  // the search really ran okf_search — the matched concept is named
+  // the search really ran okf_search — the matched term is named
   await expect(app.getByTestId("matched-concepts")).toContainText("rollback", { timeout: 10000 });
 
-  // GRAPH: matching nodes highlighted, the rest dimmed
+  // GRAPH (FR-073 e): the hits light up, everything else fades
   await expect(app.locator(".g-node.match").first()).toBeVisible();
   const matched = await app.locator(".g-node.match").count();
-  const dimmed = await app.locator(".g-node.dimmed").count();
+  const faded = await app.locator(".g-node.faded").count();
   expect(matched).toBeGreaterThan(0);
-  expect(dimmed).toBeGreaterThan(0);
-  expect(matched + dimmed).toBe(totalNodes);
+  expect(faded).toBeGreaterThan(0);
+  expect(matched + faded).toBe(totalNodes);
+  await expect(app.getByTestId("graph-hint")).toContainText("match");
 
-  // TABLE: the same query filters the rows
+  // TABLE: the ranked hits, each saying what matched
   await app.getByTestId("view-table").click();
-  await expect(app.getByTestId("table-view")).toBeVisible();
-  await expect(app.getByTestId("table-count")).toContainText("rollback");
-  const tableRows = await app.locator('[data-testid^="table-row-"]').count();
-  expect(tableRows).toBe(matched);
-  await expect(app.getByTestId("table-row-chap-deployment/canary")).toBeVisible();
+  await expect(app.getByTestId("search-hits")).toBeVisible();
+  await expect(app.getByTestId("hit-deployment-canary")).toBeVisible();
+  await expect(app.getByTestId("hit-deployment-canary").getByTestId("hit-kind")).toHaveText("concept");
 
-  // clearing restores both views
+  // a full-text-only word: found, with the sentence it is in
+  // ("sparklines" is only in the canary chapter's stored asset interpretation)
+  await app.getByTestId("query-search").fill("sparklines");
+  await expect(app.locator('[data-testid="hit-excerpt"]').first()).toContainText("sparklines", { timeout: 10000 });
+
+  // clearing restores the node table
   await app.getByTestId("query-clear").click();
-  await expect(app.getByTestId("table-count")).not.toContainText("rollback");
+  await expect(app.getByTestId("table-view")).toBeVisible();
 });
 
 test("US9 AS3/SC-012: selecting a node opens the full chapter in the resizable pane with a working Open source", async ({ page }) => {
@@ -1259,8 +1309,7 @@ test("US9 AS1: selecting a concept-term node opens its covering chapters in the 
   await expect(app.getByTestId("pane-doc")).toBeVisible();
 
   // the concept-term node routes to the chapters it covers
-  await app.getByTestId("query-search").fill("naming");
-  await expect(app.getByTestId("matched-concepts")).toBeVisible({ timeout: 10000 });
+  // with no query the Table lists every node, the concept term among them
   await app.getByTestId("table-row-concept-naming").click();
   await expect(app.getByTestId("pane-concept")).toBeVisible();
   await expect(app.getByTestId("pane-term")).toHaveText("naming");
@@ -1385,8 +1434,7 @@ test("O1/US10/SC-016: a person is found by the EXISTING okf_search — full name
 });
 
 test("O1/FR-054: the vocabulary reports a kind per term, and okf_list_concepts declares the kind filter", async () => {
-  const detail = await (await api.get(`bundles/${B.person}`)).json();
-  const terms: { name: string; kind: string; count: number; covers: { chId: string }[] }[] = detail.conceptIndex;
+  const terms = await vocabulary(B.person);
 
   // every term carries a kind — never undefined, on any bundle
   expect(terms.every((t) => t.kind === "topic" || t.kind === "person")).toBe(true);
@@ -1441,8 +1489,7 @@ test("O2/FR-053: writing person_terms is the whole mechanism — the rebuild der
   ];
   expect((await api.post(`bundles/${B.person}/import`, { data: { files } })).ok()).toBeTruthy();
 
-  const after = await (await api.get(`bundles/${B.person}`)).json();
-  const byName = Object.fromEntries(after.conceptIndex.map((t: { name: string }) => [t.name, t]));
+  const byName = Object.fromEntries((await vocabulary(B.person)).map((t) => [t.name, t]));
   expect(byName["Ana Flores"].kind).toBe("person");
   // the SAME person named by two chapters consolidates into ONE term
   expect(byName["María Quispe"].kind).toBe("person");
@@ -1461,16 +1508,17 @@ test("O3/FR-054: the derived graph gains a 4th node type — person", async () =
   // the node: lowercased id, ORIGINAL-CASE label, count-driven radius input
   const diego = g.nodes.find((n: { type: string; label: string }) => n.type === "person" && n.label === "Diego Córdoba");
   expect(diego).toBeTruthy();
-  expect(diego.id).toBe("diego córdoba");
+  expect(diego.id).toBe("person:diego córdoba");
   expect(diego.key).toBe("person:diego córdoba");
+  expect(diego.term).toBe("Diego Córdoba");
   expect(diego.count).toBe(1);
 
   // coverage edges to a person are the SAME edge kind as topic coverage —
   // the author's runs from the DOCUMENT, a key figure's from her chapter
-  const authored = g.edges.find((e: { to: string; from: string }) => e.to === "diego córdoba" && e.from === "water-rights");
+  const authored = g.edges.find((e: { to: string; from: string }) => e.to === "person:diego córdoba" && e.from === "doc:water-rights");
   expect(authored.kind).toBe("coverage");
   expect(authored.label).toBe("covers");
-  const subject = g.edges.find((e: { to: string; from: string }) => e.to === "maría quispe" && e.from === "water-rights/history");
+  const subject = g.edges.find((e: { to: string; from: string }) => e.to === "person:maría quispe" && e.from === "chap:water-rights/history");
   expect(subject.kind).toBe("coverage");
 
   // no edge dangles, exactly as for the three original types
@@ -1491,10 +1539,10 @@ test("O4: the backward-compat guard — a bundle with NO person_terms is unchang
   expect((await api.post(`bundles/${B.noPerson}/import`, { data: { files } })).ok()).toBeTruthy();
 
   // the vocabulary is all-topic: no 'person', and no undefined
-  const detail = await (await api.get(`bundles/${B.noPerson}`)).json();
-  expect(detail.conceptIndex.length).toBeGreaterThan(0);
-  expect(detail.conceptIndex.every((t: { kind: string }) => t.kind === "topic")).toBe(true);
-  expect(detail.conceptIndex.some((t: { kind: unknown }) => t.kind === undefined)).toBe(false);
+  const noPersonVocab = await vocabulary(B.noPerson);
+  expect(noPersonVocab.length).toBeGreaterThan(0);
+  expect(noPersonVocab.every((t) => t.kind === "topic")).toBe(true);
+  expect(noPersonVocab.some((t) => t.kind === undefined)).toBe(false);
 
   // the graph is the ORIGINAL three node types — the 4th appears only when
   // the bundle actually has a person
@@ -1515,20 +1563,16 @@ test("O4: the backward-compat guard — a bundle with NO person_terms is unchang
   expect(
     (await api.post(`bundles/${B.copy}/import`, { data: { files: exported.files } })).ok(),
   ).toBeTruthy();
-  const copy = await (await api.get(`bundles/${B.copy}`)).json();
-  expect(copy.conceptIndex.map((t: { name: string }) => t.name).sort()).toEqual(
-    detail.conceptIndex.map((t: { name: string }) => t.name).sort(),
-  );
-  expect(copy.conceptIndex.every((t: { kind: string }) => t.kind === "topic")).toBe(true);
+  const copy = await vocabulary(B.copy);
+  expect(copy.map((t) => t.name).sort()).toEqual(noPersonVocab.map((t) => t.name).sort());
+  expect(copy.every((t) => t.kind === "topic")).toBe(true);
 
   // and the PERSON bundle survives the same round-trip with its kinds intact
   const pExport = await (await api.get(`bundles/${B.person}/export`)).json();
   await del(B.copy);
   expect((await api.post(`bundles/${B.copy}/import`, { data: { files: pExport.files } })).ok()).toBeTruthy();
-  const pCopy = await (await api.get(`bundles/${B.copy}`)).json();
-  expect(
-    pCopy.conceptIndex.filter((t: { kind: string }) => t.kind === "person").map((t: { name: string }) => t.name).sort(),
-  ).toEqual(["Ana Flores", "Diego Córdoba", "María Quispe"]);
+  const pCopy = await vocabulary(B.copy);
+  expect(pCopy.filter((t) => t.kind === "person").map((t) => t.name).sort()).toEqual(["Ana Flores", "Diego Córdoba", "María Quispe"]);
   await del(B.copy);
 });
 
@@ -1748,7 +1792,7 @@ test("C1 (FR-051/FR-050): a queued run cancels into the distinct `cancelled` sta
 test("C2 (FR-052/FR-051): a finished run's record deletes; a running one is 409; an unknown one is 404", async () => {
   const ids = await seedJobControlFixtures();
 
-  const before = await (await api.get(`bundles/${B.main}`)).json();
+  const before = { ...(await (await api.get(`bundles/${B.main}`)).json()), documents: await documentsOf(B.main), conceptIndex: await vocabulary(B.main) };
 
   const res = await api.delete(`jobs/${ids.completed}`);
   expect(res.ok()).toBeTruthy();
@@ -1763,7 +1807,7 @@ test("C2 (FR-052/FR-051): a finished run's record deletes; a running one is 409;
 
   // and the bundle it ran against is untouched: deleting a job never deletes
   // knowledge (FR-051)
-  const after = await (await api.get(`bundles/${B.main}`)).json();
+  const after = { ...(await (await api.get(`bundles/${B.main}`)).json()), documents: await documentsOf(B.main), conceptIndex: await vocabulary(B.main) };
   expect(after.documents.length).toBe(before.documents.length);
   expect(after.conceptIndex.length).toBe(before.conceptIndex.length);
   expect(after.health.chapters).toBe(before.health.chapters);
@@ -2579,8 +2623,8 @@ test("AA6: every prior scope-add still stands — chunking, trajectory, cancel/d
   });
   const owners = await (await api.get(`bundles/${B.efficiency}/concept/${docId}/owners`)).json();
   expect(owners.frontmatter.person_terms).toEqual(["Diego Córdoba"]);
-  const persons = await (await api.get(`bundles/${B.efficiency}`)).json();
-  expect(JSON.stringify(persons)).toContain("Diego Córdoba");
+  const persons = await vocabulary(B.efficiency);
+  expect(persons.filter((t) => t.kind === "person").map((t) => t.name)).toContain("Diego Córdoba");
 
   // trajectory + job control (ADR-013/ADR-010): the routes still answer
   expect((await api.get("jobs")).ok()).toBeTruthy();
@@ -2592,3 +2636,87 @@ test("AA6: every prior scope-add still stands — chunking, trajectory, cancel/d
   expect(lint.checks.headingMapDrift, "no document's heading map disagrees with its raw/ bytes").toBe(0);
   expect(lint.chapters).toBeGreaterThan(3);
 });
+
+// ════════════════════════════════════════════════════════════════════════
+//  US14 / FR-068–FR-073 / SC-020–SC-024 — retrieval at scale (2026-10-14)
+// ════════════════════════════════════════════════════════════════════════
+
+/** A test-owned bundle of `n` documents, each with one chapter; document i is
+ *  added i hours after the first, and document 3's chapter body (only) names a
+ *  person no term or summary mentions. Written through the service's import. */
+async function seedScale(n: number): Promise<void> {
+  await del(B.scale);
+  const files: { path: string; content: string }[] = [{ path: "index.md", content: "# scale fixture\n" }];
+  const sources: Record<string, unknown> = {};
+  for (let i = 0; i < n; i++) {
+    const docId = `doc-${String(i).padStart(3, "0")}`;
+    const url = `https://example.com/scale/${docId}`;
+    files.push(document(docId, `Document ${i}`, `Notes number ${i}.`, url));
+    files.push(
+      chapter(docId, "body", `Body ${i}`, `Chapter of document ${i}.`, ["scale-topic"], {}, i === 3 ? "## Origin\n\nThe method was first sketched by Ingrid Haavardsholm in a memo.\n" : "## Text\n\nOrdinary text.\n"),
+    );
+    sources[url] = { sourceKey: url, rawFile: `raw/${docId}.md`, docId, originUrl: url, ingestedAt: new Date(Date.UTC(2026, 0, 1) + i * 3600_000).toISOString() };
+  }
+  files.push({ path: "raw/sources.json", content: JSON.stringify({ sources }, null, 2) + "\n" });
+  expect((await api.post(`bundles/${B.scale}/import`, { data: { files } })).ok()).toBeTruthy();
+}
+
+test("SC-020: a name that is only in a chapter body is found, as full text, with the sentence it is in", async () => {
+  await seedScale(8);
+  const res = await (await api.get(`bundles/${B.scale}/search?query=${encodeURIComponent("Haavardsholm")}`)).json();
+  expect(res.rows[0]).toMatchObject({ docId: "doc-003", chId: "body", matchKind: "text" });
+  expect(res.rows[0].excerpt).toContain("Ingrid Haavardsholm");
+  expect(res.searched).toEqual(["terms", "titles", "summaries", "full text"]);
+  // accents and case fold both ways
+  const folded = await (await api.get(`bundles/${B.scale}/search?query=haavardsholm`)).json();
+  expect(folded.rows[0].docId).toBe("doc-003");
+});
+
+test("SC-021: the bundle TOC pages every document, newest first, with no vocabulary in it", async () => {
+  await seedScale(120);
+  const first = await (await api.get(`bundles/${B.scale}/toc`)).json();
+  expect(first.total).toBe(120);
+  expect(first.limit).toBe(50);
+  expect(first.documents[0].id).toBe("doc-119");
+  expect(first.documents[0]).toMatchObject({ title: "Document 119", chapters: 1, summary: "Notes number 119." });
+  expect(first).not.toHaveProperty("terms");
+  const all = await documentsOf(B.scale);
+  expect(all.map((d) => d.id)).toEqual(Array.from({ length: 120 }, (_, i) => `doc-${String(119 - i).padStart(3, "0")}`));
+  const vocab = await (await api.get(`bundles/${B.scale}/concepts?query=scale`)).json();
+  expect(vocab.terms[0]).toMatchObject({ term: "scale-topic", coversTotal: 120 });
+  expect(vocab.terms[0].covers.length).toBe(5);
+});
+
+test("SC-022: a chapter changed outside the service is seen by the next search", async () => {
+  await seedScale(8);
+  const shell = await pinnedContext();
+  const cfg = await (await api.get("config")).json();
+  const bundleRoot = (cfg.runtime && cfg.runtime.bundleRoot) || "/KnowledgeBase";
+  const path = `${bundleRoot}/${B.scale}/concepts/doc-005/body.md`;
+  const current = (await (await shell.get(`${BASE}/api/fs?op=read&path=${encodeURIComponent(path)}`)).json()).content as string;
+  const wrote = await shell.post(`${BASE}/api/fs`, { data: { op: "write", path, content: current.replace("Ordinary text.", "Ordinary text, now about quokkas.") } });
+  expect(wrote.ok()).toBeTruthy();
+  await shell.dispose();
+
+  const res = await (await api.get(`bundles/${B.scale}/search?query=quokkas`)).json();
+  expect(res.rows.map((r: { docId: string }) => r.docId)).toEqual(["doc-005"]);
+});
+
+test("SC-023: a search writes nothing", async () => {
+  await seedScale(8);
+  const exportBefore = await (await api.get(`bundles/${B.scale}/export`)).json();
+  for (const q of ["Haavardsholm", "scale topic", "nothing matches this"]) await api.get(`bundles/${B.scale}/search?query=${encodeURIComponent(q)}`);
+  const exportAfter = await (await api.get(`bundles/${B.scale}/export`)).json();
+  expect(exportAfter.files.map((f: { path: string }) => f.path).sort()).toEqual(exportBefore.files.map((f: { path: string }) => f.path).sort());
+});
+
+test("SC-024: a document and a concept term with the same name are two graph nodes, each with its own edges", async () => {
+  const g = await (await api.get(`bundles/${B.main}/graph`)).json();
+  const ids = g.nodes.map((n: { id: string }) => n.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(ids).toContain("doc:deployment");
+  expect(ids).toContain("concept:deployment");
+  expect(g.edges.some((e: { kind: string; to: string }) => e.kind === "coverage" && e.to === "concept:deployment")).toBe(true);
+  expect(g.edges.some((e: { kind: string; to: string }) => e.kind === "coverage" && e.to === "doc:deployment")).toBe(false);
+});
+

@@ -54,14 +54,25 @@ The app is a sandboxed iframe, so it resolves its base URL as **`httpPath` if pr
 
 Retrieval is backed by two **derived, regenerable** Markdown artifacts, both with machine-readable frontmatter and a human-readable body:
 
-- **`concept-index.md`** (level 1) — `term → [(docId, chId, description, status, stale)]`. The O(V) routing table, bounded by distinct *vocabulary*, not by corpus size.
+- **`concept-index.md`** (level 1) — `term → [(docId, chId, description, status, stale)]`: the vocabulary ingest extends and curation merges.
 - **`toc/<docId>.md`** (level 2) — one document's chapters, each with its summary, concepts and status.
 
-Both are rebuilt from chapter frontmatter on every write that can change them, and stamped `index_generated_at`. On read, `getModel()` compares that stamp against the newest chapter's `updated_at`: a drifted or missing artifact rebuilds once, transparently. `rebuildIndex` / `rebuildToc` are also callable directly for repair.
+Beside them, **`index.md`** lists every document, newest first by when it was first added — the same order and entries `okf_read_toc({bundle})` returns, from the same function (`bundleTocEntries`).
 
 Neither artifact is ever the sole source of truth — `concepts/**` and `raw/**` are. That is what lets a bundle survive a hand edit, a git merge, or an external tool: the derived layer repairs itself from content instead of silently serving something rotten. Both are included in exports and re-imported.
 
-**No database, no embeddings.** The escalation threshold is documented and deliberate: a keyword/BM25 pre-filter over term names and descriptions becomes the first escalation only once one deterministic pass over the index exceeds roughly 50k tokens of index text or ~2s wall-clock at p95. Embeddings only after that is insufficient. Until then, the deterministic pass is the whole of search.
+## The model (ADR-016)
+
+One in-memory **model per bundle** holds every concept (frontmatter, body, its outgoing links, and the `(size, modified)` signature it was read at) and everything derived from them: documents and chapters, the term index, the TOCs, backlinks, and each document's first-added time from the provenance ledger.
+
+- **Writes patch it.** `upsertConcept`, `deleteConcept`, `addLink`, `mergeConcepts`, `clearDocument` and `addRawSource` record what they wrote through `commitConcepts()` — one `stat` per written file for its new signature, no re-read of the bundle — and rewrite only `concept-index.md`, `index.md` and the TOCs of the documents they touched. Before this, every write re-read every concept file one request at a time and rewrote every TOC (production: `okf_upsert_concept` p50 257 ms on ~60 files, ~12 s projected at 3,000 chapters).
+- **Reads check freshness.** `getModel()` lists `concepts/` (16 directories at a time) and the ledger's signature, re-reads only what changed, appeared or vanished, and rewrites the stored TOC of any document changed from outside — a git pull, an editor, another tool.
+- **One queue per bundle.** Every mutation — a write, a refresh, a rebuild — runs on the bundle's serial queue. It is re-entrant through `AsyncLocalStorage`, so a function already in the bundle's turn (`addRawSource → upsertConcept`) runs inline instead of waiting on itself. Concurrent reads share one queued refresh. The ledger, `links.json` and `log.md` read-modify-writes are on the queue too, so two concurrent ingest runs lose nothing.
+- **Failures surface.** A directory listing that fails is an error, never "this folder is empty"; an unreadable `links.json` or `raw/sources.json` throws and is left untouched rather than being overwritten with nothing. (BOS's own `vfs.list` leaves out a file renamed away mid-listing — every atomic write renames a temp file in the same directory.)
+- **Staleness is evaluated at read time**: the model re-derives once the earliest future `stale_after` passes.
+- **Limits.** The signature is size + modification time — no inode — so a same-size edit within one timestamp tick, or a copy that preserves mtimes (`cp -p`, `rsync -a`, `tar -x`), is not seen until the next rebuild; `okf_lint` is the rescan. Bytes per write still grow with the bundle (`concept-index.md`, `index.md`, `log.md` are rewritten whole).
+
+`rebuildDerived()` is the full read-and-write, for whole-bundle operations: init, import, and lint's repair.
 
 ## Person-kind terms (ADR-011)
 
@@ -71,21 +82,27 @@ A bundle's vocabulary holds two kinds of term, in **one** index: `topic` (the de
 - **`kind` is derived, never stored by hand.** `buildConceptIndex()` reads `person_terms` from the same files it already reads `concepts` from, and a term is `person` iff its **lowercased** name appears in any `person_terms` array in the bundle. The `kind` written into `concept-index.md` is a cached view of that derivation — it is recomputed on every rebuild, so it cannot rot (NFR-004). There is no per-person file and no new entity.
 - **Original case is preserved.** A person term's `name` is the spelling the source used ("Diego Córdoba"); derivation and matching lowercase it, so `Diego`, `Córdoba` and `diego córdoba` all hit the same term.
 - **Coverage is derived identically to a topic's.** A key figure's chapter is an ordinary cover row; the author's cover row is the *document* (an empty `chId`), which is what becomes the `doc → person` edge in the graph.
-- **The search algorithm is unchanged.** A person's name is an ordinary term-name hit over `index.terms` — there is no person branch in `core.search()` at all (SC-016). The only addition is an **additive `kind`** on each row.
+- **A person is an ordinary term to search.** A person term matches like any term (`matchKind: "person"`), and the author on a document stub is found as a document-level hit. Since the full-text search, a name ingest did not register is found in the text as well.
 - **Backward compatible, no migration.** A bundle with no `person_terms` is all-`topic`. A *pre*-person-kind stored index (terms with no `kind`) is served off the trust path with `kind: t.kind || "topic"`, so a legacy bundle never shows `undefined` and never needs a forced rebuild.
 - **`okf_merge_concepts` canonicalizes both arrays.** Merging a person name rewrites every `person_terms` that referenced the from-name, on chapters *and* document stubs, alongside the existing `concepts` rewrite — otherwise the next rebuild would re-derive the old kind.
 
-## Search
+## Search (ADR-015, ADR-018)
 
-`core.search()` is the one implementation. Tokenize the query; walk `index.terms`; a token hitting a **term name** outranks a token hitting a **description**; a chapter covering two matching terms is deduplicated to one row; rank by (term-hit tier, distinct tokens matched, then a deterministic `(docId, chId)` tiebreak); default limit 25; empty on no match.
+`core.search()` is the one implementation behind `okf_search` and the app's `/search` route. It is a **linear scan** over the model: every chapter and document stub, its terms, title, summary and body text (markdown reduced to readable text, inline-asset interpretations included).
 
-No LLM is in the match. The model does *routing* (which query to issue) and *synthesis* (reading what comes back). Every row names its `matchedConcept`, so a result is explainable. Same query, same rows, always — which is what makes the e2e determinism assertion possible.
+- **Matching**: case- and accent-folded (NFKD, combining marks removed), a small fixed English stop-word list dropped unless nothing else is left, a word matching at the start of a word.
+- **Any word may match.** A natural-language paraphrase must still route (US1 AS1), so a row needs one matching word; rows matching more words rank first. Then the best field (term > title > summary > full text), a BM25-style score (field weights 4/3/2/1, `k1` 1.2), the document's first-added date, and id — deterministic.
+- **Rows keep their old fields with their old meaning** (`matchedConcept` is the matched term, or on any other match the chapter's own term) and add `matchKind`, `matchedWords` and an `excerpt` for a body match. The excerpt is chosen sentence by sentence on the folded text and cut from the original, ≤ 3 sentences and ≤ 400 characters — positions are never mapped across folding, which can change a string's length.
+- **Grouping** by document returns at most 10 documents (by best hit) with 5 hits each.
+- **Nothing is written** (SC-023): per-concept search text is cached in a `WeakMap` keyed by the model's entry, which a change replaces, so it can never be stale.
+
+**No database, no embeddings.** SQLite (FTS5) was rejected: it writes its file in place, and BOS previews share `data/` files by hardlink, so a preview's search would write into production's index. An inverted index was rejected for the 256 MB worker heap. The scan's escalation threshold is written down: ~40 MB of chapter text per bundle, or p95 search over 300 ms on the deployment, moves to typed-array postings. Semantic search waits for an embeddings endpoint separate from the chat model's server.
 
 ## Graph derivation
 
 `core.graph()` computes `{nodes, edges}` **on read** — there is no stored graph.
 
-- Nodes: `doc` (one per document stub), `chap` (one per chapter), `concept` (one per **topic** term, with a `count` that drives node radius), and `person` (one per **person-kind** term — the 4th category, ADR-011, same count-driven radius; its `id` is the lowercased name, its `label` the original-case display name, and every node also carries `key = "<type>:<id>"`).
+- Nodes: `doc` (one per document stub), `chap` (one per chapter), `concept` (one per **topic** term, with a `count` that drives node radius), and `person` (one per **person-kind** term — the 4th category, ADR-011, same count-driven radius). A node's `id` is **namespaced by kind** — `doc:<docId>`, `chap:<docId>/<chId>`, `concept:<term>`, `person:<lowercased name>` — and every edge references those ids, so a document and a term with the same name are two nodes (FR-073(f); before, they collapsed into one and the term's coverage edges landed on the document). Each node also carries its content reference: `docId`/`chId`, or `term` (original case).
 - Edges, typed and directed: `containment` (doc→chap, from each chapter's `parent`), `coverage` (chap→concept and chap/doc→person, from the concept index — **the same edge kind** for both; the node colour is what distinguishes a person, teal, from a topic, violet), `link` (from `links.json`, written by `okf_add_link` alongside the markdown link in the body).
 
 A bundle with no person terms returns exactly the three original node types — the 4th appears only when the bundle has one.
@@ -176,10 +193,12 @@ All loopback-guarded, all reusing the same `core` functions as the tools. None o
 | `GET /config` | runtime (`httpPath`, `port`, `bundleRoot`) |
 | `GET /tools` | the **real** declared list — the app's titlebar badge and the e2e count assertion read this, never a literal |
 | `GET /bundles` · `POST /bundles` | `listBundles` · `initBundle` |
-| `GET /bundles/<b>` · `DELETE /bundles/<b>` | `bundleDetail` · `deleteBundle` |
+| `GET /bundles/<b>` · `DELETE /bundles/<b>` | `bundleDetail` (counts only — `{health, indexGeneratedAt}`) · `deleteBundle` |
+| `GET /bundles/<b>/toc?offset=&limit=` | `readToc` without a document — the bundle TOC, as `okf_read_toc({bundle})` |
 | `GET /bundles/<b>/toc/<docId>` | `readToc` |
+| `GET /bundles/<b>/concepts?query=&offset=&limit=&kind=` | `listConcepts` — a page of the vocabulary, as `okf_list_concepts` |
 | `GET /bundles/<b>/concept/<id>` | `readConcept` |
-| `GET\|POST /bundles/<b>/search` | `search` — identical rows to `okf_search` |
+| `GET\|POST /bundles/<b>/search` | `search` (`groupBy` too) — the same object as `okf_search` |
 | `GET /bundles/<b>/graph` | `graph` |
 | `GET /bundles/<b>/assets/<p>` | `readAsset` → `vfs.readRaw` (bytes) |
 | `GET /bundles/<b>/lint` · `/stale` | `lintBundle` · `staleReport` |
@@ -195,7 +214,11 @@ All loopback-guarded, all reusing the same `core` functions as the tools. None o
 
 ## The app
 
-`app/src/main.tsx` mounts `App` into `#root`. React is provided by the bundler; the item installs no npm packages and the app has **zero runtime dependencies** — including the force-directed graph, which is an in-app simulation (`query/forceSim.ts`) rather than d3 or vis.js.
+`app/src/main.tsx` mounts `App` into `#root`. React is provided by the bundler; the item installs no npm packages and the app has **zero runtime dependencies** — including the force-directed graph, whose layout is `lib/graphlayout.mjs` (plain JS, tested under `node --test`) rather than d3 or vis.js.
+
+**Every list is a page.** The Documents tab is the bundle TOC (`/toc`, 50 per page); the Concept Index filters by name in the service and pages 100 at a time (`/concepts`); the merge picker is a type-ahead over the same route; the reader pane looks a term up by name. Nothing loads the whole bundle.
+
+**The graph (ADR-022).** `graphlayout.mjs` seeds by structure (documents on a ring, chapters around their document, terms at the centroid of what they cover), uses a spring length per edge kind, cools over 420 ticks and keeps every pair of circles apart with a collision pass. `GraphView` runs the settle in animation-frame chunks, fits the result to the stage, offers + / − / fit, shows edge labels only on hover, and draws node labels below the node at a constant on-screen size — placed greedily so none overlaps another (selection, hover, search hits, neighbours, then documents). A search lights up its hits' chapters, documents and matched terms, fades everything else with its edges, and fits the view to them. The node cap (400, most-connected first) still applies to very large bundles.
 
 Three tabs share one state root, so a run started in Overview immediately bumps the Jobs badge. The Jobs poll (3s) runs on *every* tab, not only while Jobs is open, or a run started from Overview would look like nothing happened.
 

@@ -7,13 +7,47 @@
 // listings, the real frontmatter round-trip — with no BOS running.
 //
 // It implements exactly the ops vfs-bridge uses: list / stat / read / write /
-// mkdir / delete.
+// mkdir / delete — and reports `size` and `modified` on list/stat the way
+// /api/fs does (src/os/vfs.ts: `modified` is the file's mtime in ms), because
+// the service's freshness check (design.md ADR-016) is built on exactly those.
+//
+// For the scaling and failure tests it also COUNTS requests per op and path
+// (`counts()`, `resetCounts()`), and can fail the next matching request
+// (`failNext(op, pathPredicate)`) — so "a write issues O(1) reads" and "a
+// failed listing is an error" are asserted, not estimated.
 
 import http from "node:http";
 
 export async function startMemFs() {
   /** @type {Map<string, string|null>} path -> content (null = directory) */
   const files = new Map([["/", null]]);
+  /** path -> modified (ms). Strictly increasing, so two writes in the same
+   *  millisecond still differ — the real filesystem's coarser clock is a
+   *  documented limit (ADR-016), not something these tests exercise. */
+  const mtimes = new Map([["/", 0]]);
+  let clock = 0;
+  const touch = (p) => {
+    clock = Math.max(Date.now(), clock + 1);
+    mtimes.set(p, clock);
+  };
+  /** op -> path -> count */
+  const tally = new Map();
+  const count = (op, p) => {
+    if (!tally.has(op)) tally.set(op, new Map());
+    const byPath = tally.get(op);
+    byPath.set(p, (byPath.get(p) || 0) + 1);
+  };
+  const failures = [];
+  const takeFailure = (op, p) => {
+    const i = failures.findIndex((f) => f.op === op && f.match(p));
+    if (i === -1) return false;
+    failures.splice(i, 1);
+    return true;
+  };
+  const entryOf = (key, name) => {
+    const content = files.get(key);
+    return { name, type: content === null ? "dir" : "file", size: content ? Buffer.byteLength(content) : 0, modified: mtimes.get(key) || 0 };
+  };
 
   const norm = (p) => {
     const cleaned = String(p || "/").replace(/\/+$/, "");
@@ -24,7 +58,10 @@ export async function startMemFs() {
     let cur = "";
     for (const part of parts) {
       cur += `/${part}`;
-      if (!files.has(cur)) files.set(cur, null);
+      if (!files.has(cur)) {
+        files.set(cur, null);
+        touch(cur);
+      }
     }
   };
 
@@ -39,10 +76,11 @@ export async function startMemFs() {
     if (req.method === "GET" && url.pathname === "/api/fs") {
       const op = url.searchParams.get("op");
       const p = norm(url.searchParams.get("path"));
+      count(op, p);
+      if (takeFailure(op, p)) return send(500, { error: `injected failure: ${op} ${p}` });
       if (op === "stat") {
         if (!files.has(p)) return send(404, { error: `not found: ${p}` });
-        const content = files.get(p);
-        return send(200, { entry: { name: p.split("/").pop() || "/", type: content === null ? "dir" : "file", size: content ? Buffer.byteLength(content) : 0 } });
+        return send(200, { entry: entryOf(p, p.split("/").pop() || "/") });
       }
       if (op === "read") {
         const content = files.get(p);
@@ -56,7 +94,7 @@ export async function startMemFs() {
         for (const [key, content] of files) {
           if (key === p || !key.startsWith(prefix)) continue;
           if (key.slice(prefix.length).includes("/")) continue;
-          entries.push({ name: key.slice(prefix.length), type: content === null ? "dir" : "file", size: content ? Buffer.byteLength(content) : 0 });
+          entries.push(entryOf(key, key.slice(prefix.length)));
         }
         return send(200, { entries });
       }
@@ -74,9 +112,12 @@ export async function startMemFs() {
           return send(400, { error: "invalid JSON" });
         }
         const p = norm(body.path);
+        count(body.op, p);
+        if (takeFailure(body.op, p)) return send(500, { error: `injected failure: ${body.op} ${p}` });
         if (body.op === "write") {
           mkdirp(p.slice(0, p.lastIndexOf("/")) || "/");
           files.set(p, String(body.content ?? ""));
+          touch(p);
           return send(200, { ok: true });
         }
         if (body.op === "mkdir") {
@@ -86,7 +127,10 @@ export async function startMemFs() {
         if (body.op === "delete") {
           if (!files.has(p)) return send(404, { error: `not found: ${p}` });
           for (const key of [...files.keys()]) {
-            if (key === p || key.startsWith(`${p}/`)) files.delete(key);
+            if (key === p || key.startsWith(`${p}/`)) {
+              files.delete(key);
+              mtimes.delete(key);
+            }
           }
           return send(200, { ok: true });
         }
@@ -109,8 +153,19 @@ export async function startMemFs() {
     write: (p, content) => {
       mkdirp(norm(p).split("/").slice(0, -1).join("/") || "/");
       files.set(norm(p), String(content));
+      touch(norm(p));
     },
-    remove: (p) => files.delete(norm(p)),
+    remove: (p) => {
+      mtimes.delete(norm(p));
+      return files.delete(norm(p));
+    },
+    /** Requests seen since the last reset: `counts().read` is a Map of
+     *  path -> count; `total(op)` sums one op. */
+    counts: () => tally,
+    total: (op) => [...(tally.get(op) || new Map()).values()].reduce((a, b) => a + b, 0),
+    resetCounts: () => tally.clear(),
+    /** Fail the next `op` request whose path satisfies `match` with a 500. */
+    failNext: (op, match) => failures.push({ op, match: typeof match === "function" ? match : (p) => p === norm(match) }),
     paths: () => [...files.keys()].sort(),
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };

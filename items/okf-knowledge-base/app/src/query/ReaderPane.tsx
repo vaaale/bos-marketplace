@@ -17,10 +17,10 @@
 
 import React from "react";
 import { Icon } from "../lib/icons";
-import { fetchConcept, fetchToc } from "../lib/serviceClient";
+import { fetchConcept, fetchConcepts, fetchToc } from "../lib/serviceClient";
 import { ChapterBody, FrontmatterCard } from "../overview/ChapterView";
 import { StatusPill } from "../overview/Overview";
-import type { ConceptRead, ConceptSource, ConceptTerm, DocToc } from "../lib/types";
+import type { ConceptRead, ConceptSource, DocToc, VocabTerm } from "../lib/types";
 
 export interface PaneTarget {
   kind: "doc" | "chap" | "concept";
@@ -32,13 +32,21 @@ export interface PaneTarget {
 interface Props {
   bundle: string;
   target: PaneTarget | null;
-  terms: ConceptTerm[];
   onOpenChapter: (docId: string, chId: string) => void;
+  /** Run the Query tab's search for a term — every chapter it covers. */
+  onSearch: (query: string) => void;
   onClose: () => void;
 }
 
 /** The "Open source" row: a real link for a URL, plain text for a raw/ path. */
-function SourceLink({ source }: { source: ConceptSource | null }) {
+function SourceLink({ source, error }: { source: ConceptSource | null; error?: string | null }) {
+  if (error) {
+    return (
+      <span className="q-pane-src" data-testid="open-source">
+        <Icon name="export" size={13} /> Open source: <span className="q-pane-anch">could not read the document's provenance — {error}</span>
+      </span>
+    );
+  }
   if (!source) {
     return (
       <span className="q-pane-src" data-testid="open-source">
@@ -67,9 +75,12 @@ function SourceLink({ source }: { source: ConceptSource | null }) {
   );
 }
 
-export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClose }: Props) {
+export default function ReaderPane({ bundle, target, onOpenChapter, onSearch, onClose }: Props) {
   const [concept, setConcept] = React.useState<ConceptRead | null>(null);
   const [docConcept, setDocConcept] = React.useState<ConceptRead | null>(null);
+  const [docError, setDocError] = React.useState<string | null>(null);
+  // the term view's term, looked up by name (the vocabulary is never loaded whole — ADR-021)
+  const [term, setTerm] = React.useState<VocabTerm | null | undefined>(undefined);
   const [toc, setToc] = React.useState<DocToc | null>(null);
   const [showSource, setShowSource] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -81,17 +92,26 @@ export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClo
     setConcept(null);
     setToc(null);
     setDocConcept(null);
+    setDocError(null);
+    setTerm(undefined);
     if (!target) return;
 
     const fail = (e: unknown) => !cancelled && setError((e as Error).message);
+    // the document stub carries the provenance the "Open source" link uses;
+    // without it the chapter still reads — the link says why it is missing
+    const failDoc = (e: unknown) => !cancelled && setDocError((e as Error).message);
 
     if (target.kind === "doc" && target.docId) {
       fetchToc(bundle, target.docId).then((t) => !cancelled && setToc(t)).catch(fail);
-      // the document stub carries the provenance the "Open source" link uses
-      fetchConcept(bundle, target.docId).then((c) => !cancelled && setDocConcept(c)).catch(() => {});
+      fetchConcept(bundle, target.docId).then((c) => !cancelled && setDocConcept(c)).catch(failDoc);
     } else if (target.kind === "chap" && target.docId && target.chId) {
       fetchConcept(bundle, `${target.docId}/${target.chId}`).then((c) => !cancelled && setConcept(c)).catch(fail);
-      fetchConcept(bundle, target.docId).then((c) => !cancelled && setDocConcept(c)).catch(() => {});
+      fetchConcept(bundle, target.docId).then((c) => !cancelled && setDocConcept(c)).catch(failDoc);
+    } else if (target.kind === "concept" && target.term) {
+      const wanted = target.term.toLowerCase();
+      fetchConcepts(bundle, { query: target.term, limit: 50 })
+        .then((p) => !cancelled && setTerm(p.terms.find((t) => t.term.toLowerCase() === wanted) || null))
+        .catch(fail);
     }
     return () => {
       cancelled = true;
@@ -127,10 +147,6 @@ export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClo
 
   // ── concept-term view ──────────────────────────────────────────────────
   if (target.kind === "concept") {
-    // a person node's id is the LOWERCASED name, the term's own `name` keeps
-    // the original case — so the lookup is case-insensitive
-    const wanted = String(target.term || "").toLowerCase();
-    const term = terms.find((t) => t.name.toLowerCase() === wanted) || null;
     const isPerson = term?.kind === "person";
     return (
       <>
@@ -139,18 +155,22 @@ export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClo
             <Icon name={isPerson ? "eye" : "layers"} size={14} /> {isPerson ? "Person" : "Concept term"}
           </div>
           <div className={`q-pane-term${isPerson ? " person" : ""}`} data-testid="pane-term">
-            {term?.name ?? target.term}
+            {term?.term ?? target.term}
           </div>
           <div className="q-pane-sub">
             {isPerson ? "person-kind term · subject of " : "vocabulary term · covered by "}
-            {term?.count ?? 0} chapter{(term?.count ?? 0) === 1 ? "" : "s"} · no single source document
+            {term?.coversTotal ?? 0} chapter{(term?.coversTotal ?? 0) === 1 ? "" : "s"} · no single source document
           </div>
           <button className="ibtn" onClick={onClose} title="Close reader" data-testid="pane-close">
             <Icon name="x" size={15} />
           </button>
         </div>
         <div className="q-pane-body" data-testid="pane-concept">
-          {!term ? (
+          {error ? (
+            <div className="app-error">Could not read the term: {error}</div>
+          ) : term === undefined ? (
+            <div className="app-loading">Loading the term…</div>
+          ) : !term ? (
             <div className="empty" style={{ margin: 14, padding: 30 }}>
               Concept term not found in this bundle.
             </div>
@@ -159,15 +179,15 @@ export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClo
               <div className="note" style={{ margin: "0 0 12px" }}>
                 <Icon name={isPerson ? "eye" : "layers"} size={14} />
                 <span>
-                  <b>{term.name}</b> is a{" "}
+                  <b>{term.term}</b> is a{" "}
                   {isPerson ? (
                     <span style={{ color: "var(--teal)" }}>person-kind term</span>
                   ) : (
                     <span style={{ color: "var(--violet)" }}>concept term</span>
                   )}{" "}
-                  in the bundle vocabulary (the O(V) routing table). It routes to the{" "}
-                  {isPerson ? "documents and chapters this person is the author or the subject of" : "chapters below — concept-anchored"}
-                  . Click one to open it in full.
+                  in the bundle vocabulary. It covers the{" "}
+                  {isPerson ? "documents and chapters this person is the author or the subject of" : "chapters below"}. Click one to
+                  open it in full.
                 </span>
               </div>
               <div className="toc">
@@ -182,7 +202,8 @@ export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClo
                       ◆
                     </span>
                     <span className="toc-title">
-                      <span style={{ fontWeight: 500, color: "var(--muted)" }}>{c.docTitle}</span> › {c.chTitle}
+                      <span style={{ fontWeight: 500, color: "var(--muted)" }}>{c.docTitle}</span>
+                      {c.chId ? <> › {c.title}</> : null}
                     </span>
                     <span className="toc-desc">{c.description || "— no description —"}</span>
                     <span className="toc-go">
@@ -191,6 +212,11 @@ export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClo
                   </div>
                 ))}
               </div>
+              {term.coversTotal > term.covers.length ? (
+                <button className="btn" style={{ marginTop: 10 }} onClick={() => onSearch(term.term)} data-testid="pane-term-search">
+                  <Icon name="search" size={14} /> Show all {term.coversTotal} in search
+                </button>
+              ) : null}
             </>
           )}
         </div>
@@ -209,7 +235,7 @@ export default function ReaderPane({ bundle, target, terms, onOpenChapter, onClo
           <Icon name={target.kind === "doc" ? "book" : "list"} size={14} />{" "}
           {target.kind === "doc" ? "Document" : "Chapter"}
         </div>
-        <SourceLink source={source} />
+        <SourceLink source={source} error={docError} />
         <button className="ibtn" onClick={onClose} title="Close reader" data-testid="pane-close">
           <Icon name="x" size={15} />
         </button>

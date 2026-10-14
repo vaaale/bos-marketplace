@@ -19,26 +19,28 @@
 //     re-lays-out whenever the pane changes size — which is exactly what
 //     dragging the reader-pane divider does.
 //  2. Node/edge positions are written straight to the DOM, not through React
-//     state. 150 settle ticks plus drag-time ticks would otherwise be 150
-//     re-renders of every node; React owns the container and the legend,
-//     the simulation owns the <g> transforms.
+//     state. Hundreds of settle ticks plus drag-time ticks would otherwise be
+//     as many re-renders of every node; React owns the container, the legend
+//     and the controls, the simulation owns the <g> transforms.
+//
+// Legibility (FR-073, ADR-022) — the layout itself is lib/graphlayout.mjs:
+//   • the settle runs in animation-frame chunks, then the view FITS the stage;
+//   • + / − / fit controls and a status hint;
+//   • edge labels only on the hovered node's edges; node labels sit BELOW the
+//     node at a constant on-screen size — documents always, everything else
+//     when zoomed in, hovered (with its neighbours), selected or matched;
+//   • a search fades everything but the hits (their edges too) and zooms to
+//     them; clearing it fits the whole graph again.
 
 import React from "react";
 import { Icon } from "../lib/icons";
 import type { BundleGraph, GraphNode } from "../lib/types";
-import { buildSim, capGraph, edgeClass, settle, stepGraph, type Sim, type SimNode } from "./forceSim";
-
-export interface GraphSelection {
-  // a person node opens the SAME term view as a concept term
-  kind: "doc" | "chap" | "concept";
-  docId: string | null;
-  chId: string | null;
-  term: string | null;
-}
+import { nodeRef } from "./nodeRef";
+import { L, alphaAt, buildLayout, capGraph, edgeClass, finish, fitBox, fitView, step, type Sim, type SimNode } from "../lib/graphlayout.mjs";
 
 interface Props {
   graph: BundleGraph;
-  /** Node ids the shared search matched. null = no active query. */
+  /** Node ids (namespaced keys) the shared search matched. null = no query. */
   matches: Set<string> | null;
   selectedId: string | null;
   onSelect: (node: GraphNode) => void;
@@ -46,40 +48,94 @@ interface Props {
   resizeToken: number;
 }
 
+interface View {
+  x: number;
+  y: number;
+  k: number;
+}
+
+interface Painted {
+  nodes: Map<string, SVGGElement>;
+  edges: { el: SVGPathElement; wrap: SVGGElement }[];
+}
+
+/** Settle ticks per animation frame — keeps a 400-node first paint responsive. */
+const TICKS_PER_FRAME = 30;
+
 export default function GraphView({ graph, matches, selectedId, onSelect, resizeToken }: Props) {
   const stageRef = React.useRef<HTMLDivElement | null>(null);
   const svgRef = React.useRef<SVGSVGElement | null>(null);
   const simRef = React.useRef<Sim | null>(null);
+  const viewRef = React.useRef<View>({ x: 0, y: 0, k: 1 });
+  const paintedRef = React.useRef<Painted | null>(null);
+  const matchesRef = React.useRef(matches);
+  matchesRef.current = matches;
   const onSelectRef = React.useRef(onSelect);
   onSelectRef.current = onSelect;
+  const [settled, setSettled] = React.useState(0);
 
   const capped = React.useMemo(() => capGraph(graph.nodes, graph.edges), [graph]);
 
-  // ── layout + paint ─────────────────────────────────────────────────────
-  const layout = React.useCallback(() => {
+  /** Fit the view to the search hits (or to everything) and repaint. */
+  const fit = React.useCallback(() => {
+    const stage = stageRef.current;
+    const svg = svgRef.current;
+    const sim = simRef.current;
+    if (!stage || !svg || !sim) return;
+    const m = matchesRef.current;
+    const focus = m && m.size ? m : null;
+    viewRef.current = fitView(fitBox(sim, focus), stage.clientWidth, stage.clientHeight, { focus: !!focus });
+    applyTransform(svg, viewRef.current);
+    if (paintedRef.current) cullLabels(svg, sim, paintedRef.current, viewRef.current);
+  }, []);
+
+  const zoomBy = React.useCallback((f: number) => {
     const stage = stageRef.current;
     const svg = svgRef.current;
     if (!stage || !svg) return;
+    const v = viewRef.current;
+    const cx = stage.clientWidth / 2;
+    const cy = stage.clientHeight / 2;
+    const k = Math.max(L.kMin, Math.min(L.kMax, v.k * f));
+    viewRef.current = { k, x: cx - (cx - v.x) * (k / v.k), y: cy - (cy - v.y) * (k / v.k) };
+    applyTransform(svg, viewRef.current);
+    if (simRef.current && paintedRef.current) cullLabels(svg, simRef.current, paintedRef.current, viewRef.current);
+  }, []);
+
+  // ── layout + paint, settled in animation-frame chunks ──────────────────
+  const layout = React.useCallback(() => {
+    const stage = stageRef.current;
+    const svg = svgRef.current;
+    if (!stage || !svg) return () => undefined;
     const W = stage.clientWidth;
     const H = stage.clientHeight;
-    if (!W || !H) return; // still display:none / mid-mount — the observer retries
+    if (!W || !H) return () => undefined; // still display:none / mid-mount — the observer retries
 
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
     svg.setAttribute("width", "100%");
     svg.setAttribute("height", "100%");
 
-    const sim = buildSim(capped.nodes, capped.edges, W, H);
+    const sim = buildLayout(capped.nodes, capped.edges, { width: W, height: H });
     simRef.current = sim;
-    paintStructure(svg, sim);
-    settle(sim);
-    applyTransform(svg, sim);
-    draw(sim);
-  }, [capped]);
+    paintedRef.current = paintStructure(svg, sim);
+    let tick = 0;
+    let frame = 0;
+    const run = () => {
+      for (let i = 0; i < TICKS_PER_FRAME && tick < L.ticks; i++, tick++) step(sim, alphaAt(tick));
+      if (tick >= L.ticks) finish(sim);
+      draw(sim, paintedRef.current!);
+      fit();
+      if (tick < L.ticks) frame = requestAnimationFrame(run);
+      else setSettled((n) => n + 1);
+    };
+    frame = requestAnimationFrame(run);
+    return () => cancelAnimationFrame(frame);
+  }, [capped, fit]);
 
   React.useEffect(() => {
-    layout();
+    let cancel = layout();
     const stage = stageRef.current;
-    if (!stage) return;
+    if (!stage) return cancel;
     let lastW = stage.clientWidth;
     let lastH = stage.clientHeight;
     const obs = new ResizeObserver(() => {
@@ -88,43 +144,51 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
       if (w === lastW && h === lastH) return;
       lastW = w;
       lastH = h;
-      layout();
+      cancel();
+      cancel = layout();
     });
     obs.observe(stage);
-    return () => obs.disconnect();
+    return () => {
+      obs.disconnect();
+      cancel();
+    };
   }, [layout]);
 
   // An explicit re-layout when the divider moves: a drag can settle on the
   // same integer size the observer already saw, and the graph must still
   // re-fill its (new) pane.
   React.useEffect(() => {
-    if (resizeToken > 0) layout();
+    if (resizeToken > 0) return layout();
+    return undefined;
   }, [resizeToken, layout]);
 
-  // ── search highlight / dim (FR-043) ────────────────────────────────────
+  // ── search focus (FR-073 e) ────────────────────────────────────────────
   React.useEffect(() => {
     const sim = simRef.current;
-    if (!sim) return;
+    const painted = paintedRef.current;
+    const svg = svgRef.current;
+    if (!sim || !painted || !svg) return;
+    svg.classList.toggle("searching", !!matches);
     for (const n of sim.nodes) {
-      if (!n.el) continue;
-      const hit = !matches || matches.has(n.id);
-      n.el.classList.toggle("match", !!matches && hit);
-      n.el.classList.toggle("dimmed", !!matches && !hit); // .dimmed = opacity .3
+      const el = painted.nodes.get(n.id);
+      if (!el) continue;
+      const hit = !!matches && matches.has(n.id);
+      el.classList.toggle("match", hit);
+      el.classList.toggle("faded", !!matches && !hit);
     }
-    for (const e of sim.edges) {
-      if (!e.el) continue;
-      const hit = !matches || matches.has(e.from) || matches.has(e.to);
-      e.el.classList.toggle("dim", !!matches && !hit);
-      e.wrap?.classList.toggle("dim", !!matches && !hit);
-    }
-  }, [matches, capped]);
+    sim.edges.forEach((e, i) => {
+      const both = !!matches && matches.has(e.from) && matches.has(e.to);
+      painted.edges[i]?.el.classList.toggle("faded", !!matches && !both);
+    });
+    fit();
+  }, [matches, settled, fit]);
 
   // ── selection ring ─────────────────────────────────────────────────────
   React.useEffect(() => {
-    const sim = simRef.current;
-    if (!sim) return;
-    for (const n of sim.nodes) n.el?.classList.toggle("sel", n.id === selectedId);
-  }, [selectedId, capped]);
+    const painted = paintedRef.current;
+    if (!painted) return;
+    for (const [id, el] of painted.nodes) el.classList.toggle("sel", id === selectedId);
+  }, [selectedId, settled]);
 
   // ── pointer interactions: drag a node, pan, zoom, hover-to-trace ───────
   React.useEffect(() => {
@@ -138,33 +202,28 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
     let tickCount = 0;
 
     const toWorld = (sx: number, sy: number) => {
-      const sim = simRef.current!;
+      const v = viewRef.current;
       const r = svg.getBoundingClientRect();
-      return { x: (sx - r.left - sim.view.x) / sim.view.k, y: (sy - r.top - sim.view.y) / sim.view.k };
+      return { x: (sx - r.left - v.x) / v.k, y: (sy - r.top - v.y) / v.k };
     };
 
     const setHover = (id: string | null) => {
       const sim = simRef.current;
-      if (!sim || id === hover) return;
+      const painted = paintedRef.current;
+      if (!sim || !painted || id === hover) return;
       hover = id;
-      if (!id) {
-        for (const n of sim.nodes) n.el?.classList.remove("dim", "hot");
-        for (const e of sim.edges) {
-          e.el?.classList.remove("hot");
-          e.wrap?.classList.remove("hot");
-        }
-        return;
+      const near = id ? sim.nbr.get(id) || new Set<string>() : null;
+      for (const [nid, el] of painted.nodes) {
+        el.classList.toggle("hot", nid === id);
+        el.classList.toggle("near", !!near && near.has(nid) && nid !== id);
+        el.classList.toggle("dim", !!near && !near.has(nid));
       }
-      const near = sim.nbr.get(id) || new Set<string>();
-      for (const n of sim.nodes) {
-        n.el?.classList.toggle("hot", n.id === id);
-        n.el?.classList.toggle("dim", !near.has(n.id));
-      }
-      for (const e of sim.edges) {
-        const inc = e.from === id || e.to === id;
-        e.el?.classList.toggle("hot", inc);
-        e.wrap?.classList.toggle("hot", inc);
-      }
+      sim.edges.forEach((e, i) => {
+        const inc = !!id && (e.from === id || e.to === id);
+        painted.edges[i]?.el.classList.toggle("hot", inc);
+        painted.edges[i]?.wrap.classList.toggle("hot", inc);
+      });
+      cullLabels(svg, sim, painted, viewRef.current);
     };
 
     const onDown = (ev: MouseEvent) => {
@@ -181,7 +240,8 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
         n.fx = n.x;
         n.fy = n.y;
       } else {
-        pan = { sx: ev.clientX, sy: ev.clientY, vx: sim.view.x, vy: sim.view.y };
+        const v = viewRef.current;
+        pan = { sx: ev.clientX, sy: ev.clientY, vx: v.x, vy: v.y };
         svg.classList.add("panning");
       }
       ev.preventDefault();
@@ -200,14 +260,15 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
         n.x = n.fx;
         n.y = n.fy;
         if (++tickCount % 2 === 0) {
-          for (let i = 0; i < 3; i++) stepGraph(sim);
-          draw(sim);
+          for (let i = 0; i < 3; i++) step(sim, 0.3);
+          draw(sim, paintedRef.current!);
+          cullLabels(svg, sim, paintedRef.current!, viewRef.current);
         }
       } else if (pan) {
         if (!moved) return;
-        sim.view.x = pan.vx + (ev.clientX - pan.sx);
-        sim.view.y = pan.vy + (ev.clientY - pan.sy);
-        applyTransform(svg, sim);
+        viewRef.current = { ...viewRef.current, x: pan.vx + (ev.clientX - pan.sx), y: pan.vy + (ev.clientY - pan.sy) };
+        applyTransform(svg, viewRef.current);
+        cullLabels(svg, sim, paintedRef.current!, viewRef.current);
       }
     };
 
@@ -228,17 +289,15 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
     };
 
     const onWheel = (ev: WheelEvent) => {
-      const sim = simRef.current;
-      if (!sim) return;
       ev.preventDefault();
-      const nk = Math.max(0.4, Math.min(2.6, sim.view.k * Math.exp(-ev.deltaY * 0.0016)));
+      const v = viewRef.current;
+      const k = Math.max(L.kMin, Math.min(L.kMax, v.k * Math.exp(-ev.deltaY * 0.0016)));
       const r = svg.getBoundingClientRect();
       const px = ev.clientX - r.left;
       const py = ev.clientY - r.top;
-      sim.view.x = px - (px - sim.view.x) * (nk / sim.view.k);
-      sim.view.y = py - (py - sim.view.y) * (nk / sim.view.k);
-      sim.view.k = nk;
-      applyTransform(svg, sim);
+      viewRef.current = { k, x: px - (px - v.x) * (k / v.k), y: py - (py - v.y) * (k / v.k) };
+      applyTransform(svg, viewRef.current);
+      if (simRef.current && paintedRef.current) cullLabels(svg, simRef.current, paintedRef.current, viewRef.current);
     };
 
     const onClick = (ev: MouseEvent) => {
@@ -248,7 +307,7 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
       const gEl = (ev.target as Element).closest(".g-node");
       if (!gEl) return;
       const n = sim.byId[gEl.getAttribute("data-id")!];
-      if (n) onSelectRef.current(n);
+      if (n) onSelectRef.current(n as unknown as GraphNode);
     };
 
     const onOver = (ev: MouseEvent) => {
@@ -271,6 +330,12 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
       window.removeEventListener("mouseup", onUp);
     };
   }, []);
+
+  const hint = matches
+    ? matches.size
+      ? `${matches.size} of ${capped.nodes.length} nodes match — zoomed to the results`
+      : "No node matches — showing the whole graph"
+    : `${capped.nodes.length} nodes · zoom in (scroll or +) to label every node`;
 
   return (
     <>
@@ -307,29 +372,88 @@ export default function GraphView({ graph, matches, selectedId, onSelect, resize
       </div>
 
       <div id="graphStage" className="graph-stage" ref={stageRef} data-testid="graph-stage">
+        <div className="g-ctl" data-testid="graph-controls">
+          <button title="Zoom in" onClick={() => zoomBy(1.3)} data-testid="graph-zoom-in">
+            +
+          </button>
+          <button title="Zoom out" onClick={() => zoomBy(1 / 1.3)} data-testid="graph-zoom-out">
+            −
+          </button>
+          <button title="Fit (the search results, when searching)" onClick={fit} data-testid="graph-fit">
+            ⤢
+          </button>
+        </div>
+        <span className="g-hint" data-testid="graph-hint">
+          {hint}
+        </span>
         <svg className="g-svg" ref={svgRef} data-testid="graph-svg" />
       </div>
 
       <div className="note">
         <Icon name="info" size={14} />
         <span>
-          <b>Knowledge graph</b> — derived from stored content: <b>contains</b> (document → its chapters, via{" "}
-          <code>parent</code>), <b>covers</b> (chapter → the concept term it covers, and document/chapter → the{" "}
-          <span style={{ color: "var(--teal)" }}>person</span> it is by or about, via the concept index), and{" "}
-          <b>related</b> (explicit <code>okf_add_link</code> edges). Force-directed — <b>drag</b> a node, <b>scroll</b>{" "}
-          to zoom, <b>drag empty space</b> to pan, <b>hover</b> to trace its neighbours. Click any node to open it in the
-          reader pane. Searching above highlights matching nodes and dims the rest.
+          <b>Knowledge graph</b> — derived from stored content: <b>contains</b> (document → its chapters), <b>covers</b> (chapter → the
+          concept term it covers, and document/chapter → the <span style={{ color: "var(--teal)" }}>person</span> it is by or about), and{" "}
+          <b>related</b> (explicit <code>okf_add_link</code> edges). <b>Drag</b> a node, <b>scroll</b> or <b>+ / −</b> to zoom, <b>drag empty
+          space</b> to pan, <b>hover</b> to trace a node's neighbours and edges. Labels: documents always; everything else when you zoom in,
+          hover or search. Searching above lights up the hits, fades the rest and zooms to them (⤢ re-fits).
           {capped.truncated ? (
             <>
               {" "}
-              <b>Showing the {capped.nodes.length} most-connected nodes</b> of {graph.nodes.length} — narrow with the
-              search box to see the rest.
+              <b>Showing the {capped.nodes.length} most-connected nodes</b> of {graph.nodes.length} — search to find the rest.
             </>
           ) : null}
         </span>
       </div>
     </>
   );
+}
+
+// ── label placement ──────────────────────────────────────────────────────
+
+/** Approximate on-screen width of a label: they are drawn at a constant
+ *  on-screen size, so this does not depend on the zoom. */
+function labelWidth(text: string, doc: boolean): number {
+  return text.length * (doc ? 6.9 : 6.0) + 6;
+}
+
+/**
+ * Show a label only where it does not collide with one already shown (FR-073
+ * d): candidates are the labels the rules allow (documents; everything when
+ * zoomed in; the hovered node and its neighbours; the selection; search
+ * hits), placed greedily in priority order — selection, hover, hits,
+ * neighbours, documents, then the rest, larger nodes first. A label that
+ * would overlap is hidden until zooming in makes room. Without this, a
+ * bundle of hundreds of documents fits to a solid pile of document titles.
+ */
+function cullLabels(svg: SVGSVGElement, sim: Sim, painted: Painted, view: View): void {
+  const zoomed = view.k >= L.labelZoom;
+  const searching = svg.classList.contains("searching");
+  const candidates: { el: SVGGElement; box: [number, number, number, number]; rank: number }[] = [];
+  for (const n of sim.nodes) {
+    const el = painted.nodes.get(n.id);
+    if (!el) continue;
+    const c = el.classList;
+    const rank = c.contains("sel") ? 0 : c.contains("hot") ? 1 : c.contains("match") ? 2 : c.contains("near") ? 3 : n.type === "doc" ? 4 : 5;
+    const allowed = rank < 4 || (rank === 4 && !(searching && c.contains("faded"))) || (zoomed && !(searching && c.contains("faded")));
+    if (!allowed) {
+      c.remove("lbl-off");
+      continue;
+    }
+    const text = el.querySelector(".g-tx")?.textContent || "";
+    const w = labelWidth(text, n.type === "doc");
+    const cx = n.x * view.k + view.x;
+    const top = (n.y + n.r + 3) * view.k + view.y;
+    candidates.push({ el, box: [cx - w / 2, top, cx + w / 2, top + 14], rank: rank * 1000 - n.r });
+  }
+  candidates.sort((a, b) => a.rank - b.rank);
+  const placed: [number, number, number, number][] = [];
+  for (const cand of candidates) {
+    const [x0, y0, x1, y1] = cand.box;
+    const clash = placed.some(([a0, b0, a1, b1]) => x0 < a1 && x1 > a0 && y0 < b1 && y1 > b0);
+    cand.el.classList.toggle("lbl-off", clash);
+    if (!clash) placed.push(cand.box);
+  }
 }
 
 // ── imperative SVG painting ──────────────────────────────────────────────
@@ -340,7 +464,8 @@ const EDGE_COLOR: Record<string, string> = {
   link: "var(--amber)",
 };
 
-function paintStructure(svg: SVGSVGElement, sim: Sim): void {
+function paintStructure(svg: SVGSVGElement, sim: Sim): Painted {
+  const painted: Painted = { nodes: new Map(), edges: [] };
   const NS = "http://www.w3.org/2000/svg";
   svg.replaceChildren();
 
@@ -377,11 +502,11 @@ function paintStructure(svg: SVGSVGElement, sim: Sim): void {
     path.setAttribute("class", `g-edge ${cls}`);
     path.setAttribute("marker-end", `url(#g-arrow-${cls})`);
     edgeLayer.appendChild(path);
-    e.el = path;
 
     const wrap = document.createElementNS(NS, "g");
     wrap.setAttribute("class", "g-elab");
-    const w = e.label.length * 5.6 + 9;
+    const labelText = String(e.label || e.kind);
+    const w = labelText.length * 5.6 + 9;
     const rect = document.createElementNS(NS, "rect");
     rect.setAttribute("class", "g-elbg");
     rect.setAttribute("x", String(-w / 2));
@@ -395,17 +520,17 @@ function paintStructure(svg: SVGSVGElement, sim: Sim): void {
     text.setAttribute("class", "g-elbl");
     text.setAttribute("text-anchor", "middle");
     text.setAttribute("dominant-baseline", "central");
-    text.textContent = e.label;
+    text.textContent = labelText;
     wrap.append(rect, text);
     labelLayer.appendChild(wrap);
-    e.wrap = wrap;
+    painted.edges.push({ el: path, wrap });
   }
 
   for (const n of sim.nodes) {
     const g = document.createElementNS(NS, "g");
     g.setAttribute("class", `g-node ${n.type}`);
     g.setAttribute("data-id", n.id);
-    g.setAttribute("data-testid", `graph-node-${n.id}`);
+    g.setAttribute("data-testid", `graph-node-${nodeRef(n as unknown as GraphNode)}`);
 
     const title = document.createElementNS(NS, "title");
     title.textContent = n.label;
@@ -431,30 +556,36 @@ function paintStructure(svg: SVGSVGElement, sim: Sim): void {
     const label = document.createElementNS(NS, "text");
     label.setAttribute("class", "g-tx");
     label.setAttribute("text-anchor", "middle");
-    label.setAttribute("dominant-baseline", "central");
-    label.textContent = n.label.length > 22 ? `${n.label.slice(0, 21)}…` : n.label;
+    // below the node, so it never sits on the circle or its neighbour's label
+    label.setAttribute("y", String(n.r + 11));
+    label.textContent = n.label.length > 28 ? `${n.label.slice(0, 27)}…` : n.label;
 
     g.append(title, ring, circ, hit, label);
     nodeLayer.appendChild(g);
-    n.el = g;
+    painted.nodes.set(n.id, g);
   }
 
   root.append(edgeLayer, labelLayer, nodeLayer);
   svg.appendChild(root);
-  draw(sim);
+  draw(sim, painted);
+  return painted;
 }
 
-function applyTransform(svg: SVGSVGElement, sim: Sim): void {
+function applyTransform(svg: SVGSVGElement, view: View): void {
   const root = svg.querySelector(".g-sel");
-  root?.setAttribute("transform", `translate(${sim.view.x},${sim.view.y}) scale(${sim.view.k})`);
+  root?.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`);
+  // labels keep a constant on-screen size; non-document labels appear zoomed in
+  svg.style.setProperty("--gk", String(view.k));
+  svg.classList.toggle("zoomed", view.k >= L.labelZoom);
 }
 
 /** Position every edge path, edge label and node from the current sim state. */
-function draw(sim: Sim): void {
-  for (const e of sim.edges) {
+function draw(sim: Sim, painted: Painted): void {
+  sim.edges.forEach((e, i) => {
+    const p = painted.edges[i];
     const a = sim.byId[e.from];
     const b = sim.byId[e.to];
-    if (!a || !b) continue;
+    if (!a || !b || !p) return;
     const dx = b.x - a.x;
     const dy = b.y - a.y;
     const d = Math.hypot(dx, dy) || 1;
@@ -464,16 +595,13 @@ function draw(sim: Sim): void {
     const ay = a.y + uy * (a.r + 3);
     const bx = b.x - ux * (b.r + 3);
     const by = b.y - uy * (b.r + 3);
-    e.el?.setAttribute("d", `M${ax.toFixed(1)} ${ay.toFixed(1)} L${bx.toFixed(1)} ${by.toFixed(1)}`);
+    p.el.setAttribute("d", `M${ax.toFixed(1)} ${ay.toFixed(1)} L${bx.toFixed(1)} ${by.toFixed(1)}`);
     let ang = Math.atan2(dy, dx) * 57.2958;
     if (ang > 90) ang -= 180;
     if (ang < -90) ang += 180;
-    e.wrap?.setAttribute(
-      "transform",
-      `translate(${((ax + bx) / 2).toFixed(1)} ${((ay + by) / 2).toFixed(1)}) rotate(${ang.toFixed(1)})`,
-    );
-  }
+    p.wrap.setAttribute("transform", `translate(${((ax + bx) / 2).toFixed(1)} ${((ay + by) / 2).toFixed(1)}) rotate(${ang.toFixed(1)})`);
+  });
   for (const n of sim.nodes as SimNode[]) {
-    n.el?.setAttribute("transform", `translate(${n.x.toFixed(1)} ${n.y.toFixed(1)})`);
+    painted.nodes.get(n.id)?.setAttribute("transform", `translate(${n.x.toFixed(1)} ${n.y.toFixed(1)})`);
   }
 }

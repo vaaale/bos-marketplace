@@ -82,6 +82,26 @@ function isNotFoundError(err) {
   return /ENOENT|not found/i.test(err.message || "");
 }
 
+/** A directory's entries, or [] when it does not exist. Every other failure throws. */
+async function listIfExists(p) {
+  try {
+    return await vfs.list(p);
+  } catch (err) {
+    if (err && (err.status === 404 || isNotFoundError(err))) return [];
+    throw err;
+  }
+}
+
+/** A file's text, or null when it does not exist. Every other failure throws. */
+async function readTextIfExists(p) {
+  try {
+    return await vfs.readText(p);
+  } catch (err) {
+    if (err && (err.status === 404 || isNotFoundError(err))) return null;
+    throw err;
+  }
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -346,23 +366,63 @@ function conceptFilePath(bDir, id) {
   return safeJoin(bDir, "concepts", `${id}.md`);
 }
 
-async function listConceptIds(bDir) {
-  const conceptsDir = path.join(bDir, "concepts");
-  const ids = [];
-  async function walk(dir, rel) {
-    const entries = await vfs.list(dir).catch(() => []);
-    for (const e of entries) {
-      const abs = path.join(dir, e.name);
-      if (e.type === "dir") {
-        await walk(abs, rel ? `${rel}/${e.name}` : e.name);
-      } else if (e.name.endsWith(".md")) {
-        const relPath = rel ? `${rel}/${e.name}` : e.name;
-        ids.push(relPath.slice(0, -3));
-      }
+/** Bounded-parallel map: at most `limit` of `fn` in flight at once. */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
     }
   }
-  await walk(conceptsDir, "");
-  return ids;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/** /api/fs requests in flight per bundle operation (design.md ADR-016). */
+const PARALLEL_IO = 16;
+
+function isMissing(err) {
+  return err && (err.status === 404 || isNotFoundError(err));
+}
+
+/**
+ * Every concept file under `concepts/`, with the signature it is on disk at:
+ * id -> { size, modified }. Directories are listed level by level, PARALLEL_IO
+ * at a time.
+ *
+ * A bundle with no `concepts/` yet is empty — that absence is expected. Any
+ * other listing failure PROPAGATES: reading a failed listing as "this folder
+ * is empty" is how a document's chapters used to vanish from search while an
+ * ingest was writing next to them (ADR-016, must-fix 4).
+ */
+async function listConceptSignatures(bDir) {
+  const conceptsDir = path.join(bDir, "concepts");
+  const sigs = new Map();
+  let level;
+  try {
+    level = [{ rel: "", entries: await vfs.list(conceptsDir) }];
+  } catch (err) {
+    if (isMissing(err)) return sigs;
+    throw err;
+  }
+  while (level.length) {
+    const dirs = [];
+    for (const { rel, entries } of level) {
+      for (const e of entries) {
+        const relPath = rel ? `${rel}/${e.name}` : e.name;
+        if (e.type === "dir") dirs.push(relPath);
+        else if (e.name.endsWith(".md")) sigs.set(relPath.slice(0, -3), { size: e.size || 0, modified: e.modified || 0 });
+      }
+    }
+    level = await mapLimit(dirs, PARALLEL_IO, async (rel) => ({ rel, entries: await vfs.list(path.join(conceptsDir, rel)) }));
+  }
+  return sigs;
+}
+
+async function listConceptIds(bDir) {
+  return Array.from((await listConceptSignatures(bDir)).keys());
 }
 
 async function readConceptRaw(bDir, id) {
@@ -378,52 +438,63 @@ async function readConceptRaw(bDir, id) {
   return { frontmatter, body, path: p, raw };
 }
 
-// ── in-memory link graph (backlinks) + derived-view cache ────────────────
+// ── the per-bundle model and its serial queue (design.md ADR-016) ──────
 //
-// Two caches, both invalidated by the SAME write path. `graphCache` is the
-// retained markdown-link backlink index. `derivedCache` is new: it holds the
-// parsed concept index / TOC / knowledge graph so a search or a graph render
-// doesn't re-walk every chapter file. Both are read-through — a dirty or
-// absent entry rebuilds once, on demand (design.md §5.3 "read-through cache").
+// ONE in-memory model per bundle — every concept with the signature it was
+// read at, and everything derived from them (documents, chapters, terms,
+// TOCs, links, backlinks). It replaces two caches that each re-read the whole
+// bundle, one request at a time, after every write.
+//
+// Every mutation of a bundle — a write, a read's freshness refresh, a full
+// rebuild — runs on that bundle's queue, one at a time. The queue is
+// re-entrant: a function already holding a bundle's turn (upsertConcept called
+// from addRawSource, getModel called from mergeConcepts) runs inline instead
+// of waiting behind itself. That is carried by AsyncLocalStorage, so no call
+// site has to know whether it is "inside" or not.
 
-const graphCache = new Map(); // bDir -> { forward: Map, backlinks: Map, dirty }
-const derivedCache = new Map(); // bDir -> { model, builtAt }
+const { AsyncLocalStorage } = require("node:async_hooks");
 
-function markGraphDirty(bDir) {
-  graphCache.set(bDir, { dirty: true });
-  derivedCache.delete(bDir);
+const models = new Map(); // bDir -> model
+const queueTails = new Map(); // bDir -> the promise the next turn waits on
+const pendingRefresh = new Map(); // bDir -> a queued, not-yet-started refresh
+const turn = new AsyncLocalStorage(); // { held: Set<bDir>, refreshed: Set<bDir> }
+const sequenced = () => undefined;
+
+function withBundle(bDir, fn) {
+  const ctx = turn.getStore();
+  if (ctx && ctx.held.has(bDir)) return Promise.resolve().then(fn);
+  const prev = queueTails.get(bDir) || Promise.resolve();
+  const mine = { held: new Set([...(ctx ? ctx.held : []), bDir]), refreshed: new Set() };
+  const run = prev.then(() => turn.run(mine, fn));
+  // The tail only orders the turns. The outcome — value or error — is the
+  // caller's: they hold `run` itself.
+  const tail = run.then(sequenced, sequenced);
+  queueTails.set(bDir, tail);
+  tail.then(() => {
+    if (queueTails.get(bDir) === tail) queueTails.delete(bDir);
+  });
+  return run;
 }
 
-async function ensureGraph(bDir) {
-  const cached = graphCache.get(bDir);
-  if (cached && !cached.dirty) return cached;
-  const ids = await listConceptIds(bDir);
-  const forward = new Map();
-  const backlinks = new Map();
-  for (const id of ids) {
-    const parsed = await readConceptRaw(bDir, id);
-    const links = parsed ? extractLinks(parsed.body) : [];
-    forward.set(id, new Set(links));
-    for (const t of links) {
-      if (!backlinks.has(t)) backlinks.set(t, new Set());
-      backlinks.get(t).add(id);
-    }
-  }
-  const graph = { forward, backlinks, dirty: false, builtAt: Date.now() };
-  graphCache.set(bDir, graph);
-  return graph;
+/** Drop a bundle's model (deleted, re-created, or about to be rebuilt). */
+function forgetBundle(bDir) {
+  models.delete(bDir);
 }
 
 // ── log.md (append-only operational history, internal — no okf_append_log) ─
 
 async function appendLog(bundleRoot, bundleName, { event, message, conceptId, at, data }) {
   const bDir = bundleDir(bundleRoot, bundleName);
+  return withBundle(bDir, () => appendLogLocked(bDir, { event, message, conceptId, at, data }));
+}
+
+async function appendLogLocked(bDir, { event, message, conceptId, at, data }) {
   const ts = at || nowIso();
   const subject = conceptId || "-";
   let entry = `\n## ${ts} — ${event} — ${subject}\n\n${message || ""}\n`;
   if (data !== undefined) entry += `\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\`\n`;
   const p = safeJoin(bDir, "log.md");
-  const current = await vfs.readText(p).catch(() => "# Log\n");
+  const current = (await readTextIfExists(p)) ?? "# Log\n";
   await vfs.writeText(p, current + entry);
   return { ok: true, at: ts };
 }
@@ -584,18 +655,33 @@ function personTermList(fm) {
  * pretending the bundle is fully routed.
  */
 async function classifyBundle(bDir) {
-  const ids = await listConceptIds(bDir);
+  const entries = await readEntries(bDir, await listConceptSignatures(bDir));
+  return classifyParsed(entries);
+}
+
+/** Read the given concepts, PARALLEL_IO at a time: id -> entry. A file that
+ *  vanished between the listing and the read is simply not there. */
+async function readEntries(bDir, sigs) {
+  const ids = Array.from(sigs.keys());
+  const read = await mapLimit(ids, PARALLEL_IO, (id) => readConceptRaw(bDir, id));
+  const entries = new Map();
+  ids.forEach((id, i) => {
+    if (read[i]) entries.set(id, entryOf(read[i].frontmatter, read[i].body, sigs.get(id)));
+  });
+  return entries;
+}
+
+function entryOf(frontmatter, body, sig) {
+  return { frontmatter, body, sig, links: new Set(extractLinks(body)) };
+}
+
+/** Classify parsed concepts (id -> {frontmatter, body}) — pure, no I/O. */
+function classifyParsed(parsedById) {
+  const ids = Array.from(parsedById.keys());
   const now = Date.now();
   const documents = new Map();
   const chapters = [];
-  const parsedById = new Map();
   let legacyChapters = 0;
-
-  for (const id of ids) {
-    const parsed = await readConceptRaw(bDir, id);
-    if (!parsed) continue;
-    parsedById.set(id, parsed);
-  }
 
   // pass 1 — explicit document stubs
   for (const [id, parsed] of parsedById) {
@@ -817,69 +903,178 @@ function tocMarkdown(toc, stampIso) {
   return stringifyDocument(fm, lines.join("\n") + "\n");
 }
 
-function bundleIndexMarkdown(bundleName, title, description, classified, terms) {
+/**
+ * The bundle's table of contents (FR-069, ADR-017): one entry per document,
+ * newest first by when it was FIRST added to the bundle, ties by id. The one
+ * function behind both `okf_read_toc({bundle})` and the stored `index.md`, so
+ * the two can never disagree.
+ */
+function bundleTocEntries(model) {
+  const { classified } = model;
+  const added = model.addedByDoc || new Map();
+  const entries = [];
+  for (const doc of classified.documents.values()) {
+    const chapters = classified.chapters.filter((c) => c.docId === doc.id);
+    const fm = doc.frontmatter || {};
+    entries.push({
+      id: doc.id,
+      title: doc.title,
+      chapters: chapters.length,
+      summary: doc.summary || "",
+      addedAt: added.get(doc.id) || fm.created_at || fm.updated_at || null,
+      attention: chapters.some((c) => c.stale || c.status === "deprecated"),
+    });
+  }
+  // null (no known time) sorts last; ISO strings compare chronologically
+  return entries.sort((a, b) => {
+    if (a.addedAt !== b.addedAt) {
+      if (!a.addedAt) return 1;
+      if (!b.addedAt) return -1;
+      return a.addedAt < b.addedAt ? 1 : -1;
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
+/** When each document was first added, from the provenance ledger: the
+ *  earliest `firstIngestedAt` (else `ingestedAt`) of its non-asset entries. */
+function addedByDocFromLedger(ledger) {
+  const out = new Map();
+  for (const entry of Object.values((ledger && ledger.sources) || {})) {
+    if (!entry || entry.kind === "asset" || !entry.docId) continue;
+    const t = entry.firstIngestedAt || entry.ingestedAt;
+    if (!t) continue;
+    const prev = out.get(entry.docId);
+    if (!prev || t < prev) out.set(entry.docId, t);
+  }
+  return out;
+}
+
+function bundleIndexMarkdown(bundleName, title, description, model) {
   const lines = [`# ${title || bundleName}`, ""];
   if (description) lines.push(description, "");
   lines.push("## Documents", "");
-  if (!classified.documents.size) lines.push("_No documents yet._");
-  for (const doc of classified.documents.values()) {
-    const n = classified.chapters.filter((c) => c.docId === doc.id).length;
-    lines.push(`- [${doc.title}](concepts/${doc.id}.md) — ${n} chapter${n === 1 ? "" : "s"}${doc.summary ? ` · ${doc.summary}` : ""}`);
+  const toc = bundleTocEntries(model);
+  if (!toc.length) lines.push("_No documents yet._");
+  for (const d of toc) {
+    lines.push(`- [${d.title}](concepts/${d.id}.md) — ${d.chapters} chapter${d.chapters === 1 ? "" : "s"}${d.summary ? ` · ${d.summary}` : ""}`);
   }
-  lines.push("", "## Concepts covered", "");
-  lines.push(terms.length ? terms.map((t) => `\`${t.name}\``).join(" · ") : "_No concept terms yet._");
-  lines.push("", "*The authoritative routing table is [`concept-index.md`](concept-index.md); this overview is derived from it.*");
+  // The vocabulary grows without bound with the bundle; the full list lives in
+  // the routing table, not in this overview.
+  const n = model.terms.length;
+  lines.push("", "## Concepts", "", `${n} concept term${n === 1 ? "" : "s"} — see [\`concept-index.md\`](concept-index.md), the authoritative routing table this overview is derived from.`);
   return lines.join("\n") + "\n";
 }
 
 /**
- * Rebuild BOTH derived levels from canonical content and write them to disk.
- * Called from every write path that can change them (upsert/delete/merge/
- * link/import) and from the read-through cache when drift is detected, so
- * neither artifact can silently rot (FR-009 / NFR-004).
+ * Derive everything a bundle's readers need from its concepts — pure, no I/O.
+ * `nextStaleAt` is the earliest `stale_after` still in the future: a read past
+ * it re-derives, so a chapter turns stale without anyone writing to it
+ * (ADR-016.6).
  */
-async function rebuildDerived(bundleRoot, bundleName) {
-  const bDir = bundleDir(bundleRoot, bundleName);
-  const classified = await classifyBundle(bDir);
+function deriveModel(bundleName, entries, indexGeneratedAt, ledgerInfo) {
+  const classified = classifyParsed(entries);
   const terms = buildConceptIndex(classified);
-  const stamp = nowIso();
-
-  await vfs.writeText(safeJoin(bDir, "concept-index.md"), conceptIndexMarkdown(bundleName, terms, stamp));
-
-  const tocDir = safeJoin(bDir, "toc");
   const tocByDoc = new Map();
-  for (const docId of classified.documents.keys()) {
-    const toc = buildToc(classified, docId);
-    tocByDoc.set(docId, toc);
-    await vfs.writeText(safeJoin(tocDir, `${docId}.md`), tocMarkdown(toc, stamp));
+  for (const docId of classified.documents.keys()) tocByDoc.set(docId, buildToc(classified, docId));
+  const backlinks = new Map();
+  for (const [from, e] of entries) {
+    for (const to of e.links) {
+      if (!backlinks.has(to)) backlinks.set(to, new Set());
+      backlinks.get(to).add(from);
+    }
   }
-  // prune TOC files for documents that no longer exist (a derived artifact
-  // must never outlive its content — the "dangling row" okf_lint reports)
-  const stale = await vfs.list(tocDir).catch(() => []);
-  for (const e of stale) {
-    if (e.type === "dir" || !e.name.endsWith(".md")) continue;
-    const docId = e.name.slice(0, -3);
-    if (!tocByDoc.has(docId)) await vfs.remove(path.join(tocDir, e.name)).catch(() => {});
+  const now = Date.now();
+  let nextStaleAt = Infinity;
+  for (const e of entries.values()) {
+    const t = Date.parse((e.frontmatter && e.frontmatter.stale_after) || "");
+    if (!Number.isNaN(t) && t > now && t < nextStaleAt) nextStaleAt = t;
   }
-
-  // index.md stays a human entry point, refreshed from the same pass
-  const existingIndex = await vfs.readText(safeJoin(bDir, "index.md")).catch(() => "");
-  const titleMatch = /^#\s+(.+)$/m.exec(existingIndex);
-  await vfs.writeText(
-    safeJoin(bDir, "index.md"),
-    bundleIndexMarkdown(bundleName, titleMatch ? titleMatch[1] : bundleName, "", classified, terms),
-  );
-
-  const model = {
+  return {
     bundle: bundleName,
+    entries,
+    ledgerSig: ledgerInfo ? ledgerInfo.sig : null,
+    addedByDoc: ledgerInfo ? ledgerInfo.addedByDoc : new Map(),
     terms,
     tocByDoc,
     classified,
-    indexGeneratedAt: stamp,
+    backlinks,
+    nextStaleAt,
+    indexGeneratedAt,
     needsRegeneration: classified.needsRegeneration,
   };
-  derivedCache.set(bDir, { model, builtAt: Date.now() });
-  return model;
+}
+
+/** The ledger's signature and first-added map — re-read only when the file's
+ *  signature differs from `current`'s. */
+async function ledgerInfoFor(bDir, current) {
+  let st = null;
+  try {
+    st = await vfs.stat(safeJoin(bDir, "raw", "sources.json"));
+  } catch (err) {
+    if (!isMissing(err)) throw err;
+  }
+  const sig = st ? { size: st.size || 0, modified: st.modified || 0 } : null;
+  if (current && sameSig(current.ledgerSig, sig)) return { sig, addedByDoc: current.addedByDoc, changed: false };
+  return { sig, addedByDoc: sig ? addedByDocFromLedger(await readLedger(bDir)) : new Map(), changed: true };
+}
+
+function sameSig(a, b) {
+  if (!a || !b) return a === b;
+  return a.size === b.size && a.modified === b.modified;
+}
+
+/** The document a concept id belongs to, in either model. */
+function docIdOf(id, ...models) {
+  for (const m of models) {
+    if (!m) continue;
+    if (m.classified.documents.has(id) && !m.classified.chapters.some((c) => c.id === id)) return id;
+    const ch = m.classified.chapters.find((c) => c.id === id);
+    if (ch) return ch.docId;
+  }
+  const slash = id.lastIndexOf("/");
+  return slash > 0 ? id.slice(0, slash) : id;
+}
+
+/**
+ * Write the derived artifacts from a model: `concept-index.md`, `index.md`,
+ * and the TOC of each document in `docIds` — every document's when `docIds`
+ * is null, which also prunes TOC files whose document is gone.
+ */
+async function writeDerived(bDir, bundleName, model, docIds) {
+  const stamp = nowIso();
+  await vfs.writeText(safeJoin(bDir, "concept-index.md"), conceptIndexMarkdown(bundleName, model.terms, stamp));
+
+  const tocDir = safeJoin(bDir, "toc");
+  const targets = docIds ? Array.from(new Set(docIds)) : Array.from(model.tocByDoc.keys());
+  for (const docId of targets) {
+    const toc = model.tocByDoc.get(docId);
+    const file = safeJoin(tocDir, `${docId}.md`);
+    if (toc) await vfs.writeText(file, tocMarkdown(toc, stamp));
+    else if (await vfs.exists(file)) await vfs.remove(file);
+  }
+  if (!docIds) {
+    // a derived artifact must never outlive its content (okf_lint's "dangling row")
+    let stale = [];
+    try {
+      stale = await vfs.list(tocDir);
+    } catch (err) {
+      if (!isMissing(err)) throw err;
+    }
+    for (const e of stale) {
+      if (e.type === "dir" || !e.name.endsWith(".md")) continue;
+      if (!model.tocByDoc.has(e.name.slice(0, -3))) await vfs.remove(path.join(tocDir, e.name));
+    }
+  }
+
+  // index.md stays a human entry point, refreshed from the same pass
+  const existingIndex = (await readTextIfExists(safeJoin(bDir, "index.md"))) || "";
+  const titleMatch = /^#\s+(.+)$/m.exec(existingIndex);
+  await vfs.writeText(
+    safeJoin(bDir, "index.md"),
+    bundleIndexMarkdown(bundleName, titleMatch ? titleMatch[1] : bundleName, "", model),
+  );
+  model.indexGeneratedAt = stamp;
 }
 
 /** Newest chapter `updated_at` in the bundle — the staleness comparison point. */
@@ -892,158 +1087,486 @@ function newestChapterStamp(classified) {
   return newest;
 }
 
-/**
- * Read-through access to the derived model.
- *
- * Order: in-memory cache -> the stored `concept-index.md` (if its
- * `index_generated_at` is not older than the newest chapter write) -> a full
- * rebuild. A pre-redesign bundle with no `concept-index.md` at all lands in
- * the rebuild branch, which is exactly the self-healing upgrade path.
- */
-async function getModel(bundleRoot, bundleName, { allowRebuild = true } = {}) {
-  const bDir = bundleDir(bundleRoot, bundleName);
-  const cached = derivedCache.get(bDir);
-  if (cached) return cached.model;
+/** The stored `concept-index.md`'s stamp when it is at least as new as the
+ *  newest chapter, else null (missing, unreadable as an index, or older). */
+async function storedIndexStamp(bDir, classified) {
+  const raw = await readTextIfExists(safeJoin(bDir, "concept-index.md"));
+  if (!raw) return null;
+  const { frontmatter } = parseFrontmatter(raw);
+  const stamp = Date.parse(frontmatter.index_generated_at || "");
+  if (frontmatter.type !== "concept-index" || Number.isNaN(stamp)) return null;
+  return newestChapterStamp(classified) <= stamp ? frontmatter.index_generated_at : null;
+}
 
-  const raw = await vfs.readText(safeJoin(bDir, "concept-index.md")).catch(() => null);
-  if (raw) {
-    const { frontmatter } = parseFrontmatter(raw);
-    const stamp = Date.parse(frontmatter.index_generated_at || "");
-    if (frontmatter.type === "concept-index" && !Number.isNaN(stamp)) {
-      const classified = await classifyBundle(bDir);
-      if (newestChapterStamp(classified) <= stamp) {
-        const tocByDoc = new Map();
-        for (const docId of classified.documents.keys()) tocByDoc.set(docId, buildToc(classified, docId));
-        // Trust the stored terms only if they actually survived the
-        // round-trip in the shape search depends on; otherwise derive. A
-        // hand-edited or third-party-written index can't mis-route queries.
-        const storedTerms = Array.isArray(frontmatter.terms) ? frontmatter.terms : null;
-        const usable =
-          storedTerms !== null &&
-          storedTerms.every((t) => t && typeof t.name === "string" && Array.isArray(t.covers));
-        const model = {
-          bundle: bundleName,
-          // A pre-person-kind index carries no `kind` on its terms. Default
-          // it to `topic` right here (ADR-011 S4) so a legacy bundle is
-          // served correctly off the fast path — no migration, no forced
-          // rebuild, and nothing downstream ever sees `kind: undefined`.
-          terms: usable ? storedTerms.map((t) => ({ ...t, kind: t.kind || "topic" })) : buildConceptIndex(classified),
-          tocByDoc,
-          classified,
-          indexGeneratedAt: frontmatter.index_generated_at,
-          needsRegeneration: classified.needsRegeneration,
-        };
-        derivedCache.set(bDir, { model, builtAt: Date.now() });
-        return model;
+/**
+ * Bring a bundle's model up to date with the disk — on the bundle's queue.
+ *
+ *   no model yet   -> read every concept (parallel) and derive; a stored
+ *                     index older than the chapters (a pre-redesign bundle, or
+ *                     one changed while no worker watched it) is rewritten —
+ *                     the self-healing upgrade path, unchanged.
+ *   a model        -> list concepts/ and compare signatures; re-read only what
+ *                     changed, appeared or vanished; rewrite the TOCs of the
+ *                     documents that changed, so a change made outside the
+ *                     service reaches the stored artifacts too (ADR-016.4).
+ *
+ * Within one turn of the queue it runs once: a write already patched the
+ * model it holds.
+ */
+async function refreshModel(bundleRoot, bundleName, { allowRebuild = true } = {}) {
+  const bDir = bundleDir(bundleRoot, bundleName);
+  const ctx = turn.getStore();
+  const current = models.get(bDir);
+  if (current && ctx && ctx.refreshed.has(bDir)) return current;
+
+  const sigs = await listConceptSignatures(bDir);
+  let model;
+  if (!current) {
+    const entries = await readEntries(bDir, sigs);
+    model = deriveModel(bundleName, entries, null, await ledgerInfoFor(bDir, null));
+    const stored = await storedIndexStamp(bDir, model.classified);
+    if (stored) model.indexGeneratedAt = stored;
+    else if (allowRebuild) await writeDerived(bDir, bundleName, model, null);
+    if (!allowRebuild && !stored) return model; // read-only view: nothing written, nothing kept
+  } else {
+    const changed = new Map();
+    for (const [id, sig] of sigs) {
+      const e = current.entries.get(id);
+      if (!e || e.sig.size !== sig.size || e.sig.modified !== sig.modified) changed.set(id, sig);
+    }
+    const removed = Array.from(current.entries.keys()).filter((id) => !sigs.has(id));
+    const ledger = await ledgerInfoFor(bDir, current);
+    if (!changed.size && !removed.length) {
+      if (ledger.changed) {
+        // the order of the bundle TOC (and so index.md) follows the ledger
+        model = deriveModel(bundleName, current.entries, current.indexGeneratedAt, ledger);
+        if (allowRebuild) await writeDerived(bDir, bundleName, model, []);
+      } else {
+        model = Date.now() >= current.nextStaleAt ? deriveModel(bundleName, current.entries, current.indexGeneratedAt, ledger) : current;
       }
+    } else {
+      const entries = new Map(current.entries);
+      for (const id of removed) entries.delete(id);
+      const fresh = await readEntries(bDir, changed);
+      for (const id of changed.keys()) {
+        if (fresh.has(id)) entries.set(id, fresh.get(id));
+        else entries.delete(id);
+      }
+      model = deriveModel(bundleName, entries, current.indexGeneratedAt, ledger);
+      const touched = [...changed.keys(), ...removed].map((id) => docIdOf(id, current, model));
+      if (allowRebuild) await writeDerived(bDir, bundleName, model, touched);
     }
   }
-  if (!allowRebuild) {
-    const classified = await classifyBundle(bDir);
-    const tocByDoc = new Map();
-    for (const docId of classified.documents.keys()) tocByDoc.set(docId, buildToc(classified, docId));
-    return {
-      bundle: bundleName,
-      terms: buildConceptIndex(classified),
-      tocByDoc,
-      classified,
-      indexGeneratedAt: null,
-      needsRegeneration: classified.needsRegeneration,
-    };
-  }
-  return rebuildDerived(bundleRoot, bundleName);
+  models.set(bDir, model);
+  if (ctx) ctx.refreshed.add(bDir);
+  return model;
+}
+
+/**
+ * Record concepts this turn just wrote (raw text) or removed (raw null):
+ * patch the model with them — no re-read of the bundle, one `stat` each for
+ * the new signature — and rewrite the derived artifacts of the documents they
+ * belong to. Runs on the bundle's queue (the caller's turn).
+ */
+async function commitConcepts(bundleRoot, bundleName, changes) {
+  const bDir = bundleDir(bundleRoot, bundleName);
+  const before = models.get(bDir) || (await refreshModel(bundleRoot, bundleName));
+  const entries = new Map(before.entries);
+  await mapLimit(changes, PARALLEL_IO, async ({ id, raw }) => {
+    if (raw === null) {
+      entries.delete(id);
+      return;
+    }
+    let st;
+    try {
+      st = await vfs.stat(conceptFilePath(bDir, id));
+    } catch (err) {
+      if (!isMissing(err)) throw err;
+      entries.delete(id); // removed again by someone else before we looked
+      return;
+    }
+    const { frontmatter, body } = parseFrontmatter(raw);
+    entries.set(id, entryOf(frontmatter, body, { size: st.size || 0, modified: st.modified || 0 }));
+  });
+  const model = deriveModel(bundleName, entries, before.indexGeneratedAt, await ledgerInfoFor(bDir, before));
+  await writeDerived(bDir, bundleName, model, changes.map(({ id }) => docIdOf(id, before, model)));
+  models.set(bDir, model);
+  const ctx = turn.getStore();
+  if (ctx) ctx.refreshed.add(bDir);
+  return model;
+}
+
+/**
+ * Rebuild everything from disk — read every concept, derive, write every
+ * derived artifact. For the operations that touch a whole bundle by nature
+ * (init, import, lint's repair); every per-concept write goes through
+ * commitConcepts instead.
+ */
+async function rebuildDerived(bundleRoot, bundleName) {
+  const bDir = bundleDir(bundleRoot, bundleName);
+  return withBundle(bDir, async () => {
+    forgetBundle(bDir);
+    const entries = await readEntries(bDir, await listConceptSignatures(bDir));
+    const model = deriveModel(bundleName, entries, null, await ledgerInfoFor(bDir, null));
+    await writeDerived(bDir, bundleName, model, null);
+    models.set(bDir, model);
+    turn.getStore().refreshed.add(bDir);
+    return model;
+  });
+}
+
+/**
+ * The bundle's model, fresh (ADR-016). Concurrent callers share one queued
+ * refresh rather than each listing the bundle; a caller already in the
+ * bundle's turn refreshes inline.
+ */
+function getModel(bundleRoot, bundleName, opts = {}) {
+  const bDir = bundleDir(bundleRoot, bundleName);
+  const ctx = turn.getStore();
+  if (ctx && ctx.held.has(bDir)) return refreshModel(bundleRoot, bundleName, opts);
+  if (opts.allowRebuild === false) return withBundle(bDir, () => refreshModel(bundleRoot, bundleName, opts));
+  const pending = pendingRefresh.get(bDir);
+  if (pending) return pending;
+  const p = withBundle(bDir, () => {
+    pendingRefresh.delete(bDir);
+    return refreshModel(bundleRoot, bundleName, opts);
+  });
+  pendingRefresh.set(bDir, p);
+  return p;
 }
 
 // ════════════════════════════════════════════════════════════════════════
 //  RETRIEVAL (T006) — okf_search: ONE deterministic function, two surfaces
 // ════════════════════════════════════════════════════════════════════════
 
-function tokenize(query) {
-  return String(query || "").toLowerCase().split(/[^\w-]+/).filter(Boolean);
+// ── full-text search (ADR-015, ADR-018, design.md §12.3) ─────────────────
+//
+// A linear scan over the model: every chapter and every document stub, its
+// terms, title, summary and body (inline-asset interpretations included). At
+// the target scale — ~3,000 chapters, ~10 MB of text — that is tens of
+// milliseconds, and it needs no index to keep consistent, nothing on disk
+// (SC-023) and no dependency. ADR-015 records when to replace it.
+
+const SEARCH_PAGE = { default: 10, max: 50 };
+const GROUP_HITS = 5;
+const EXCERPT_MAX = 400;
+const SEARCHED = ["terms", "titles", "summaries", "full text"];
+const TIER = { term: 4, person: 4, title: 3, summary: 2, text: 1 };
+const FIELD_WEIGHT = { term: 4, title: 3, summary: 2, text: 1 };
+const BM25_K1 = 1.2;
+// A small, fixed English list. Dropped only when something else is left:
+// a query made of nothing but these is searched as written.
+const STOP_WORDS = new Set("what is our the a an of to in on for and or how does do we i it this that with about are be".split(" "));
+
+/** Lowercase, compatibility-decomposed, combining marks removed: "Córdoba" -> "cordoba". */
+function fold(text) {
+  return String(text || "").normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase();
+}
+
+function queryWords(query) {
+  const words = Array.from(new Set(fold(query).split(/[^\p{L}\p{N}]+/u).filter(Boolean)));
+  const content = words.filter((w) => !STOP_WORDS.has(w));
+  return content.length ? content : words;
+}
+
+/** A word matches at the START of a word: `api` does not match "rapid". */
+function wordRegex(word) {
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "gu");
+}
+
+function countMatches(re, folded) {
+  re.lastIndex = 0;
+  let n = 0;
+  while (re.exec(folded)) n++;
+  return n;
+}
+
+/** Markdown reduced to its readable text; a heading becomes its own sentence. */
+function plainText(body) {
+  return String(body || "")
+    .replace(/```[^\n]*\n([\s\S]*?)```/g, "$1")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+(.*)$/gm, "$1.")
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")
+    .replace(/\*\*|__|`|~~/g, "");
+}
+
+// Per-entry search text, computed on first use. Entries are replaced, never
+// mutated, when a concept changes — so the cache can never serve stale text.
+const searchTextCache = new WeakMap();
+function searchTextOf(entry) {
+  let t = searchTextCache.get(entry);
+  if (!t) {
+    const plain = plainText(entry.body);
+    t = { plain, folded: fold(plain) };
+    searchTextCache.set(entry, t);
+  }
+  return t;
+}
+
+/** The sentence index whose folded text matches the most words, else -1. */
+function bestSentence(sentences, regexes) {
+  let best = -1;
+  let bestCount = 0;
+  sentences.forEach((sentence, i) => {
+    const f = fold(sentence);
+    const n = regexes.filter((re) => countMatches(re, f) > 0).length;
+    if (n > bestCount) {
+      best = i;
+      bestCount = n;
+    }
+  });
+  return best;
+}
+
+/** Where the first matched word starts in the ORIGINAL sentence. Folding can
+ *  change length (ligatures, Hangul), so positions are mapped character by
+ *  character — never assumed equal. */
+function originalMatchIndex(sentence, words) {
+  let folded = "";
+  const origAt = [];
+  let i = 0;
+  for (const ch of sentence) {
+    const f = fold(ch);
+    for (let k = 0; k < f.length; k++) origAt.push(i);
+    folded += f;
+    i += ch.length;
+  }
+  let first = Infinity;
+  for (const w of words) {
+    const re = wordRegex(w);
+    const m = re.exec(folded);
+    // the match may begin with the boundary character before the word
+    if (m) first = Math.min(first, m.index + m[0].length - w.length);
+  }
+  return first === Infinity ? 0 : origAt[first] || 0;
 }
 
 /**
- * Concept-anchored search over the Level-1 index (design.md §6.1).
- *
- * NO LLM IS IN THIS MATCH. It is a lookup: tokenize, match tokens against
- * concept-term names and the one-line descriptions the index carries, collect
- * the covering chapters, rank, return TOC rows. The LLM does the *routing*
- * (deciding what to ask) and the *synthesis* (reading the full chapters it
- * then fetches) — this is the deterministic bridge between the two.
- *
- * Because the pass is over `terms` (distinct vocabulary), its cost is bounded
- * by V, not by the document or chapter count (NFR-011 / SC-006).
- *
- * The SAME function backs the `okf_search` tool and the app's
- * `/bundles/<b>/search` route, so the two can never diverge (FR-036/FR-043).
- * Ranking is fully deterministic — ties break on (docId, chId) — so the same
- * query against an unchanged bundle always returns byte-identical rows.
+ * The sentence with the most matched words, plus at most one either side —
+ * at most three sentences and EXCERPT_MAX characters, ellipses included. Cut
+ * from the original text, so it reads as the source wrote it.
  */
-function searchIndex(terms, query, limit = 25) {
-  const tokens = tokenize(query);
-  if (!tokens.length) return [];
-  const rows = [];
-  const seen = new Map(); // docId/chId -> row index (a chapter appears once)
-
-  for (const term of terms) {
-    const name = String(term.name || "").toLowerCase();
-    const termTokens = tokens.filter((tok) => name.includes(tok));
-    const termHit = termTokens.length > 0;
-    for (const cov of term.covers || []) {
-      const desc = String(cov.description || "").toLowerCase();
-      const descTokens = tokens.filter((tok) => desc.includes(tok));
-      if (!termHit && !descTokens.length) continue;
-      const key = `${cov.docId}/${cov.chId}`;
-      const matchedTokens = new Set([...termTokens, ...descTokens]);
-      const candidate = {
-        docId: cov.docId,
-        docTitle: cov.docTitle,
-        chId: cov.chId,
-        chTitle: cov.chTitle,
-        description: cov.description || "",
-        matchedConcept: term.name,
-        // additive (ADR-011): WHICH KIND of term matched. The algorithm
-        // above is untouched — a person's name is an ordinary term-name hit.
-        kind: term.kind || "topic",
-        status: cov.status || "draft",
-        stale: !!cov.stale,
-        _tier: termHit ? 0 : 1, // a term-name match outranks a description-only match
-        _tokens: matchedTokens.size,
-      };
-      if (!seen.has(key)) {
-        seen.set(key, rows.length);
-        rows.push(candidate);
-      } else {
-        // the same chapter reached via a second term: keep the stronger match,
-        // so `matchedConcept` always names the reason the row ranks where it does
-        const existing = rows[seen.get(key)];
-        if (candidate._tier < existing._tier || (candidate._tier === existing._tier && candidate._tokens > existing._tokens)) {
-          rows[seen.get(key)] = candidate;
-        }
-      }
-    }
+function excerptFor(plain, words) {
+  const regexes = words.map(wordRegex);
+  const sentences = plain.split(/(?<=[.!?。])\s+|\n+/).map((x) => x.trim()).filter(Boolean);
+  const best = bestSentence(sentences, regexes);
+  if (best < 0) return "";
+  const tries = [
+    [best - 1, best, best + 1],
+    [best - 1, best],
+    [best, best + 1],
+    [best],
+  ];
+  for (const t of tries) {
+    const text = t.map((i) => sentences[i]).filter(Boolean).join(" ");
+    if (text.length <= EXCERPT_MAX) return text;
   }
-
-  rows.sort((a, b) => {
-    if (a._tier !== b._tier) return a._tier - b._tier;
-    if (a._tokens !== b._tokens) return b._tokens - a._tokens;
-    if (a.docId !== b.docId) return a.docId < b.docId ? -1 : 1;
-    return a.chId < b.chId ? -1 : a.chId > b.chId ? 1 : 0;
-  });
-
-  const n = Number.isFinite(limit) && limit > 0 ? limit : 25;
-  // Empty is a valid answer (spec Edge Cases): never invent a row.
-  return rows.slice(0, n).map(({ _tier, _tokens, ...row }) => row);
+  const sentence = sentences[best];
+  const at = originalMatchIndex(sentence, words);
+  const start = Math.max(0, Math.min(at - Math.floor(EXCERPT_MAX / 3), sentence.length - (EXCERPT_MAX - 2)));
+  const room = EXCERPT_MAX - (start > 0 ? 1 : 0) - 1;
+  const end = start + room;
+  return `${start > 0 ? "…" : ""}${sentence.slice(start, end)}${end < sentence.length ? "…" : ""}`;
 }
 
-async function search(bundleRoot, bundleName, query, limit) {
+/** The searchable units of a model: every chapter and every real document stub. */
+function searchUnits(model) {
+  const units = [];
+  const now = Date.now();
+  for (const ch of model.classified.chapters) {
+    const entry = model.entries.get(ch.id);
+    if (!entry) continue;
+    const doc = model.classified.documents.get(ch.docId);
+    units.push({
+      entry,
+      docId: ch.docId,
+      docTitle: (doc && doc.title) || ch.docId,
+      chId: ch.chId,
+      chTitle: ch.title,
+      summary: ch.summary || "",
+      concepts: ch.concepts,
+      persons: ch.personTerms || [],
+      status: ch.status,
+      stale: isStale(ch.frontmatter, now),
+    });
+  }
+  for (const doc of model.classified.documents.values()) {
+    const entry = model.entries.get(doc.id);
+    if (!entry || doc.synthetic) continue;
+    const fm = doc.frontmatter || {};
+    units.push({
+      entry,
+      docId: doc.id,
+      docTitle: doc.title,
+      chId: "",
+      chTitle: doc.title,
+      summary: doc.summary || "",
+      concepts: Array.isArray(fm.concepts) ? fm.concepts.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : [],
+      persons: doc.personTerms || [],
+      status: "stable",
+      stale: false,
+    });
+  }
+  return units;
+}
+
+/**
+ * okf_search (FR-001/FR-002 as amended): ranked chapter hits over terms,
+ * titles, summaries and full text. ANY query word may match — a natural
+ * paraphrase must still route (US1 AS1) — and rows matching more of the words
+ * rank first. Deterministic: coverage, tier, score, document added-date, id.
+ */
+function searchFullText(model, query, opts = {}) {
+  const words = queryWords(query);
+  const grouped = opts.groupBy === "document";
+  const page = pageOf(0, { limit: opts.limit }, SEARCH_PAGE);
+  if (!words.length) return grouped ? { groups: [], count: 0, total: 0, searched: SEARCHED, ...pick(page) } : { rows: [], count: 0, total: 0, searched: SEARCHED, ...pick(page) };
+  const regexes = words.map(wordRegex);
+  const units = searchUnits(model);
+
+  const scored = [];
+  const df = new Array(words.length).fill(0);
+  for (const u of units) {
+    const text = searchTextOf(u.entry);
+    const terms = [
+      ...u.concepts.map((name) => ({ name, kind: "topic", folded: fold(name.replace(/-/g, " ")) })),
+      ...u.persons.map((name) => ({ name, kind: "person", folded: fold(name) })),
+    ];
+    const fields = { title: fold(u.chTitle), summary: fold(u.summary), text: text.folded };
+    const matched = [];
+    const tf = [];
+    let bestTermHits = 0;
+    let bestTerm = null;
+    const termHits = terms.map(() => 0);
+    words.forEach((w, wi) => {
+      const re = regexes[wi];
+      const counts = {
+        term: terms.reduce((n, t, ti) => {
+          const c = countMatches(re, t.folded);
+          if (c) termHits[ti]++;
+          return n + c;
+        }, 0),
+        title: countMatches(re, fields.title),
+        summary: countMatches(re, fields.summary),
+        text: countMatches(re, fields.text),
+      };
+      tf.push(counts);
+      if (counts.term || counts.title || counts.summary || counts.text) {
+        matched.push(wi);
+        df[wi]++;
+      }
+    });
+    if (!matched.length) continue;
+    terms.forEach((t, ti) => {
+      if (termHits[ti] > bestTermHits) {
+        bestTermHits = termHits[ti];
+        bestTerm = t;
+      }
+    });
+    const anyIn = (field) => matched.some((wi) => tf[wi][field] > 0);
+    const matchKind = bestTerm ? (bestTerm.kind === "person" ? "person" : "term") : anyIn("title") ? "title" : anyIn("summary") ? "summary" : "text";
+    // A term match names its term; anything else is anchored to the
+    // chapter's own term, exactly as a description match always was.
+    const anchor = bestTerm || (u.concepts.length ? { name: u.concepts[0], kind: "topic" } : u.persons.length ? { name: u.persons[0], kind: "person" } : null);
+    scored.push({ u, matched, tf, matchKind, anchor, inText: anyIn("text") });
+  }
+
+  const n = units.length;
+  const idf = df.map((d) => Math.log(1 + (n - d + 0.5) / (d + 0.5)));
+  const added = model.addedByDoc || new Map();
+  for (const s of scored) {
+    let score = 0;
+    for (const wi of s.matched) {
+      for (const field of ["term", "title", "summary", "text"]) {
+        const c = s.tf[wi][field];
+        if (c) score += FIELD_WEIGHT[field] * ((c * (BM25_K1 + 1)) / (c + BM25_K1)) * idf[wi];
+      }
+    }
+    s.score = Math.round(score * 1e6) / 1e6;
+    s.addedAt = added.get(s.u.docId) || "";
+  }
+  scored.sort((a, b) =>
+    b.matched.length - a.matched.length ||
+    TIER[b.matchKind] - TIER[a.matchKind] ||
+    b.score - a.score ||
+    (a.addedAt === b.addedAt ? 0 : a.addedAt < b.addedAt ? 1 : -1) ||
+    (a.u.docId === b.u.docId ? (a.u.chId < b.u.chId ? -1 : a.u.chId > b.u.chId ? 1 : 0) : a.u.docId < b.u.docId ? -1 : 1),
+  );
+
+  const toRow = (s) => {
+    const row = {
+      docId: s.u.docId,
+      docTitle: s.u.docTitle,
+      chId: s.u.chId,
+      chTitle: s.u.chTitle,
+      description: s.u.summary,
+      matchedConcept: s.anchor ? s.anchor.name : null,
+      kind: s.anchor ? s.anchor.kind : null,
+      status: s.u.status,
+      stale: s.u.stale,
+      matchKind: s.matchKind,
+      matchedWords: s.matched.map((wi) => words[wi]),
+    };
+    if (s.inText) row.excerpt = excerptFor(searchTextOf(s.u.entry).plain, s.matched.map((wi) => words[wi]));
+    return row;
+  };
+
+  if (!grouped) {
+    const rows = scored.slice(0, page.limit).map(toRow);
+    return { rows, count: rows.length, total: scored.length, searched: SEARCHED, ...pick(page) };
+  }
+  const byDoc = new Map();
+  for (const s of scored) {
+    if (!byDoc.has(s.u.docId)) byDoc.set(s.u.docId, { docId: s.u.docId, docTitle: s.u.docTitle, all: [] });
+    byDoc.get(s.u.docId).all.push(s);
+  }
+  const groups = Array.from(byDoc.values())
+    .slice(0, page.limit)
+    .map((g) => ({ docId: g.docId, docTitle: g.docTitle, total: g.all.length, hits: g.all.slice(0, GROUP_HITS).map(toRow) }));
+  return { groups, count: groups.length, total: scored.length, searched: SEARCHED, ...pick(page) };
+}
+
+/** The clamp report from a page, if any. */
+function pick(page) {
+  return page.clamped ? { clamped: true, maxLimit: page.maxLimit } : {};
+}
+
+/**
+ * okf_search — the one search behind the tool and the app's route (FR-036).
+ * `opts` is `{limit, groupBy}`; a bare number is a limit (older callers).
+ */
+async function search(bundleRoot, bundleName, query, opts) {
   const model = await getModel(bundleRoot, bundleName);
-  return searchIndex(model.terms, query, limit);
+  return searchFullText(model, query, typeof opts === "number" ? { limit: opts } : opts || {});
 }
 
 // ── derived read views (design.md §6.2) ──────────────────────────────────
 
-async function readToc(bundleRoot, bundleName, docId) {
+const TOC_PAGE = { default: 50, max: 200 };
+
+/** Clamp a requested page size; say so when it was clamped. */
+function pageOf(total, { offset, limit } = {}, { default: dflt, max }) {
+  const off = Math.max(0, Number.isFinite(Number(offset)) ? Math.floor(Number(offset)) : 0);
+  const asked = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : dflt;
+  const lim = Math.min(asked, max);
+  return { offset: off, limit: lim, ...(asked > max ? { clamped: true, maxLimit: max } : {}) };
+}
+
+/**
+ * Table of contents at two levels (FR-004, as amended 2026-10-14):
+ *   no docId -> the bundle TOC (FR-069): documents, newest first, paged;
+ *   a docId  -> that document's chapters, as always.
+ */
+async function readToc(bundleRoot, bundleName, docId, opts = {}) {
+  if (docId === undefined || docId === null || docId === "") {
+    const model = await getModel(bundleRoot, bundleName);
+    const all = bundleTocEntries(model);
+    const page = pageOf(all.length, opts, TOC_PAGE);
+    return { bundle: bundleName, total: all.length, ...page, documents: all.slice(page.offset, page.offset + page.limit) };
+  }
   validateConceptId(docId);
   const model = await getModel(bundleRoot, bundleName);
   const toc = model.tocByDoc.get(docId);
@@ -1088,50 +1611,76 @@ function documentSource(frontmatter) {
   return null;
 }
 
-/** The concept VOCABULARY with per-term chapter counts (FR-006). */
-async function listConcepts(bundleRoot, bundleName, { type, status, kind } = {}) {
+const TERM_PAGE = { default: 100, max: 500 };
+const COVERS_PER_TERM = 5;
+
+/**
+ * The concept VOCABULARY (FR-006 as amended): terms filtered by an optional
+ * `query` on the name (case- and accent-insensitive substring), paged, each
+ * with its kind, count and at most COVERS_PER_TERM of the chapters it covers
+ * (`coversTotal` says how many). Bounded by the page, never by the bundle
+ * (NFR-011, ADR-019). Documents and chapters are okf_read_toc's — `type`
+ * answers with a pointer there instead of a list.
+ */
+async function listConcepts(bundleRoot, bundleName, { query, type, status, kind, offset, limit } = {}) {
   const model = await getModel(bundleRoot, bundleName);
-  // `kind` is an OPTIONAL filter (ADR-011): "topic" | "person" | "all"
-  // (anything else, including the default, means all).
+  if (type === "document" || type === "section" || type === "chapter") {
+    return {
+      terms: [],
+      total: 0,
+      note: "Documents and chapters are not listed here. Documents: okf_read_toc({bundle}) (paged, newest first). A document's chapters: okf_read_toc({bundle, docId}).",
+    };
+  }
+  // `kind` is an OPTIONAL filter (ADR-011): "topic" | "person"; anything else means all.
   const wantKind = kind === "topic" || kind === "person" ? kind : null;
+  const q = query ? fold(query) : "";
+  const now = Date.now();
   let terms = model.terms
     .filter((t) => !wantKind || (t.kind || "topic") === wantKind)
-    .map((t) => ({
-      term: t.name,
-      kind: t.kind || "topic",
-      count: t.count,
-      covers: t.covers
-        .filter((c) => !status || c.status === status)
-        .map((c) => ({ docId: c.docId, chId: c.chId, title: c.chTitle, description: c.description, status: c.status })),
-    }));
-  if (status) terms = terms.map((t) => ({ ...t, count: t.covers.length })).filter((t) => t.count > 0);
-
-  const documents = Array.from(model.classified.documents.values()).map((d) => ({
-    id: d.id,
-    title: d.title,
-    summary: d.summary,
-    chapters: model.classified.chapters.filter((c) => c.docId === d.id).length,
+    .filter((t) => !q || fold(t.name).includes(q))
+    .map((t) => {
+      const covers = t.covers.filter((c) => !status || c.status === status);
+      return { t, covers };
+    })
+    .filter(({ covers }) => !status || covers.length > 0);
+  const total = terms.length;
+  const page = pageOf(total, { offset, limit }, TERM_PAGE);
+  terms = terms.slice(page.offset, page.offset + page.limit).map(({ t, covers }) => ({
+    term: t.name,
+    kind: t.kind || "topic",
+    count: covers.length,
+    coversTotal: covers.length,
+    covers: covers.slice(0, COVERS_PER_TERM).map((c) => {
+      const entry = model.entries.get(c.chId ? `${c.docId}/${c.chId}` : c.docId);
+      return {
+        docId: c.docId,
+        docTitle: c.docTitle,
+        chId: c.chId,
+        title: c.chTitle,
+        description: c.description,
+        status: c.status,
+        stale: entry ? isStale(entry.frontmatter, now) : false,
+      };
+    }),
   }));
-  const chapters = model.classified.chapters
-    .filter((c) => !status || c.status === status)
-    .map((c) => ({ id: c.id, docId: c.docId, title: c.title, summary: c.summary, concepts: c.concepts, status: c.status, stale: c.stale }));
-
-  if (type === "document") return { terms: [], documents, chapters: [] };
-  if (type === "section" || type === "chapter") return { terms: [], documents: [], chapters };
-  return { terms, documents, chapters, indexGeneratedAt: model.indexGeneratedAt, needsRegeneration: model.needsRegeneration };
+  return { terms, total, ...page, indexGeneratedAt: model.indexGeneratedAt, needsRegeneration: model.needsRegeneration };
 }
 
 // ── graph derivation (ADR-004) — computed ON READ, never stored ──────────
 
+/** links.json, or [] when the bundle has none. A file that is there but
+ *  unreadable THROWS: reading it as "no links" would let the next link write
+ *  replace every edge in it. */
 async function readLinksSidecar(bDir) {
-  const raw = await vfs.readText(safeJoin(bDir, "links.json")).catch(() => null);
-  if (!raw) return [];
+  const raw = await readTextIfExists(safeJoin(bDir, "links.json"));
+  if (!raw || !raw.trim()) return [];
+  let parsed;
   try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((e) => e && e.from && e.to) : [];
-  } catch {
-    return [];
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`links.json in ${bDir} is not valid JSON (${err.message}) — repair it before adding links; it was left untouched`);
   }
+  return Array.isArray(parsed) ? parsed.filter((e) => e && e.from && e.to) : [];
 }
 
 async function writeLinksSidecar(bDir, edges) {
@@ -1154,42 +1703,49 @@ async function graph(bundleRoot, bundleName) {
   const nodes = [];
   const edges = [];
   const present = new Set();
+  // A node's id is its NAMESPACED key (FR-073(f), ADR-022): a document called
+  // "deployment" and the concept term "deployment" are two nodes. The bare
+  // ids used to collide, collapsing both into one node and landing the
+  // term's coverage edges on the document.
+  const docKey = (id) => `doc:${id}`;
+  const chapKey = (id) => `chap:${id}`;
+  const conceptKey = (id) => (model.classified.documents.has(id) && !model.classified.chapters.some((c) => c.id === id) ? docKey(id) : chapKey(id));
 
   for (const doc of model.classified.documents.values()) {
-    nodes.push({ id: doc.id, key: `doc:${doc.id}`, type: "doc", label: doc.title, description: doc.summary || "" });
-    present.add(doc.id);
+    nodes.push({ id: docKey(doc.id), key: docKey(doc.id), type: "doc", label: doc.title, description: doc.summary || "", docId: doc.id });
+    present.add(docKey(doc.id));
   }
   for (const ch of model.classified.chapters) {
-    nodes.push({ id: ch.id, key: `chap:${ch.id}`, type: "chap", label: ch.title, description: ch.summary || "", docId: ch.docId, chId: ch.chId, status: ch.status });
-    present.add(ch.id);
-    edges.push({ from: ch.docId, to: ch.id, kind: "containment", label: "contains" });
+    nodes.push({ id: chapKey(ch.id), key: chapKey(ch.id), type: "chap", label: ch.title, description: ch.summary || "", docId: ch.docId, chId: ch.chId, status: ch.status });
+    present.add(chapKey(ch.id));
+    edges.push({ from: docKey(ch.docId), to: chapKey(ch.id), kind: "containment", label: "contains" });
   }
   for (const term of model.terms) {
     // The 4th node category (ADR-011/FR-054): a person-kind term is its own
     // type so the renderer can colour it, but it is NOT a new shape — same
-    // count-driven radius, same `coverage` edge kind as a topic term. Its
-    // `id` is the lowercased name (the app's maps key on it); its `label`
-    // keeps the original case for display.
+    // count-driven radius, same `coverage` edge kind as a topic term. A
+    // person's key is the lowercased name; `label`/`term` keep its case.
     const person = term.kind === "person";
     const type = person ? "person" : "concept";
-    const id = person ? String(term.name).toLowerCase() : term.name;
+    const key = `${type}:${person ? String(term.name).toLowerCase() : term.name}`;
     nodes.push({
-      id,
-      key: `${type}:${id}`,
+      id: key,
+      key,
       type,
       label: term.name,
+      term: term.name,
       count: term.count,
       description: `${person ? "person · covers" : "covers"} ${term.count} chapter${term.count === 1 ? "" : "s"}`,
     });
-    present.add(id);
+    present.add(key);
     for (const cov of term.covers) {
       // an empty `chId` is a DOCUMENT-level cover (the author) — the edge
       // then runs doc -> person instead of chap -> person
-      edges.push({ from: cov.chId ? `${cov.docId}/${cov.chId}` : cov.docId, to: id, kind: "coverage", label: "covers" });
+      edges.push({ from: cov.chId ? chapKey(`${cov.docId}/${cov.chId}`) : docKey(cov.docId), to: key, kind: "coverage", label: "covers" });
     }
   }
   for (const e of await readLinksSidecar(bDir)) {
-    edges.push({ from: e.from, to: e.to, kind: "link", label: e.label || "related" });
+    edges.push({ from: conceptKey(e.from), to: conceptKey(e.to), kind: "link", label: e.label || "related" });
   }
 
   return {
@@ -1212,6 +1768,10 @@ async function graph(bundleRoot, bundleName) {
  * — the skill says the bundle's voice wins — it just isn't created here.
  */
 async function initBundle(bundleRoot, name, opts = {}) {
+  return withBundle(bundleDir(bundleRoot, name), () => initBundleLocked(bundleRoot, name, opts));
+}
+
+async function initBundleLocked(bundleRoot, name, opts = {}) {
   const bDir = bundleDir(bundleRoot, name);
   if (await vfs.exists(bDir)) {
     // A directory with neither `index.md` nor `concepts/` is not a bundle —
@@ -1223,8 +1783,7 @@ async function initBundle(bundleRoot, name, opts = {}) {
       (await vfs.exists(path.join(bDir, "index.md"))) || (await vfs.exists(path.join(bDir, "concepts")));
     if (populated) throw new Error(`bundle already exists: ${name}`);
     await vfs.remove(bDir);
-    graphCache.delete(bDir);
-    derivedCache.delete(bDir);
+    forgetBundle(bDir);
     if (await vfs.exists(bDir)) {
       throw new Error(`incomplete bundle directory could not be removed — retry: ${name}`);
     }
@@ -1239,7 +1798,6 @@ async function initBundle(bundleRoot, name, opts = {}) {
   await vfs.writeText(path.join(bDir, "log.md"), `# Log — ${title}\n`);
   await writeLinksSidecar(bDir, []);
   await vfs.writeText(path.join(bDir, "raw", "sources.json"), JSON.stringify({ sources: {} }, null, 2) + "\n");
-  markGraphDirty(bDir);
   await rebuildDerived(bundleRoot, name);
   await appendLog(bundleRoot, name, { event: "bundle_init", message: `bundle "${name}" created` });
   return bundleHealth(bundleRoot, name);
@@ -1278,24 +1836,15 @@ async function listBundles(bundleRoot) {
   return bundles;
 }
 
-/** Bundle detail for the app's Overview tab (design.md §8.3). */
+/**
+ * Bundle detail for the app's Overview tab: the counts the stat cards and tab
+ * badges need — and nothing proportional to the bundle (FR-036, ADR-021). The
+ * Documents and Concept Index tabs page their own lists.
+ */
 async function bundleDetail(bundleRoot, name) {
   const model = await getModel(bundleRoot, name);
   const health = await bundleHealth(bundleRoot, name);
-  const documents = Array.from(model.classified.documents.values()).map((d) => {
-    const chs = model.classified.chapters.filter((c) => c.docId === d.id);
-    return {
-      id: d.id,
-      title: d.title,
-      summary: d.summary,
-      chapters: chs.length,
-      conceptRefs: chs.reduce((n, c) => n + c.concepts.length, 0),
-      updated: d.updatedAt || (chs.map((c) => c.updatedAt).filter(Boolean).sort().pop() || null),
-      needsAttention: chs.some((c) => c.stale || c.status === "deprecated"),
-      source: documentSource(d.frontmatter),
-    };
-  });
-  return { health, documents, conceptIndex: model.terms, indexGeneratedAt: model.indexGeneratedAt };
+  return { health, indexGeneratedAt: model.indexGeneratedAt };
 }
 
 /**
@@ -1312,11 +1861,13 @@ async function bundleDetail(bundleRoot, name) {
 async function exportBundle(bundleRoot, name) {
   const bDir = bundleDir(bundleRoot, name);
   if (!(await vfs.exists(bDir))) throw new Error(`bundle not found: ${name} — create it first with okf_init_bundle({name: "${name}"})`);
-  await rebuildDerived(bundleRoot, name);
+  // a fresh model means the stored derived artifacts are current (refresh
+  // rewrites them on any change), so the export carries correct ones
+  await getModel(bundleRoot, name);
   const files = [];
   const assets = [];
   async function walk(dir, rel) {
-    const entries = await vfs.list(dir).catch(() => []);
+    const entries = await vfs.list(dir);
     for (const e of entries) {
       const abs = path.join(dir, e.name);
       const relPath = rel ? `${rel}/${e.name}` : e.name;
@@ -1402,7 +1953,11 @@ async function settleConceptListing(bDir, expectedIds, {
  * bundle). Non-destructive and reported — never a silent overwrite, never a
  * silent partial index.
  */
-async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = true } = {}) {
+async function importBundle(bundleRoot, name, opts = {}) {
+  return withBundle(bundleDir(bundleRoot, name), () => importBundleLocked(bundleRoot, name, opts));
+}
+
+async function importBundleLocked(bundleRoot, name, { files, sourcePath, rebuild = true } = {}) {
   const bDir = bundleDir(bundleRoot, name);
   await vfs.mkdir(bDir);
   let imported = 0;
@@ -1423,7 +1978,7 @@ async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = tru
     }
   } else if (typeof sourcePath === "string" && sourcePath) {
     async function copy(dir, rel) {
-      const entries = await vfs.list(dir).catch(() => []);
+      const entries = await vfs.list(dir);
       for (const e of entries) {
         const abs = path.join(dir, e.name);
         const relPath = rel ? `${rel}/${e.name}` : e.name;
@@ -1448,7 +2003,7 @@ async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = tru
 
   await vfs.mkdir(path.join(bDir, "raw"));
   await vfs.mkdir(path.join(bDir, "concepts"));
-  markGraphDirty(bDir);
+  forgetBundle(bDir);
   // The rebuild below runs ONCE and is authoritative, so it has to see the
   // whole import. Make the directory listing agree with the writes first.
   const settle = rebuild
@@ -1459,7 +2014,7 @@ async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = tru
     // Best-effort: the index was built from a listing we KNOW was short, so
     // drop the cached model and report it as needing regeneration rather
     // than serving a partial index as if it were complete.
-    markGraphDirty(bDir);
+    forgetBundle(bDir);
   }
   const needsRegeneration = model.needsRegeneration || !settle.settled;
   await appendLog(bundleRoot, name, {
@@ -1482,13 +2037,16 @@ async function importBundle(bundleRoot, name, { files, sourcePath, rebuild = tru
 }
 
 async function deleteBundle(bundleRoot, name) {
+  return withBundle(bundleDir(bundleRoot, name), () => deleteBundleLocked(bundleRoot, name));
+}
+
+async function deleteBundleLocked(bundleRoot, name) {
   const bDir = bundleDir(bundleRoot, name);
   if (!(await vfs.exists(bDir))) throw new Error(`bundle not found: ${name}`);
   await vfs.remove(bDir);
   // Caches go first, in both outcomes: whatever is left on disk, the in-memory
   // model of it is stale either way.
-  graphCache.delete(bDir);
-  derivedCache.delete(bDir);
+  forgetBundle(bDir);
   // /api/fs's `delete` op can answer 200 without the directory actually being
   // gone (a racing writer, a mount boundary). Verify it, so a half-done delete
   // surfaces as an error the caller can retry rather than a `{deleted:true}`
@@ -1514,10 +2072,16 @@ async function deleteBundle(bundleRoot, name) {
  * array-valued fields where a naive shallow merge would silently discard
  * history, so they are merged by identity rather than replaced wholesale.
  *
- * Every successful write rebuilds the derived index + TOCs, so the routing
- * table can never lag the content that backs it (FR-015).
+ * Every successful write updates the derived index and its document's TOC
+ * (commitConcepts — no re-read of the bundle, ADR-016), so the routing table
+ * can never lag the content that backs it (FR-015).
  */
-async function upsertConcept(bundleRoot, bundleName, id, { title, body, frontmatter, sourceRange, interpretations } = {}) {
+async function upsertConcept(...args) {
+  const [bundleRoot, bundleName] = args;
+  return withBundle(bundleDir(bundleRoot, bundleName), () => upsertConceptLocked(...args));
+}
+
+async function upsertConceptLocked(bundleRoot, bundleName, id, { title, body, frontmatter, sourceRange, interpretations } = {}) {
   const bDir = bundleDir(bundleRoot, bundleName);
   if (!(await vfs.exists(bDir))) throw new Error(`bundle not found: ${bundleName} — create it first with okf_init_bundle({name: "${bundleName}"})`);
   const existing = await readConceptRaw(bDir, id);
@@ -1544,6 +2108,7 @@ async function upsertConcept(bundleRoot, bundleName, id, { title, body, frontmat
 
   const merged = { ...base, ...patch, id, updated_at: now };
   if (!merged.type) merged.type = merged.parent ? "section" : "document";
+  if (merged.type === "document" && patch.summary !== undefined) checkDocumentSummary(patch.summary);
   if (merged.created_at === undefined) merged.created_at = base.created_at || now;
 
   // ── the body (ADR-014 D4 precedence) ─────────────────────────────────
@@ -1566,8 +2131,7 @@ async function upsertConcept(bundleRoot, bundleName, id, { title, body, frontmat
   const finalBody = extraction ? extraction.body : body !== undefined ? body : existing ? existing.body : `# ${merged.title || id}\n`;
   const raw = stringifyDocument(merged, finalBody);
   await vfs.writeText(conceptFilePath(bDir, id), raw);
-  markGraphDirty(bDir);
-  await rebuildDerived(bundleRoot, bundleName);
+  await commitConcepts(bundleRoot, bundleName, [{ id, raw }]);
   await appendLog(bundleRoot, bundleName, {
     event: existing ? "concept_update" : "concept_create",
     conceptId: id,
@@ -1591,6 +2155,24 @@ async function upsertConcept(bundleRoot, bundleName, id, { title, body, frontmat
     : written;
 }
 
+const DOCUMENT_SUMMARY_MAX = 320;
+
+/**
+ * A document's summary is what a reader of the bundle TOC scans — hundreds of
+ * them on a page (FR-070). Two sentences, about 300 characters. Checked when a
+ * write SETS it; summaries already stored are never rewritten.
+ */
+function checkDocumentSummary(summary) {
+  const text = String(summary || "").trim();
+  const sentences = (text.match(/[.!?]+(?=\s|$)/g) || []).length;
+  if (sentences > 2) {
+    throw new Error(`a document summary is at most two sentences (this one has ${sentences}) — say what the document is about, briefly; detail belongs in its chapters`);
+  }
+  if (text.length > DOCUMENT_SUMMARY_MAX) {
+    throw new Error(`a document summary is at most ${DOCUMENT_SUMMARY_MAX} characters (this one has ${text.length}) — say what the document is about, briefly`);
+  }
+}
+
 /**
  * Delete a concept file (FR-025). Non-destructive by default: only the file
  * itself goes; backlinking chapters are left exactly as they were, so a
@@ -1599,23 +2181,31 @@ async function upsertConcept(bundleRoot, bundleName, id, { title, body, frontmat
  * The derived artifacts are rebuilt either way — a deleted chapter's rows
  * disappear from the index and its document's TOC with no hand-sync.
  */
-async function deleteConcept(bundleRoot, bundleName, id, { rewriteBacklinks = false } = {}) {
+async function deleteConcept(...args) {
+  const [bundleRoot, bundleName] = args;
+  return withBundle(bundleDir(bundleRoot, bundleName), () => deleteConceptLocked(...args));
+}
+
+async function deleteConceptLocked(bundleRoot, bundleName, id, { rewriteBacklinks = false } = {}) {
   const bDir = bundleDir(bundleRoot, bundleName);
   const p = conceptFilePath(bDir, id);
   if (!(await vfs.exists(p))) throw new Error(`concept not found: ${bundleName}/${id}`);
+  const before = await getModel(bundleRoot, bundleName);
   await vfs.remove(p);
-  markGraphDirty(bDir);
+  const changes = [{ id, raw: null }];
 
   let linkers = [];
   if (rewriteBacklinks) {
-    const g = await ensureGraph(bDir);
-    linkers = Array.from(g.backlinks.get(id) || []);
-    for (const linkerId of linkers) await removeLinkFromBody(bundleRoot, bundleName, linkerId, id);
+    linkers = Array.from(before.backlinks.get(id) || []).filter((l) => l !== id);
+    for (const linkerId of linkers) {
+      const change = await removeLinkFromBody(bundleRoot, bundleName, linkerId, id);
+      if (change) changes.push(change);
+    }
     const sidecar = (await readLinksSidecar(bDir)).filter((e) => e.from !== id && e.to !== id);
     await writeLinksSidecar(bDir, sidecar);
   }
 
-  await rebuildDerived(bundleRoot, bundleName);
+  await commitConcepts(bundleRoot, bundleName, changes);
   await appendLog(bundleRoot, bundleName, {
     event: "concept_delete",
     conceptId: id,
@@ -1652,7 +2242,12 @@ function rewritePersonTerms(list, fromKey, toDisplay) {
  * matched either term now routes through the single canonical term to the
  * union of chapters.
  */
-async function mergeConcepts(bundleRoot, bundleName, from, to) {
+async function mergeConcepts(...args) {
+  const [bundleRoot, bundleName] = args;
+  return withBundle(bundleDir(bundleRoot, bundleName), () => mergeConceptsLocked(...args));
+}
+
+async function mergeConceptsLocked(bundleRoot, bundleName, from, to) {
   const fromTerm = String(from || "").trim().toLowerCase();
   const toTerm = String(to || "").trim().toLowerCase();
   if (!fromTerm || !toTerm) throw new Error("both `from` and `to` concept terms are required");
@@ -1673,6 +2268,7 @@ async function mergeConcepts(bundleRoot, bundleName, from, to) {
   const toDisplay = toExisting && toExisting.kind === "person" ? toExisting.name : String(to).trim();
 
   const rewritten = [];
+  const changes = [];
   for (const ch of before.classified.chapters) {
     const hitsConcepts = ch.concepts.includes(fromTerm);
     // ADR-011 S3: a person term IS a term, so canonicalizing has to clear the
@@ -1685,8 +2281,10 @@ async function mergeConcepts(bundleRoot, bundleName, from, to) {
     const merged = { ...parsed.frontmatter, updated_at: nowIso() };
     if (hitsConcepts) merged.concepts = Array.from(new Set(ch.concepts.map((t) => (t === fromTerm ? toTerm : t))));
     if (hitsPersons) merged.person_terms = rewritePersonTerms(ch.personTerms, fromTerm, toDisplay);
-    await vfs.writeText(conceptFilePath(bDir, ch.id), stringifyDocument(merged, parsed.body));
+    const raw = stringifyDocument(merged, parsed.body);
+    await vfs.writeText(conceptFilePath(bDir, ch.id), raw);
     rewritten.push(ch.id);
+    changes.push({ id: ch.id, raw });
   }
   // the author rides on the document stub, which carries `person_terms` too
   for (const doc of before.classified.documents.values()) {
@@ -1699,12 +2297,13 @@ async function mergeConcepts(bundleRoot, bundleName, from, to) {
       person_terms: rewritePersonTerms(doc.personTerms, fromTerm, toDisplay),
       updated_at: nowIso(),
     };
-    await vfs.writeText(conceptFilePath(bDir, doc.id), stringifyDocument(merged, parsed.body));
+    const raw = stringifyDocument(merged, parsed.body);
+    await vfs.writeText(conceptFilePath(bDir, doc.id), raw);
     rewritten.push(doc.id);
+    changes.push({ id: doc.id, raw });
   }
 
-  markGraphDirty(bDir);
-  const after = await rebuildDerived(bundleRoot, bundleName);
+  const after = await commitConcepts(bundleRoot, bundleName, changes);
   await appendLog(bundleRoot, bundleName, {
     event: "concepts_merge",
     message: `merged concept term "${fromTerm}" into "${toTerm}" across ${rewritten.length} chapter(s)`,
@@ -1741,8 +2340,9 @@ async function removeLinkFromBody(bundleRoot, bundleName, id, targetId) {
     const m = /\[[^\]]*\]\(([^)]+)\)/.exec(line);
     return !m || normalizeLinkTarget(m[1]) !== targetId;
   });
-  await vfs.writeText(conceptFilePath(bDir, id), stringifyDocument({ ...existing.frontmatter, updated_at: nowIso() }, kept.join("\n")));
-  markGraphDirty(bDir);
+  const raw = stringifyDocument({ ...existing.frontmatter, updated_at: nowIso() }, kept.join("\n"));
+  await vfs.writeText(conceptFilePath(bDir, id), raw);
+  return { id, raw };
 }
 
 /**
@@ -1751,8 +2351,14 @@ async function removeLinkFromBody(bundleRoot, bundleName, id, targetId) {
  * clone with no tooling) and as an entry in links.json (so graph derivation
  * doesn't have to re-parse every body). okf_lint reconciles the two.
  */
-async function addLink(bundleRoot, bundleName, id, targetId, { label } = {}) {
+async function addLink(...args) {
+  const [bundleRoot, bundleName] = args;
+  return withBundle(bundleDir(bundleRoot, bundleName), () => addLinkLocked(...args));
+}
+
+async function addLinkLocked(bundleRoot, bundleName, id, targetId, { label } = {}) {
   const bDir = bundleDir(bundleRoot, bundleName);
+  const changes = [];
   let existing = await readConceptRaw(bDir, id);
   if (!existing) {
     // The source concept does not exist YET. The ingest agent builds graph
@@ -1767,27 +2373,30 @@ async function addLink(bundleRoot, bundleName, id, targetId, { label } = {}) {
       frontmatter: { id, type: "section", title: stubTitle, status: "draft", created_at: nowIso(), updated_at: nowIso() },
       body: `# ${stubTitle}\n`,
     };
-    await vfs.writeText(conceptFilePath(bDir, id), stringifyDocument(existing.frontmatter, existing.body));
+    const raw = stringifyDocument(existing.frontmatter, existing.body);
+    await vfs.writeText(conceptFilePath(bDir, id), raw);
+    changes.push({ id, raw });
   }
   validateConceptId(targetId);
 
   if (!extractLinks(existing.body).includes(targetId)) {
     const body = `${ensureLinksSection(existing.body).replace(/\n+$/, "\n")}- [${label || targetId}](${targetId}.md)\n`;
-    await vfs.writeText(conceptFilePath(bDir, id), stringifyDocument({ ...existing.frontmatter, updated_at: nowIso() }, body));
+    const raw = stringifyDocument({ ...existing.frontmatter, updated_at: nowIso() }, body);
+    await vfs.writeText(conceptFilePath(bDir, id), raw);
+    changes.push({ id, raw });
   }
   const sidecar = await readLinksSidecar(bDir);
   if (!sidecar.some((e) => e.from === id && e.to === targetId)) sidecar.push({ from: id, to: targetId, label: label || "related" });
   await writeLinksSidecar(bDir, sidecar);
 
-  markGraphDirty(bDir);
-  await rebuildDerived(bundleRoot, bundleName);
+  if (changes.length) await commitConcepts(bundleRoot, bundleName, changes);
   return readConcept(bundleRoot, bundleName, id);
 }
 
 async function backlinks(bundleRoot, bundleName, id) {
   const bDir = bundleDir(bundleRoot, bundleName);
-  const g = await ensureGraph(bDir);
-  const fromBodies = Array.from(g.backlinks.get(id) || []);
+  const model = await getModel(bundleRoot, bundleName);
+  const fromBodies = Array.from(model.backlinks.get(id) || []);
   const fromSidecar = (await readLinksSidecar(bDir)).filter((e) => e.to === id).map((e) => e.from);
   return Array.from(new Set([...fromBodies, ...fromSidecar])).sort();
 }
@@ -1810,15 +2419,19 @@ function normalizeSourceKey(source) {
   return s;
 }
 
+/** The provenance ledger, or an empty one when the bundle has none yet. A
+ *  ledger that is there but unreadable THROWS: reading it as empty would let
+ *  the next ingest overwrite every source the bundle records. */
 async function readLedger(bDir) {
-  const raw = await vfs.readText(safeJoin(bDir, "raw", "sources.json")).catch(() => null);
-  if (!raw) return { sources: {} };
+  const raw = await readTextIfExists(safeJoin(bDir, "raw", "sources.json"));
+  if (!raw || !raw.trim()) return { sources: {} };
+  let parsed;
   try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed.sources === "object" && parsed.sources ? parsed : { sources: {} };
-  } catch {
-    return { sources: {} };
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`raw/sources.json in ${bDir} is not valid JSON (${err.message}) — the provenance ledger was left untouched; repair it before ingesting`);
   }
+  return parsed && typeof parsed.sources === "object" && parsed.sources ? parsed : { sources: {} };
 }
 
 async function writeLedger(bDir, ledger) {
@@ -1835,7 +2448,13 @@ async function findSource(bundleRoot, bundleName, source) {
 async function recordSource(bDir, source, entry) {
   const ledger = await readLedger(bDir);
   const key = normalizeSourceKey(source);
-  ledger.sources[key] = { ...(ledger.sources[key] || {}), ...entry, sourceKey: key };
+  const existing = ledger.sources[key] || {};
+  // When the source FIRST entered the bundle — set once, never overwritten.
+  // A re-ingest re-acquires the source and records it again, which used to
+  // move `ingestedAt` and, with it, the document's place in the bundle TOC
+  // (ADR-017). An entry from before this field falls back to the time it has.
+  const firstIngestedAt = existing.firstIngestedAt || existing.ingestedAt || entry.ingestedAt;
+  ledger.sources[key] = { ...existing, ...entry, ...(firstIngestedAt ? { firstIngestedAt } : {}), sourceKey: key };
   await writeLedger(bDir, ledger);
   return ledger.sources[key];
 }
@@ -2623,7 +3242,12 @@ function docIdForSource(source, { originUrl } = {}) {
  * `<base>.v2.<ext>`, never overwritten — a changed source gets a new version
  * and the old bytes stay exactly as they were.
  */
-async function addRawSource(bundleRoot, bundleName, { filename, content, sourcePath, conceptId, title, originUrl, maxChunkSize } = {}) {
+async function addRawSource(...args) {
+  const [bundleRoot, bundleName] = args;
+  return withBundle(bundleDir(bundleRoot, bundleName), () => addRawSourceLocked(...args));
+}
+
+async function addRawSourceLocked(bundleRoot, bundleName, { filename, content, sourcePath, conceptId, title, originUrl, maxChunkSize } = {}) {
   const bDir = bundleDir(bundleRoot, bundleName);
   if (!(await vfs.exists(bDir))) throw new Error(`bundle not found: ${bundleName} — create it first with okf_init_bundle({name: "${bundleName}"})`);
 
@@ -2743,7 +3367,12 @@ async function addRawSource(bundleRoot, bundleName, { filename, content, sourceP
  * elsewhere, the bytes are copied through the VFS raw channel.
  * raw/assets is immutable: an existing asset is never overwritten.
  */
-async function addRawAsset(bundleRoot, bundleName, { docId, filename, sourcePath, originUrl } = {}) {
+async function addRawAsset(...args) {
+  const [bundleRoot, bundleName] = args;
+  return withBundle(bundleDir(bundleRoot, bundleName), () => addRawAssetLocked(...args));
+}
+
+async function addRawAssetLocked(bundleRoot, bundleName, { docId, filename, sourcePath, originUrl } = {}) {
   if (!docId) throw new Error("docId is required for an inline asset (it scopes raw/assets/<docId>/)");
   validateConceptId(docId);
   const bDir = bundleDir(bundleRoot, bundleName);
@@ -2838,14 +3467,19 @@ async function staleReport(bundleRoot, bundleName) {
  * four failure modes the derived model can have, plus the sidecar/body
  * reconciliation that okf_add_link's double write makes possible.
  */
-async function lintBundle(bundleRoot, bundleName) {
+async function lintBundle(...args) {
+  const [bundleRoot, bundleName] = args;
+  return withBundle(bundleDir(bundleRoot, bundleName), () => lintBundleLocked(...args));
+}
+
+async function lintBundleLocked(bundleRoot, bundleName) {
   const bDir = bundleDir(bundleRoot, bundleName);
   const model = await getModel(bundleRoot, bundleName, { allowRebuild: false });
   const errors = [];
   const warnings = [];
 
   // 1. concept-index / document-TOC drift against the underlying content
-  const storedIndexRaw = await vfs.readText(safeJoin(bDir, "concept-index.md")).catch(() => null);
+  const storedIndexRaw = await readTextIfExists(safeJoin(bDir, "concept-index.md"));
   const storedIndex = storedIndexRaw ? parseFrontmatter(storedIndexRaw).frontmatter : null;
   const freshTerms = buildConceptIndex(model.classified);
   const storedTerms = storedIndex && Array.isArray(storedIndex.terms) ? storedIndex.terms : [];
@@ -2868,7 +3502,7 @@ async function lintBundle(bundleRoot, bundleName) {
 
   let tocDrift = 0;
   for (const [docId, toc] of model.tocByDoc) {
-    const raw = await vfs.readText(safeJoin(bDir, "toc", `${docId}.md`)).catch(() => null);
+    const raw = await readTextIfExists(safeJoin(bDir, "toc", `${docId}.md`));
     if (!raw) {
       tocDrift++;
       warnings.push({ check: "document-toc", docId, issue: `no toc/${docId}.md — will be generated on the next read` });
@@ -2880,7 +3514,7 @@ async function lintBundle(bundleRoot, bundleName) {
       warnings.push({ check: "document-toc", docId, issue: `toc/${docId}.md lists ${Array.isArray(stored.chapters) ? stored.chapters.length : 0} chapter(s), content has ${toc.chapters.length}` });
     }
   }
-  const tocFiles = await vfs.list(safeJoin(bDir, "toc")).catch(() => []);
+  const tocFiles = await listIfExists(safeJoin(bDir, "toc"));
   for (const e of tocFiles) {
     if (e.type === "dir" || !e.name.endsWith(".md")) continue;
     const docId = e.name.slice(0, -3);
@@ -2917,7 +3551,7 @@ async function lintBundle(bundleRoot, bundleName) {
 
   // 4. links.json vs. markdown-link drift (okf_add_link writes both)
   const sidecar = await readLinksSidecar(bDir);
-  const g = await ensureGraph(bDir);
+  const g = { forward: new Map(Array.from(model.entries, ([cid, e]) => [cid, e.links])) };
   let linkDrift = 0;
   const allIds = new Set(model.classified.ids);
   for (const e of sidecar) {
@@ -2942,7 +3576,7 @@ async function lintBundle(bundleRoot, bundleName) {
   //    write time, but means the first symptom is a failed chapter write in
   //    the middle of a run. Lint reports it up front instead, per document.
   let headingMapDrift = 0;
-  const chunkDocs = await vfs.list(safeJoin(bDir, CHUNKS_DIR)).catch(() => []);
+  const chunkDocs = await listIfExists(safeJoin(bDir, CHUNKS_DIR));
   for (const e of chunkDocs) {
     if (e.type !== "dir") continue;
     const probe = await readHeadingMap(bDir, e.name).then(() => null, (err) => err);
@@ -3598,7 +4232,7 @@ function buildIngestTask({ jobId, bundle, source, maxDepth, maxWorkers, prepared
     `\`type: section\`), each carrying \`parent\`, the \`concepts\` terms it covers and a one-line \`summary\` — those ` +
     `three fields are what the concept index and the document TOC are derived from. Upsert the document stub ` +
     `(\`concepts/<docId>.md\`, \`type: document\`) with the original URL in \`sources[].uri\` so the app's "Open source" ` +
-    `link has a target. Check \`okf_list_concepts\` before coining a term: extend before you create.\n\n` +
+    `link has a target. Before coining a term, query for it — \`okf_list_concepts({bundle, query: "<part of the term>"})\` — and extend an existing one: the vocabulary is paged, and a large bundle has thousands of terms.\n\n` +
     `For every NON-HTML asset in a chapter's scope: \`web_fetch\` it with \`output_path\` into ` +
     `\`raw/assets/<docId>/\`, register it with \`okf_add_raw_source({asset:true, docId, sourcePath})\`, interpret it ` +
     `with \`view_image\` or \`video_keyframes\`, and write the stored link plus a ` +
@@ -3826,14 +4460,20 @@ async function runJob(bundleRoot, job) {
  * same id: the stub, every chapter, the chunk cache. raw/ (append-only, the
  * provenance) and the ledger stay; the index and TOC follow from the rebuild.
  */
-async function clearDocument(bundleRoot, bundleName, docId) {
+async function clearDocument(...args) {
+  const [bundleRoot, bundleName] = args;
+  return withBundle(bundleDir(bundleRoot, bundleName), () => clearDocumentLocked(...args));
+}
+
+async function clearDocumentLocked(bundleRoot, bundleName, docId) {
   validateConceptId(docId);
   const bDir = bundleDir(bundleRoot, bundleName);
+  const before = await getModel(bundleRoot, bundleName);
+  const removed = Array.from(before.entries.keys()).filter((id) => id === docId || id.startsWith(`${docId}/`));
   for (const target of [conceptFilePath(bDir, docId), safeJoin(bDir, "concepts", docId), safeJoin(bDir, CHUNKS_DIR, docId)]) {
     if (await vfs.exists(target)) await vfs.remove(target);
   }
-  markGraphDirty(bDir);
-  await rebuildDerived(bundleRoot, bundleName);
+  await commitConcepts(bundleRoot, bundleName, removed.map((id) => ({ id, raw: null })));
   await appendLog(bundleRoot, bundleName, {
     event: "document_clear",
     conceptId: docId,
@@ -3847,7 +4487,12 @@ async function clearDocument(bundleRoot, bundleName, docId) {
  * starts. Without them the agent was told to file_read the whole source and
  * could only re-type it.
  */
-async function prepareRawSource(bundleRoot, bundleName, rawPath) {
+async function prepareRawSource(...args) {
+  const [bundleRoot, bundleName] = args;
+  return withBundle(bundleDir(bundleRoot, bundleName), () => prepareRawSourceLocked(...args));
+}
+
+async function prepareRawSourceLocked(bundleRoot, bundleName, rawPath) {
   const bDir = bundleDir(bundleRoot, bundleName);
   const content = await vfs.readText(safeJoin(bDir, rawPath));
   const ledger = await readLedger(bDir);
@@ -4163,7 +4808,6 @@ module.exports = {
   deleteBundle,
   // retrieval (the redesign's core)
   search,
-  searchIndex,
   readToc,
   readConcept,
   listConcepts,
@@ -4225,6 +4869,7 @@ module.exports = {
   triggerIngest,
   acquisitionFirstSteps,
   buildIngestTask,
+  bundleTocEntries,
   // the run queue, re-ingest
   pumpQueue,
   setMaxConcurrentRuns,
@@ -4242,7 +4887,6 @@ module.exports = {
   normalizeLinkTarget,
   parseFrontmatter,
   stringifyDocument,
-  tokenize,
   safeJoin,
   assetContentType,
   STATUSES,

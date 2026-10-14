@@ -6,9 +6,9 @@ Everything it stores is plain Markdown with YAML frontmatter, in a folder you ca
 
 ## The idea in one paragraph
 
-A query doesn't search the full text of everything. It matches a **concept vocabulary** — a few hundred topic terms the bundle has accumulated — and each term points at the chapters that cover it, with a one-line description. So "tell me about rollback policy" costs one cheap pass over that vocabulary, not a scan of every document, and what comes back is a **table of contents**: document, chapter, description, and the concept term that matched. The agent then fetches the whole chapter. Retrieval is always a full document or a full chapter.
+Ingest turns each document into **chapters**, each with a one-line summary and the **concept terms** it covers. To find something you either **browse** — the bundle's table of contents lists every document, newest first, with a short summary of what it is about — or **search**: a query matches the concept terms, chapter titles, summaries and the full text of every chapter, and comes back as ranked hits that say what matched. Either way you then open the chapters that answer and read them in full. Retrieval is always a full document or a full chapter.
 
-That routing table (`concept-index.md`) and each document's table of contents (`toc/<doc>.md`) are **derived**: the service rebuilds them from the chapters themselves whenever anything changes. They are real files you can read, and they can never quietly drift out of date.
+The vocabulary (`concept-index.md`), each document's table of contents (`toc/<doc>.md`) and the bundle's overview (`index.md`) are **derived**: the service rebuilds them from the chapters themselves whenever anything changes — including changes made outside the app. They are real files you can read.
 
 ## The three tabs
 
@@ -16,8 +16,8 @@ That routing table (`concept-index.md`) and each document's table of contents (`
 
 Lists every knowledge base with its health: documents, chapters, distinct concept terms, and anything stale or deprecated. Open one and you get:
 
-- **Concept Index** — the routing table, as a human reads it. Expand a term to see every (document, chapter) it covers with its one-line description. This is literally what an agent's search runs against. When the vocabulary has grown two terms meaning the same thing, the layers button on a term **merges** it into a canonical one: every chapter that used it is rewritten and the index and TOCs follow.
-- **Documents** — the ingested sources. Open one for its **stored table of contents**, then open a chapter to read it in full: frontmatter, body, and any inline images or video with the interpretation written when it was ingested. "View source (.md)" shows the exact text an agent receives.
+- **Concept Index** — the vocabulary. Type to filter terms by name; it shows 100 at a time (Previous / Next), because a big knowledge base has thousands. Expand a term to see the chapters it covers (the first five — the rest are one search away). When the vocabulary has grown two terms meaning the same thing, the layers button on a term **merges** it into a canonical one — type the canonical term's name — and every chapter that used it is rewritten.
+- **Documents** — the knowledge base's **table of contents**: every document, newest first, with its summary, chapter count and the date it was added, 50 at a time. Re-ingesting a document doesn't move it. Open one for its **stored table of contents**, then open a chapter to read it in full: frontmatter, body, and any inline images or video with the interpretation written when it was ingested. "View source (.md)" shows the exact text an agent receives.
 - **Health** — stale and deprecated chapters, plus the lint report (index drift, broken asset links, orphan chapters).
 - **Import / Export** — export is spec-conformant OKF including the index and every TOC; re-importing reproduces a working bundle.
 
@@ -29,10 +29,10 @@ Every ingest is a tracked run: **queued → running → completed, cancelled or 
 
 One search field and a **Graph / Table** toggle.
 
-- The search runs the *same* concept-anchored search an agent runs. It matches the vocabulary and the stored descriptions, **not full text** — so a phrase that appears in a chapter body but in no term or summary returns nothing. That's the design, not a bug: widen the query, or browse the Concept Index.
-- **Graph** draws the bundle as a knowledge graph — documents (grey), chapters (blue), concept terms (violet) — with labelled arrows for *contains*, *covers* and *related*. Drag a node, scroll to zoom, drag empty space to pan, hover to trace a node's neighbours.
-- **Table** lists the same nodes as rows.
-- Searching reflects in **both**: the table filters to matching rows, the graph highlights matching nodes and dims the rest.
+- The search is the *same* search an agent runs: concept terms, titles, summaries and full text.
+- **Table**, while you search, lists the **hits**, best first. Each says what matched — *concept*, *person*, *title*, *summary* or *full text* — and a full-text hit shows the sentence it was found in, with your words highlighted. **By document** groups them: which documents cover this, with their best chapters. With no search, the table lists every node.
+- **Graph** draws the knowledge base as a graph — documents (grey), chapters (blue), concept terms (violet), people (teal) — with arrows for *contains* (solid), *covers* (dashed) and *related* (amber). It opens fitted to the panel; **+ / −** or scrolling zooms, **⤢** fits again, dragging empty space pans, dragging a node moves it. Documents are labelled where there is room; zoom in to label everything. Hover a node to see its neighbours and the names of its arrows.
+- While you search, the graph **lights up the hits** — their chapters, documents and matched terms — fades everything else, and zooms to them.
 - Clicking anything opens it in the **reader pane** on the right — a document shows its TOC, a chapter renders in full, a concept term lists the chapters it routes to. The pane is **resizable**: drag the divider. At the top is **Open source**: the document's original URL if it was ingested from the web, otherwise its stored `raw/` path.
 
 ## Getting knowledge in

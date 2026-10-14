@@ -9,9 +9,9 @@ Everything is a Markdown file with YAML frontmatter in the BOS VFS. No database,
 ├── .jobs/
 │   └── jobs.json                   # service-level job store (NOT exported)
 └── <bundle>/
-    ├── index.md                    # curated entry point + derived "concepts covered"
+    ├── index.md                    # entry point: every document, newest first, + the term count (derived)
     ├── log.md                      # append-only event log (init/ingest/lint/merge/delete)
-    ├── concept-index.md            # DERIVED level 1 — the O(V) routing table
+    ├── concept-index.md            # DERIVED level 1 — the concept vocabulary (term → chapters)
     ├── toc/
     │   └── <docId>.md              # DERIVED level 2 — one document's chapters
     ├── links.json                  # [{from, to, label?}] — okf_add_link edges
@@ -157,7 +157,7 @@ chapters:
 
 ### Freshness
 
-Both artifacts carry `index_generated_at`. `getModel()` compares it to the newest chapter `updated_at` in the bundle; a stamp older than the content (a hand edit, a git pull, another tool) triggers one rebuild on read. The same rebuild runs on every write path that can change them, so an export is always current.
+Both artifacts carry `index_generated_at`. They are written from the bundle's in-memory model (architecture.md, "The model"): a write rewrites the index and the TOC of the document it changed; a read that finds a concept changed on disk since it was read (a hand edit, a git pull, another tool — detected by size and modification time) rewrites that document's TOC; and a stored index older than the newest chapter is rewritten when a worker first loads the bundle. So an export is always current.
 
 ## `raw/sources.json` — the provenance ledger
 
@@ -168,7 +168,8 @@ Both artifacts carry `index_generated_at`. `getModel()` compares it to the newes
       "sourceKey": "https://engineering.example.com/handbook/api-design",
       "rawFile": "raw/api-design.md",
       "docId": "api-design",
-      "ingestedAt": "2026-08-01T00:00:00.000Z"
+      "ingestedAt": "2026-09-20T00:00:00.000Z",     // the last time it was acquired
+      "firstIngestedAt": "2026-08-01T00:00:00.000Z" // when it FIRST entered the bundle — never overwritten
     }
   }
 }
@@ -178,6 +179,9 @@ Both artifacts carry `index_generated_at`. `getModel()` compares it to the newes
 
 1. **Dedup** — `triggerIngest` looks here first. A hit returns the existing `docId` and starts no run.
 2. **The "Open source" target** — the reader pane's link resolves to the document's original URL, falling back to the stored `raw/` path when it was ingested from a file.
+3. **The table of contents' order** — a document's `addedAt` is the earliest `firstIngestedAt` (else `ingestedAt`) among its entries, so "newest first" means newest *added*, and re-ingesting a document — which re-acquires it and records the source again — does not move it. Entries written before `firstIngestedAt` existed keep the time they have.
+
+The ledger is read-modify-written on the bundle's queue, so two concurrent ingest runs cannot lose each other's entries. An unreadable ledger is an error, never treated as empty.
 
 ## Inline-asset block
 

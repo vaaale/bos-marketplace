@@ -27,13 +27,16 @@ import type {
   BundleDetail,
   BundleGraph,
   BundleHealth,
+  BundleToc,
   ConceptRead,
   DocToc,
   ExportResult,
+  GroupedSearchResult,
   Job,
   LintReport,
-  SearchRow,
+  SearchResult,
   StaleRow,
+  VocabPage,
 } from "./types";
 
 const SERVICE_ID = "okf-knowledge-base";
@@ -183,6 +186,20 @@ export function deleteBundle(bundle: string): Promise<{ name: string; deleted: b
   return send(`bundles/${encodeURIComponent(bundle)}`, "DELETE");
 }
 
+/** The bundle's table of contents — a page of documents, newest first (FR-069). */
+export function fetchBundleToc(bundle: string, offset = 0, limit = 50): Promise<BundleToc> {
+  return request(`bundles/${encodeURIComponent(bundle)}/toc?offset=${offset}&limit=${limit}`);
+}
+
+/** A page of the vocabulary, optionally filtered by name (ADR-019). */
+export function fetchConcepts(bundle: string, opts: { query?: string; offset?: number; limit?: number } = {}): Promise<VocabPage> {
+  const q = new URLSearchParams();
+  if (opts.query) q.set("query", opts.query);
+  if (opts.offset) q.set("offset", String(opts.offset));
+  if (opts.limit) q.set("limit", String(opts.limit));
+  return request(`bundles/${encodeURIComponent(bundle)}/concepts?${q}`);
+}
+
 export function fetchToc(bundle: string, docId: string): Promise<DocToc> {
   return request(`bundles/${encodeURIComponent(bundle)}/toc/${docId.split("/").map(encodeURIComponent).join("/")}`);
 }
@@ -196,8 +213,13 @@ export function fetchConcept(bundle: string, id: string): Promise<ConceptRead> {
  * `core.search()` the `okf_search` tool runs — one capability, two surfaces
  * (FR-036/FR-043). The app does no client-side matching of its own.
  */
-export function search(bundle: string, query: string, limit?: number): Promise<{ rows: SearchRow[]; count: number }> {
+export function search(bundle: string, query: string, limit?: number): Promise<SearchResult> {
   return send(`bundles/${encodeURIComponent(bundle)}/search`, "POST", { query, limit });
+}
+
+/** The same search, one row per document with its best chapters beneath. */
+export function searchByDocument(bundle: string, query: string, limit?: number): Promise<GroupedSearchResult> {
+  return send(`bundles/${encodeURIComponent(bundle)}/search`, "POST", { query, limit, groupBy: "document" });
 }
 
 /**

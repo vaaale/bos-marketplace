@@ -2,14 +2,14 @@
   "id": "okf-knowledge-base",
   "name": "OKF Knowledge Base",
   "version": "2.1.0",
-  "description": "A general-purpose, agent-managed knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Maintains a two-level derived index (bundle concept index + per-document TOC), serves deterministic concept-anchored search, auto-triggers ingest runs in a bundled least-privilege sub-agent and tracks them as jobs (cancellable and deletable), and exposes 21 okf_* tools natively to the BOS assistant plus a loopback REST bridge for the standalone OKF Knowledge Base app.",
+  "description": "A general-purpose, agent-managed knowledge base stored as OKF bundles (Markdown + YAML frontmatter). Maintains a two-level derived index (bundle concept index + per-document TOC), serves deterministic search over terms, titles, summaries and full text plus a paged table of contents, auto-triggers ingest runs in a bundled least-privilege sub-agent and tracks them as jobs (cancellable and deletable), and exposes 21 okf_* tools natively to the BOS assistant plus a loopback REST bridge for the standalone OKF Knowledge Base app.",
   "entry": "index.js",
   "deploymentMode": "tools",
   "toolGroups": [
     {
       "id": "okf-knowledge-base",
       "name": "Knowledge Base",
-      "description": "A durable, human-readable knowledge base of OKF bundles: concept-anchored search over a derived index, full-document / full-chapter retrieval, ingesting sources into chapters, curating the concept vocabulary, linking, health checks, and importing or exporting bundles.",
+      "description": "A durable, human-readable knowledge base of OKF bundles: search over terms, titles, summaries and full text, a browsable table of contents per bundle and per document, full-document / full-chapter retrieval, ingesting sources into chapters, curating the concept vocabulary, linking, health checks, and importing or exporting bundles.",
       "aliases": [
         "okf",
         "knowledge",

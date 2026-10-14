@@ -95,3 +95,51 @@ test("a web page's task names the browser path when web_fetch is refused — sav
 test("a binary download (a PDF URL) gets no browser path — a browser does not save a PDF as a page", () => {
   assert.doesNotMatch(task("https://x.test/report.pdf"), /browser_/);
 });
+
+// ── retrieval at scale (2026-10-14, phase AL): at hundreds of documents the
+// vocabulary is thousands of terms. An ingest that "checks okf_list_concepts"
+// reads a page of 100 and misses the term it should have reused; a lookup told
+// "an empty search is a real answer" stops before full text and the bundle TOC
+// were tried. The lookup procedure lives in ONE place: the okf-lookup skill.
+
+const SCHEMA = readFileSync(new URL("../skills/okf-bundle-schema/SKILL.md", import.meta.url), "utf8");
+const LOOKUP_URL = new URL("../skills/okf-lookup/SKILL.md", import.meta.url);
+const { DECLARATIONS } = createRequire(import.meta.url)("../services/lib/tools.js");
+
+/** Every okf_list_concepts call a text TELLS the agent to make filters by name. */
+function unfilteredVocabularyCalls(text) {
+  return [...text.matchAll(/`okf_list_concepts(\([^`]*\))?`/g)].filter((m) => !/query/.test(m[1] || "")).map((m) => m[0]);
+}
+
+test("the ingest agent, its skill and its task check the vocabulary BY QUERY, never by listing it", () => {
+  const task = core.buildIngestTask({ jobId: "run-1", bundle: "b", source: "https://x.test/a", maxDepth: 1, maxWorkers: 2 });
+  for (const [name, text] of [["AGENT.md", SRC], ["okf-bundle-schema", SCHEMA], ["the ingest task", task]]) {
+    assert.deepEqual(unfilteredVocabularyCalls(text), [], `${name} tells the agent to read the vocabulary unfiltered`);
+    assert.match(text, /okf_list_concepts\(\{[^}]*query/, `${name} shows the filtered call`);
+  }
+});
+
+test("the ingest agent is told the document summary limit", () => {
+  assert.match(BODY, /two sentences/i);
+  assert.match(BODY, /300 characters/);
+});
+
+test("okf-lookup exists, names only tools on the surface, and carries FR-071's rules", () => {
+  const lookup = readFileSync(LOOKUP_URL, "utf8");
+  assert.match(lookup, /^---\nname: /);
+  const surface = new Set(DECLARATIONS.map((d) => d.name));
+  const named = [...new Set([...lookup.matchAll(/\bokf_[a-z_]+/g)].map((m) => m[0]))];
+  assert.deepEqual(named.filter((t) => !surface.has(t)), [], "names a tool the service does not declare");
+  for (const t of ["okf_list_bundles", "okf_read_toc", "okf_search", "okf_read_concept"]) assert.ok(named.includes(t), `${t} is part of the process`);
+  assert.match(lookup, /groupBy/);
+  assert.match(lookup, /not (yet )?proof|is not absence|does not mean/i, "an empty search is not proof of absence");
+  assert.match(lookup, /writes? nothing|never write/i);
+  assert.match(lookup, /raw\//);
+  assert.match(lookup, /stale/);
+  assert.match(lookup, /source/);
+});
+
+test("okf-bundle-schema no longer carries its own lookup procedure — it points to okf-lookup", () => {
+  assert.doesNotMatch(SCHEMA, /An empty result is a real answer/);
+  assert.match(SCHEMA, /okf-lookup/);
+});
