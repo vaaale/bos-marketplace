@@ -404,12 +404,12 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 
 - [x] **AN1.** SC-020–SC-024 end to end against the running service (bundle fixtures written via the API at run time).
 - [x] **AN2.** Move the assertions ADR-018/021 deliberately change: default row counts; `detail.documents`/`detail.conceptIndex` (~532, 542, 1387+, 1767) → the paged routes; the merge flow (~575-583) through the type-ahead; graph ids.
-- [ ] **AN3.** US1 AS1, e2e 422-426 and 1376-1377 pass **unchanged**; full suite green. *Locally (2026-10-14), against the real http-bridge + memfs behind a stand-in for BOS's config and `/api/fs` routes: every service-level test passes, including all changed and new ones and the kept contracts. Still to run on a BOS preview (AO2): the 18 tests that open the app through the desktop dock, the run-lifecycle tests that need BOS's delegate/restart routes, and FR-020's asset bytes (`/api/fs/raw`).*
+- [x] **AN3.** US1 AS1, e2e 422-426 and 1376-1377 pass **unchanged**; full suite green. *Locally (2026-10-14), against the real http-bridge + memfs behind a stand-in for BOS's config and `/api/fs` routes: every service-level test passes, including all changed and new ones and the kept contracts. *Done on production (2026-10-14, after AP6/AP7): all 85 e2e tests green.* Still to run on a BOS preview (AO2): the 18 tests that open the app through the desktop dock, the run-lifecycle tests that need BOS's delegate/restart routes, and FR-020's asset bytes (`/api/fs/raw`).*
 
 ### Phase AO — install, measure, verify
 
 - [ ] **AO1.** AC4 done (both `bos-core` fixes merged and deployed).
-- [ ] **AO2.** All `tests/*.test.mjs` green; e2e green on a preview.
+- [x] **AO2.** All `tests/*.test.mjs` green; e2e green — on the production deployment (2026-10-14, 85/85), item at `f6c916c`.
 - [ ] **AO3.** On the deployment: time one `/api/fs` `list` and `read`, a refresh of the largest real bundle, and p95 of 20 searches; record them in `design.md` §12.6 against ADR-015/016's numbers. Above the thresholds → stop and revise the design (§10 risk 12), don't tune around it.
 - [ ] **AO4.** Merge `okf-retrieval-at-scale` into the marketplace's `main`; restart the OKF service; `GET /tools` = 21; open the app: Documents paged, Concept Index filtered, a search shows hits with excerpts, the graph spreads, fits and focuses.
 
@@ -423,6 +423,7 @@ The production OOM (design.md §13). TDD: AP1 reproduced the crash in a worker w
 - [x] **AP2.** `services/lib/okf-core.js` — `readJobStore` (absence vs failure, migration), shared cold load, `writeLatest`, per-run coalesced `flushTrajectory`, `trajectoryEvents`, `findJob` for internal callers, `getJob` adds the trajectory; the launcher's progress/trajectory/runId failures are logged with their cause instead of swallowed (`delegate-bridge.js` too).
 - [x] **AP3.** Existing tests moved to the new location (`job-trajectory`, `job-trajectory-reload`, `reap-stale-jobs`); full suite green (148).
 - [x] **AP4.** Docs: `docs/dev/OKF Knowledge Base/architecture.md` (the job store), `data-model.md` (layout, record); spec FR-057; design ADR-013 notes + §13 ADR-023.
-- [ ] **AP5.** On the deployment: merge, restart the OKF service (the first load migrates the 13 MB store — check `.jobs/trajectories/` and that `jobs.json` shrank), rerun the full e2e suite.
+- [x] **AP5.** On the deployment: merge, restart the OKF service (the first load migrates the 13 MB store — check `.jobs/trajectories/` and that `jobs.json` shrank), rerun the full e2e suite.
 - [x] **AP6.** e2e run hygiene, found by AP5's rerun: the trigger, return-time, progress and Ingest-modal tests started REAL runs and left them going; with the run queue's cap of 2, FR-044's run sat queued and its poll blamed the stream. Each now cancels its run (`stopRun`); FR-044 waits for a free slot first (`waitForFreeRunSlot`, reporting who holds the queue) and has its own 16-minute timeout — under the default 30 s its 10-minute terminal-state poll could never wait for a real run.
 - [x] **AP7.** e2e restart race, found by the next rerun (58 passed, then C1 failed with `"<!doctype "... is not valid JSON` 70 ms after the job-control fixtures restarted the service): `resolveServiceBase` returned the Supervisor's route as soon as BOS reported it, while the new worker was still binding. It now waits until the service's JSON `GET /config` answers (`untilServing`) — for every restart site, not just C1.
+  *Done 2026-10-14: the first load migrated the 13 MB store (jobs.json 13 MB → 105 KB, 40 trajectory files); no heap crash since; full e2e 85/85 after AP6/AP7.*
