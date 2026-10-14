@@ -402,9 +402,9 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 
 ### Phase AN — e2e (`e2e/okf-knowledge-base.spec.ts`)
 
-- [ ] **AN1.** SC-020–SC-024 end to end against the running service (bundle fixtures written via the API at run time).
-- [ ] **AN2.** Move the assertions ADR-018/021 deliberately change: default row counts; `detail.documents`/`detail.conceptIndex` (~532, 542, 1387+, 1767) → the paged routes; the merge flow (~575-583) through the type-ahead; graph ids.
-- [ ] **AN3.** US1 AS1, e2e 422-426 and 1376-1377 pass **unchanged**; full suite green.
+- [x] **AN1.** SC-020–SC-024 end to end against the running service (bundle fixtures written via the API at run time).
+- [x] **AN2.** Move the assertions ADR-018/021 deliberately change: default row counts; `detail.documents`/`detail.conceptIndex` (~532, 542, 1387+, 1767) → the paged routes; the merge flow (~575-583) through the type-ahead; graph ids.
+- [ ] **AN3.** US1 AS1, e2e 422-426 and 1376-1377 pass **unchanged**; full suite green. *Locally (2026-10-14), against the real http-bridge + memfs behind a stand-in for BOS's config and `/api/fs` routes: every service-level test passes, including all changed and new ones and the kept contracts. Still to run on a BOS preview (AO2): the 18 tests that open the app through the desktop dock, the run-lifecycle tests that need BOS's delegate/restart routes, and FR-020's asset bytes (`/api/fs/raw`).*
 
 ### Phase AO — install, measure, verify
 
