@@ -457,7 +457,7 @@
       <div class="seg" id="modeSeg">
         <button data-mode="populated" class="on">Populated</button>
         <button data-mode="empty">Empty</button>
-        <button data-mode="large" title="Retrieval at scale (US14): a bundle of 312 documents and 2,431 terms — shows the paged bundle TOC and concept index">Large bundle</button>
+        <button data-mode="large" title="Retrieval at scale (US14): a bundle of 312 documents and 2,437 terms — shows the paged bundle TOC and concept index">Large bundle</button>
       </div>
     </div>
   </header>
@@ -1790,7 +1790,8 @@ function excerptFor(text,toks){
   if(ex.length>SEARCH.excerptMax){
     const at=ex.toLowerCase().indexOf(toks[0]);
     const start=Math.max(0,Math.min(at-SEARCH.excerptMax/2, ex.length-SEARCH.excerptMax));
-    ex=(start>0?'…':'')+ex.slice(start,start+SEARCH.excerptMax)+'…';
+    const room=SEARCH.excerptMax-(start>0?1:0)-1;               // ≤ 400 incl. the ellipses
+    ex=(start>0?'…':'')+ex.slice(start,start+room)+'…';
   }
   return ex;
 }
