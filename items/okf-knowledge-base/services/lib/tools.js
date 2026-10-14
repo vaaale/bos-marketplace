@@ -13,6 +13,8 @@
 // The pre-redesign surface declared 31. This declares 21 and nothing else:
 //
 //   Retrieval      okf_search · okf_read_toc · okf_read_concept · okf_list_concepts
+//                  (search: terms, titles, summaries and full text; read_toc:
+//                  the bundle's documents, or one document's chapters)
 //   Concepts       okf_upsert_concept · okf_delete_concept · okf_merge_concepts
 //   Bundles        okf_list_bundles · okf_init_bundle · okf_import_bundle
 //                  okf_export_bundle · okf_delete_bundle
@@ -73,15 +75,16 @@ const DECLARATIONS = [
   readOnly({
     name: "okf_search",
     description:
-      "START HERE to find knowledge in a bundle. Concept-anchored search: it matches your query against the bundle's concept vocabulary and the one-line descriptions in its index, and returns a ranked TABLE OF CONTENTS — one row per relevant chapter, each carrying the document, the chapter, a one-line description, and the concept term that matched.\n\n" +
-      "Rows are pointers, not content. Follow up with okf_read_concept (the full chapter or document) or okf_read_toc (a document's chapter list). Retrieval is always full documents or full chapters — this tool never returns a snippet.\n\n" +
-      "The match is deterministic and concept-anchored, NOT full text: a query that paraphrases body text but misses both the vocabulary and the stored descriptions returns nothing. An empty result is a real answer — widen the query, or read the vocabulary with okf_list_concepts and route from there. Never invent a row.\n\n" +
-      "Each row also carries `kind`: `topic` for an ordinary concept term, `person` when the term that matched is a SALIENT PERSON (an author or a named key figure the content is about). Searching a person's name needs no special call — it is an ordinary term-name hit.",
+      "Find knowledge in a bundle. Searches concept and person terms, chapter titles, summaries AND the full text of every chapter and document (inline-asset interpretations included), and returns ranked hits — one per chapter (a document-level hit has `chId: \"\"`) — each with the document and chapter, the chapter's one-line summary, `matchKind` (what matched: `term`, `person`, `title`, `summary` or `text`), the words that matched, and for a full-text match an `excerpt` (at most three sentences) showing where.\n\n" +
+      "Any query word may match; hits that match more of your words rank first. A name, a number or a phrase from a chapter body is found even when it is no concept term. Use `groupBy: \"document\"` to ask \"which documents cover this?\" — one row per document with its best chapters beneath.\n\n" +
+      "Hits are pointers. The excerpt shows where a match is; it is not the content — read the chapter in full with okf_read_concept, or the document's chapter list with okf_read_toc({bundle, docId}). Every hit carries `status`/`stale`: say so when you rely on a stale or deprecated chapter.\n\n" +
+      "No hits is not yet proof the bundle lacks it: rephrase once, or browse the bundle's documents with okf_read_toc({bundle}). Never invent a hit.",
     inputSchema: required(
       {
         bundle: STRING,
-        query: { type: "string", description: "A natural-language query. Tokenized and matched against concept-term names and the index's one-line descriptions." },
-        limit: { type: "number", description: "Maximum rows to return (default 25)." },
+        query: { type: "string", description: "What you are looking for — words, a name, a phrase. Matched (case- and accent-insensitively, at the start of words) against terms, titles, summaries and full text." },
+        limit: { type: "number", description: "Maximum hits (default 10, max 50); with groupBy, maximum documents." },
+        groupBy: { type: "string", enum: ["document"], description: "Group hits by document: one row per document, at most 5 of its hits beneath." },
       },
       ["bundle", "query"],
     ),
@@ -89,8 +92,18 @@ const DECLARATIONS = [
   readOnly({
     name: "okf_read_toc",
     description:
-      "Read a document's stored table of contents: its chapters, each with a one-line description and the concept terms it covers. This is the level-2 drill-down — use it to decide WHICH chapters to read in full, then call okf_read_concept for those.",
-    inputSchema: required({ bundle: STRING, docId: STRING }, ["bundle", "docId"]),
+      "The bundle's table of contents, at two levels.\n\n" +
+      "Without `docId`: the bundle's DOCUMENTS, newest first — each with its id, title, chapter count and a short summary of what it is about — 50 per page (`offset`/`limit`, max 200; `total` says how many there are). Browse this to see what a bundle holds, or when a question is about a topic rather than a specific fact.\n\n" +
+      "With `docId`: that document's CHAPTERS, each with a one-line summary and the concept terms it covers. Use it to decide WHICH chapters to read in full, then call okf_read_concept for those.",
+    inputSchema: required(
+      {
+        bundle: STRING,
+        docId: { type: "string", description: "A document id. Omit it for the bundle-level table of contents." },
+        offset: { type: "number", description: "Bundle level only: documents to skip (default 0)." },
+        limit: { type: "number", description: "Bundle level only: documents per page (default 50, max 200)." },
+      },
+      ["bundle"],
+    ),
   }),
   readOnly({
     name: "okf_read_concept",
@@ -101,14 +114,18 @@ const DECLARATIONS = [
   readOnly({
     name: "okf_list_concepts",
     description:
-      "Read the bundle's concept VOCABULARY — every concept term with its `kind` (`topic`, or `person` for a salient person the bundle registered at ingest), the number of chapters it covers and which (document, chapter) pairs those are, plus the document and chapter listings. Use this to route semantically when okf_search comes back empty, and ALWAYS before introducing a new term, so you extend an existing term instead of creating a near-duplicate.\n\n" +
-      "Pass `kind: \"person\"` to list only the people the bundle knows about (authors and named key figures), or `kind: \"topic\"` for only the subject vocabulary. The default is every term.",
+      "Look up the bundle's concept VOCABULARY — terms with their `kind` (`topic`, or `person` for an author or named key figure), how many chapters each covers, and up to 5 of them (`coversTotal` says how many). Filter with `query` (part of a term's name); results are paged (default 100, max 500) because a large bundle has thousands of terms.\n\n" +
+      "Use it to REUSE a term: before introducing a new one, query for it (`query: \"attention\"`) and extend an existing term instead of creating a near-duplicate. To FIND content, use okf_search; to see what documents a bundle has, okf_read_toc({bundle}).\n\n" +
+      "`kind: \"person\"` lists only people, `kind: \"topic\"` only subjects; the default is every term.",
     inputSchema: required(
       {
         bundle: STRING,
-        type: { type: "string", enum: ["document", "section"] },
+        query: { type: "string", description: "Part of a term's name (case- and accent-insensitive)." },
+        kind: { type: "string", enum: ["topic", "person", "all"], description: "Filter by term kind. Default `all`." },
         status: STATUS_ENUM,
-        kind: { type: "string", enum: ["topic", "person", "all"], description: "Filter the vocabulary by term kind. Default `all`." },
+        offset: { type: "number", description: "Terms to skip (default 0)." },
+        limit: { type: "number", description: "Terms per page (default 100, max 500)." },
+        type: { type: "string", enum: ["document", "section"], description: "Not a listing: answers with where documents and chapters are listed (okf_read_toc)." },
       },
       ["bundle"],
     ),
@@ -372,11 +389,11 @@ function makeHandlers(core) {
         query: args.query,
         ...res,
         note: res.count
-          ? "Each row is a TOC pointer. Call okf_read_concept({bundle, id: `<docId>/<chId>`}) for the full chapter, or okf_read_toc({bundle, docId}) for the document's chapter list. Nothing here is a snippet."
-          : "No concept term or stored description matched. This search is concept-anchored, not full text — widen the query, or call okf_list_concepts to read the vocabulary and route from there. Do not invent an answer.",
+          ? "Each hit is a pointer; an excerpt shows where a match is, not the content. Read a chapter in full with okf_read_concept({bundle, id: `<docId>/<chId>`}) (a document-level hit: id `<docId>`), or a document's chapter list with okf_read_toc({bundle, docId})."
+          : `Nothing matched — searched ${res.searched.join(", ")}. Rephrase once, or browse the bundle's documents with okf_read_toc({bundle}); only when both come up empty is it not in this bundle. Do not invent an answer.`,
       };
     },
-    okf_read_toc: (args, ctx) => core.readToc(ctx.bundleRoot, args.bundle, args.docId),
+    okf_read_toc: (args, ctx) => core.readToc(ctx.bundleRoot, args.bundle, args.docId, { offset: args.offset, limit: args.limit }),
     okf_read_concept: (args, ctx) => core.readConcept(ctx.bundleRoot, args.bundle, args.id),
     // `kind` is an additive, optional filter (ADR-011) — omitted means every
     // term, and every term in the response now carries its own `kind`.

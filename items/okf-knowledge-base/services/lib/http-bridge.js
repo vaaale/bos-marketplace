@@ -22,12 +22,15 @@
 //   GET    /tools                               -> { count, tools: [declaration] }
 //   GET    /bundles                             -> [ health, ... ]
 //   POST   /bundles                             -> create { name, title?, description? }
-//   GET    /bundles/<b>                         -> { health, documents, conceptIndex }
+//   GET    /bundles/<b>                         -> { health, indexGeneratedAt } (counts only)
+//   GET    /bundles/<b>/toc?offset=&limit=      -> the bundle TOC (= okf_read_toc({bundle}))
+//   GET    /bundles/<b>/concepts?query=&offset=&limit=&kind=
+//                                               -> the vocabulary (= okf_list_concepts)
 //   DELETE /bundles/<b>                         -> { deleted: true }
 //   GET    /bundles/<b>/toc/<docId>             -> the stored document TOC
 //   GET    /bundles/<b>/concept/<id...>         -> one concept IN FULL
-//   GET    /bundles/<b>/search?query=&limit=    -> identical rows to okf_search
-//   POST   /bundles/<b>/search  {query, limit}  -> same
+//   GET    /bundles/<b>/search?query=&limit=&groupBy=  -> identical to okf_search
+//   POST   /bundles/<b>/search  {query, limit, groupBy} -> same
 //   GET    /bundles/<b>/graph                   -> { nodes, edges } (derived on read)
 //   GET    /bundles/<b>/assets/<assetPath...>   -> raw image/video bytes
 //   GET    /bundles/<b>/lint                    -> lint report
@@ -316,8 +319,30 @@ function createRequestHandler(ctx) {
 
         const section = parts[2];
 
+        const num = (name) => {
+          const v = url.searchParams.get(name);
+          return v === null || v === "" ? undefined : Number(v);
+        };
+        // the bundle TOC (the Documents tab) — identical to okf_read_toc({bundle})
+        if (bundle && req.method === "GET" && section === "toc" && parts.length === 3) {
+          return sendJson(res, 200, await core.readToc(bundleRoot, bundle, null, { offset: num("offset"), limit: num("limit") }));
+        }
         if (bundle && req.method === "GET" && section === "toc" && parts.length >= 4) {
           return sendJson(res, 200, await core.readToc(bundleRoot, bundle, parts.slice(3).join("/")));
+        }
+        // the vocabulary, filtered and paged — identical to okf_list_concepts
+        if (bundle && req.method === "GET" && section === "concepts" && parts.length === 3) {
+          return sendJson(
+            res,
+            200,
+            await core.listConcepts(bundleRoot, bundle, {
+              query: url.searchParams.get("query") || undefined,
+              kind: url.searchParams.get("kind") || undefined,
+              status: url.searchParams.get("status") || undefined,
+              offset: num("offset"),
+              limit: num("limit"),
+            }),
+          );
         }
         // concept ids are `<docId>/<chId>`, so the id is the REST of the path
         if (bundle && req.method === "GET" && section === "concept" && parts.length >= 4) {

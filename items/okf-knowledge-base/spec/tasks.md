@@ -361,8 +361,8 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 ### Phase AI — tool and route surfaces
 
 **Tests first** — extend `tests/ingest-agent-contract.test.mjs` / add `tests/tool-surface.test.mjs`:
-- [ ] **AI1.** Still exactly 21 declarations; `okf_search` description no longer says "NOT full text" and names `groupBy`; `okf_read_toc` declares `docId` optional; `okf_list_concepts` declares `query`/`offset`/`limit`; the no-match note (~378) names what was searched.
-- [ ] **AI2.** `GET /bundles/<b>/toc`, `GET /bundles/<b>/concepts`, search with `groupBy`, slim `GET /bundles/<b>` — each returns exactly the tool's object (one core function, two surfaces).
+- [x] **AI1.** Still exactly 21 declarations; `okf_search` description no longer says "NOT full text" and names `groupBy`; `okf_read_toc` declares `docId` optional; `okf_list_concepts` declares `query`/`offset`/`limit`; the no-match note (~378) names what was searched.
+- [x] **AI2.** `GET /bundles/<b>/toc`, `GET /bundles/<b>/concepts`, search with `groupBy`, slim `GET /bundles/<b>` — each returns exactly the tool's object (one core function, two surfaces).
 
 **Implement**: `services/lib/tools.js` DECLARATIONS + handlers; `services/lib/http-bridge.js`; `services/service.json` group description.
 
