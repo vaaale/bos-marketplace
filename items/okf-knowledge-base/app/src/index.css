@@ -383,6 +383,29 @@
   .g-node.dimmed { opacity:.3; }
   .g-node.match .g-ring { opacity:.95; }
   .g-node.match .g-circ { filter: drop-shadow(0 0 7px rgba(255,255,255,.5)); }
+  /* ── legibility (FR-073, ADR-022) ──
+     Edge labels only on the hovered node's edges. Node labels sit BELOW the
+     node at a constant on-screen size (--gk is the zoom, set by GraphView):
+     documents always; everything else when zoomed in, hovered (and its
+     neighbours), selected, or a search hit. A search FADES the rest — and
+     hides its edges — instead of merely dimming it. */
+  .g-elab { display:none; }
+  .g-elab.hot { display:inline; }
+  .g-elbl { font-size:calc(9.5px / var(--gk, 1)); }
+  .g-node .g-tx { display:none; font-size:calc(10px / var(--gk, 1)); }
+  .g-node.doc .g-tx { font-size:calc(11.5px / var(--gk, 1)); }
+  .g-node.doc .g-tx, .g-svg.zoomed .g-node .g-tx, .g-node.hot .g-tx, .g-node.near .g-tx,
+  .g-node.sel .g-tx, .g-node.match .g-tx { display:inline; }
+  .g-svg.searching .g-node.faded .g-tx { display:none; }
+  .g-node.lbl-off .g-tx { display:none; }
+  .g-node.faded { opacity:.09; }
+  .g-edge.faded { opacity:.03; }
+  .g-ctl { position:absolute; right:10px; top:10px; display:flex; flex-direction:column; gap:4px; z-index:2; }
+  .g-ctl button { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border-radius:6px;
+    border:1px solid var(--border); background:rgba(15,18,24,.85); color:var(--muted); cursor:pointer; font-size:13px; }
+  .g-ctl button:hover { color:var(--text); background:var(--panel2); }
+  .g-hint { position:absolute; left:10px; bottom:8px; font-size:11px; color:var(--muted); background:rgba(15,18,24,.8);
+    border:1px solid var(--border); border-radius:6px; padding:3px 8px; z-index:2; pointer-events:none; }
   .q-content.graph-mode { display:flex; flex-direction:column; overflow:hidden; padding:12px; gap:0; }
   .q-content.graph-mode .g-legend { flex:0 0 auto; }
   .q-content.graph-mode .graph-stage { flex:1 1 auto; min-height:220px; }
@@ -456,3 +479,22 @@ body { margin: 0; }
   .traj-nores { font-size:12px; color:var(--muted); font-style:italic; }
   .traj-note { display:flex; gap:9px; align-items:flex-start; font-size:12.5px; color:var(--muted); background:var(--panel); border:1px dashed var(--border); border-radius:8px; padding:12px 14px; line-height:1.55; }
   .traj-note>svg { flex:0 0 auto; margin-top:1px; }
+
+/* ── retrieval at scale (US14) ── */
+.pager { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:12px; color:var(--muted); }
+.pager .spacer { flex:1; }
+.pager .btn[disabled] { opacity:.4; cursor:default; }
+.doc-row .d-sum { font-size:12px; color:var(--muted); margin-top:2px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+mark.hl { background: rgba(167,139,250,.28); color: var(--text); border-radius:3px; padding:0 2px; }
+.mk { font-size:10.5px; padding:1px 7px; border-radius:20px; border:1px solid var(--border); color:var(--muted); background:var(--panel2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.mk.term { color: var(--violet); border-color: rgba(167,139,250,.35); }
+.mk.person { color: var(--teal); border-color: rgba(45,212,191,.35); }
+.mk.title, .mk.summary { color: #7dd3fc; border-color: rgba(125,211,252,.3); }
+.mk.text { color: var(--amber); border-color: rgba(251,191,36,.3); }
+.s-excerpt { font-size:12.5px; color:var(--muted); margin-top:6px; padding-left:9px; border-left:2px solid var(--border); }
+.hit-group { margin-bottom:12px; }
+.hit-group > .hg-head { font-size:12.5px; font-weight:600; margin:0 0 6px; display:flex; gap:8px; align-items:center; }
+.hit-group > .hg-head .hg-sum { font-weight:400; color:var(--muted); font-size:12px; }
+.hit-group .srow { margin-left:14px; }
+

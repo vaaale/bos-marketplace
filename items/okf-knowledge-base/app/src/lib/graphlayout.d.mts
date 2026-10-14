@@ -6,13 +6,12 @@ export interface LayoutNode {
   docId?: string;
   chId?: string;
   term?: string;
-  [key: string]: unknown;
 }
 export interface LayoutEdge {
   from: string;
   to: string;
   kind: "containment" | "coverage" | "link";
-  [key: string]: unknown;
+  label?: string;
 }
 export interface SimNode extends LayoutNode {
   x: number;
@@ -68,3 +67,6 @@ export declare function finish(sim: Sim): void;
 export declare function fitBox(sim: Sim, ids: Set<string> | null): Box | null;
 export declare function fitView(box: Box | null, width: number, height: number, opts?: { focus?: boolean }): { x: number; y: number; k: number };
 export declare function matchSet(rows: SearchRowLike[], nodes: LayoutNode[], query: string): Set<string>;
+export declare const NODE_CAP: number;
+export declare function capGraph<N extends LayoutNode, E extends LayoutEdge>(nodes: N[], edges: E[], cap?: number): { nodes: N[]; edges: E[]; truncated: number };
+export declare function edgeClass(kind: LayoutEdge["kind"]): "contain" | "cover" | "link";

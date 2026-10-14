@@ -377,15 +377,16 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 
 ### Phase AK — the app (per `mockup.html`)
 
-- [ ] **AK1.** `lib/serviceClient.ts`, `types.ts` — `fetchBundleToc`, `fetchConcepts`, search `groupBy` + new row fields, slim detail.
-- [ ] **AK2.** `overview/Overview.tsx`, `BundleDetail.tsx` — counts from the slim detail; tabs load their own pages.
-- [ ] **AK3.** `overview/DocumentsView.tsx` — the paged bundle TOC (summary, chapter count, "added", attention, Previous/Next).
-- [ ] **AK4.** `overview/ConceptIndexView.tsx` — server-side filter + paging; the merge picker is a type-ahead over `/concepts?query=`.
-- [ ] **AK5.** `query/SearchHits.tsx` (new) — ranked hits, match-kind badge, highlighted excerpt, Chapters / By document, "Nothing matched" naming what was searched.
-- [ ] **AK6.** `query/QueryTab.tsx`, `TableView.tsx` — a query shows `SearchHits` in Table; no bundle-detail fetch; `matchedConcept` handled when null.
-- [ ] **AK7.** `query/ReaderPane.tsx` — the term view via `/concepts?query=<term>&limit=1` and the search route.
-- [ ] **AK8.** `query/GraphView.tsx` + `index.css` — keyed ids; fit on load; + / − / fit controls and hint; edge labels on hover only; labels below nodes at constant size (documents always; others zoomed ≥ 1.25, hovered + neighbours, selected, matched); search fades the rest (nodes ~9 %, edges ~3 %) and fits the matches; clearing re-fits all.
-- [ ] **AK9.** Rebuild `app/dist/` (esbuild, BOS `buildAppDir` options); `tsc` over `app/src` clean.
+- [x] **AK1.** `lib/serviceClient.ts`, `types.ts` — `fetchBundleToc`, `fetchConcepts`, search `groupBy` + new row fields, slim detail.
+- [x] **AK2.** `overview/Overview.tsx`, `BundleDetail.tsx` — counts from the slim detail; tabs load their own pages.
+- [x] **AK3.** `overview/DocumentsView.tsx` — the paged bundle TOC (summary, chapter count, "added", attention, Previous/Next).
+- [x] **AK4.** `overview/ConceptIndexView.tsx` — server-side filter + paging; the merge picker is a type-ahead over `/concepts?query=`.
+- [x] **AK5.** `query/SearchHits.tsx` (new) — ranked hits, match-kind badge, highlighted excerpt, Chapters / By document, "Nothing matched" naming what was searched.
+- [x] **AK6.** `query/QueryTab.tsx`, `TableView.tsx` — a query shows `SearchHits` in Table; no bundle-detail fetch; `matchedConcept` handled when null.
+- [x] **AK7.** `query/ReaderPane.tsx` — the term view via `/concepts?query=<term>&limit=1` and the search route.
+- [x] **AK8.** `query/GraphView.tsx` + `index.css` — keyed ids; fit on load; + / − / fit controls and hint; edge labels on hover only; labels below nodes at constant size (documents always; others zoomed ≥ 1.25, hovered + neighbours, selected, matched); search fades the rest (nodes ~9 %, edges ~3 %) and fits the matches; clearing re-fits all.
+- [x] **AK9.** Rebuild `app/dist/` (esbuild, BOS `buildAppDir` options); `tsc` over `app/src` clean.
+- [x] **AK10.** (found in AK verification) label collision culling — FR-073(d) revised; verified in Chrome against the real bridge on a 300-document bundle.
 
 ### Phase AL — agent-facing text `[P]` once AI's shapes are fixed
 

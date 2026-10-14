@@ -1215,8 +1215,12 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
   - **View.** After settling, **fit** all nodes (labels included) to the stage, zoom clamped to
     [0.2, 3]; **+ / − / fit** controls; a status hint ("N nodes", "k of N match").
   - **Labels.** Edge labels hidden unless the edge's node is hovered/selected. Node labels below
-    the node at a **constant on-screen size** (font size divided by the zoom); documents always,
-    others when zoom ≥ 1.25, or hovered (with neighbours), selected, or a search hit.
+    the node at a **constant on-screen size** (font size divided by the zoom); allowed for documents,
+    for others when zoom ≥ 1.25, or hovered (with neighbours), selected, or a search hit — and then
+    **placed greedily without overlap** in that priority (selection, hover, hits, neighbours,
+    documents, larger nodes first); a label with no room is hidden until zooming in makes room.
+    *Added in implementation:* a 300-document bundle fit to a solid pile of document titles when
+    documents were labelled unconditionally.
   - **Search.** The match set is the hits' chapters, their documents and matched terms
     (+ documents whose title contains the query). Matches keep full strength and labels; every
     other node fades to ~9% and its edges to ~3%; the view **fits the matches**; clearing the

@@ -12,7 +12,7 @@
 import React from "react";
 import { Icon } from "../lib/icons";
 import { createBundle, deleteBundle, fetchBundleDetail } from "../lib/serviceClient";
-import type { BundleDetail, BundleHealth, DocumentRow } from "../lib/types";
+import type { BundleDetail, BundleHealth, BundleTocEntry } from "../lib/types";
 import BundleList from "./BundleList";
 import BundleDetailView from "./BundleDetail";
 import { DeleteModal, ImportModal, IngestModal, NewBundleModal, ReingestModal } from "./Modals";
@@ -36,7 +36,7 @@ export default function Overview({ bundles, activeBundle, onActiveBundle, onBund
   const [modal, setModal] = React.useState<ModalKind>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<BundleHealth | null>(null);
   // null = the whole bundle; a row = one document
-  const [reingestTarget, setReingestTarget] = React.useState<DocumentRow | null>(null);
+  const [reingestTarget, setReingestTarget] = React.useState<BundleTocEntry | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
 
   const loadDetail = React.useCallback(async (name: string) => {

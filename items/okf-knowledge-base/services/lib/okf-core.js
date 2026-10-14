@@ -1654,6 +1654,7 @@ async function listConcepts(bundleRoot, bundleName, { query, type, status, kind,
       const entry = model.entries.get(c.chId ? `${c.docId}/${c.chId}` : c.docId);
       return {
         docId: c.docId,
+        docTitle: c.docTitle,
         chId: c.chId,
         title: c.chTitle,
         description: c.description,

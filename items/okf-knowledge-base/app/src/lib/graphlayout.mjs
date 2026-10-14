@@ -277,3 +277,32 @@ export function matchSet(rows, nodes, query) {
   if (q) for (const n of nodes) if (n.type === "doc" && fold(n.label).includes(q)) ids.add(n.id);
   return new Set([...ids].filter((id) => present.has(id)));
 }
+
+/** O(N²) per tick: above this many nodes the view samples (design.md Risk #6). */
+export const NODE_CAP = 400;
+
+/**
+ * Cap a very large graph so the simulation stays interactive. Documents are
+ * always kept (they are the spine); chapters and terms are sampled,
+ * highest-degree first, so the most connected structure survives the cut.
+ */
+export function capGraph(nodes, edges, cap = NODE_CAP) {
+  if (nodes.length <= cap) return { nodes, edges, truncated: 0 };
+  const degree = new Map();
+  for (const e of edges) {
+    degree.set(e.from, (degree.get(e.from) || 0) + 1);
+    degree.set(e.to, (degree.get(e.to) || 0) + 1);
+  }
+  const docs = nodes.filter((n) => n.type === "doc");
+  const rest = nodes
+    .filter((n) => n.type !== "doc")
+    .sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const kept = [...docs, ...rest.slice(0, Math.max(0, cap - docs.length))];
+  const keptIds = new Set(kept.map((n) => n.id));
+  return { nodes: kept, edges: edges.filter((e) => keptIds.has(e.from) && keptIds.has(e.to)), truncated: nodes.length - kept.length };
+}
+
+/** The CSS class for an edge kind (the mockup's contain/cover/link vocabulary). */
+export function edgeClass(kind) {
+  return kind === "containment" ? "contain" : kind === "coverage" ? "cover" : "link";
+}

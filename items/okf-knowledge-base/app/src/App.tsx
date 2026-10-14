@@ -94,7 +94,7 @@ export default function App() {
           <div>
             <div className="tb-title">OKF Knowledge Base</div>
             <div className="tb-sub">
-              Open Knowledge Format bundles · concept-anchored, chapter-granular retrieval
+              Open Knowledge Format bundles · browse the table of contents or search the full text
             </div>
           </div>
         </div>
