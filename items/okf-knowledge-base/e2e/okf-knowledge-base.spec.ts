@@ -760,6 +760,43 @@ test("FR-045: the knowledge graph is derived on read — 3 node types, 3 typed d
 // (the launcher writes a terminal state derived from the run's own signal),
 // and the REAPER (a run orphaned by a restart is admitted to be lost rather
 // than spinning forever).
+//
+// Every run these tests start is REAL — a headless agent run against the
+// preview's provider — and the service runs at most `maxConcurrentRuns` (2)
+// at once; the rest wait queued. A test that starts a run only to check the
+// trigger must therefore stop it: left running, two such runs held both slots
+// for minutes, FR-044's run sat queued behind them, and its "did not
+// transition to running" poll blamed the stream for a full queue
+// (production, 2026-10-14).
+
+/** Stop a run this test started and does not need. 409 = already terminal. */
+async function stopRun(id: string): Promise<void> {
+  const res = await api.post(`jobs/${id}/cancel`);
+  expect([200, 409], `could not stop ${id}: ${res.status()} ${await res.text()}`).toContain(res.status());
+}
+
+/**
+ * Wait until a new run would START rather than queue: fewer running than the
+ * cap, nobody queued ahead. A queue busy with someone else's runs is reported
+ * as exactly that, not as a launcher that does not consume its stream.
+ */
+async function waitForFreeRunSlot(): Promise<void> {
+  const cfg = await (await api.get("config")).json();
+  const cap = Number(cfg.runtime && cfg.runtime.maxConcurrentRuns);
+  expect(cap, "the run queue is paused (maxConcurrentRuns 0) — no run can start").toBeGreaterThan(0);
+  let busy: string[] = [];
+  await expect
+    .poll(
+      async () => {
+        const { jobs } = await (await api.get("jobs")).json();
+        const active = (jobs as { id: string; status: string }[]).filter((j) => j.status === "running" || j.status === "queued");
+        busy = active.map((j) => `${j.id} (${j.status})`);
+        return active.filter((j) => j.status === "running").length < cap && !active.some((j) => j.status === "queued");
+      },
+      { message: `the run queue never had a free slot (cap ${cap}); still active: ${busy.join(", ")}`, timeout: 300_000, intervals: [2000] },
+    )
+    .toBe(true);
+}
 
 test("FR-016: okf_ingest auto-triggers — it returns {jobId} with NO instruction block", async () => {
   await api.post(`bundles/${B.main}/import`, { data: { files: [{ path: "raw/e2e-trigger.md", content: "# trigger source\n\nShort body.\n" }] } });
@@ -787,6 +824,9 @@ test("FR-016: okf_ingest auto-triggers — it returns {jobId} with NO instructio
   expect(job.id).toBe(started.jobId);
   expect(["queued", "running", "completed", "failed"]).toContain(job.status);
   expect(job.bundleId).toBe(B.main);
+
+  // the shape is what is under test, not the run
+  await stopRun(started.jobId);
 });
 
 test("the trigger returns before the run does — the caller's turn is not held open", async () => {
@@ -798,6 +838,9 @@ test("the trigger returns before the run does — the caller's turn is not held 
   // An agent run is tens of seconds at best. Anything under a few seconds
   // proves the response is not waiting for it.
   expect(elapsed, "POST /jobs must return without awaiting the agent run").toBeLessThan(5000);
+
+  // the return time is what is under test, not the run
+  await stopRun((await res.json()).jobId);
 });
 
 test("FR-044/SC-011: the LAUNCHER writes the terminal state — completed with a summary, or failed with an error", async () => {
@@ -807,9 +850,16 @@ test("FR-044/SC-011: the LAUNCHER writes the terminal state — completed with a
   // terminal state is a pass, because what is under test is that the service
   // — which launched the run and watched its stream — records an honest
   // outcome instead of leaving the job hanging.
+  //
+  // Its own timeout: a free slot (up to 5 min), the start (30 s) and the run
+  // itself (up to 10 min). Under the default 30 s, Phase 2's poll could never
+  // have waited for a real run.
+  test.setTimeout(16 * 60_000);
   await api.post(`bundles/${B.main}/import`, {
     data: { files: [{ path: "raw/e2e-lifecycle.md", content: "# Lifecycle Probe\n\n## One\n\nFirst section.\n\n## Two\n\nSecond section.\n" }] },
   });
+  // Phase 1 below is "it starts within 30s", which only holds with a free slot.
+  await waitForFreeRunSlot();
   const started = await (await api.post("jobs", { data: { bundle: B.main, source: "raw/e2e-lifecycle.md" } })).json();
   const id = started.jobId;
 
@@ -914,6 +964,8 @@ test("the sub-agent may enrich progress on a live run, and nothing more", async 
 
   const missing = await api.post(`jobs/${started.jobId}`, { data: {} });
   expect(missing.status()).toBe(400);
+
+  await stopRun(started.jobId);
 });
 
 test("FR-049: a run orphaned by a restart is reaper-marked failed(stale), not left spinning", async () => {
@@ -1171,6 +1223,9 @@ test("FR-016: the app's Ingest modal starts a real run and it appears in the Job
   expect(created!.source).toBe("raw/e2e-from-app.md");
 
   await expect(app.getByTestId(`job-${created!.id}`)).toBeVisible({ timeout: 15000 });
+
+  // that the modal starts the run is under test, not the run
+  await stopRun(created!.id);
 });
 
 test("US9/FR-042: the Query tab's Graph fills its pane with category-coloured nodes and labelled edges", async ({ page }) => {
