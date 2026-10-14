@@ -2030,7 +2030,11 @@ test("U1b (FR-055): re-registering a changed source CLEARS the previous split (.
 // So these records are written straight into the persisted store and the
 // service restarted — the same seam the reaper and job-control tests use —
 // and they assert the two things that are this item's: that `GET /jobs/<id>`
-// returns the captured array intact, and that the app renders it.
+// returns the captured array intact, and that the app renders it. They are
+// seeded with the trajectory INLINE, the shape an earlier service wrote; the
+// restarted service moves each one to `.jobs/trajectories/<id>.json` when it
+// loads the store, so this also covers that migration against the real
+// /api/fs (tests/job-store-memory.test.mjs AP4 covers it offline).
 
 const TRAJECTORY_FIXTURE = [
   { type: "run_started", runId: "headless-okf-ingest-e2e", agent: "okf-ingest", at: "2026-10-12T09:00:00Z" },

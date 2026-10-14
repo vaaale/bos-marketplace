@@ -3635,16 +3635,41 @@ async function lintBundleLocked(bundleRoot, bundleName) {
 
 const JOBS_DIR = ".jobs";
 const JOBS_FILE = "jobs.json";
+const TRAJECTORIES_DIR = "trajectories";
 const JOB_HISTORY_LIMIT = 200;
 
-let jobsState = null; // { jobs: [...], seq: n } — hot map, mirrored to disk
+// THE STORE'S SHAPE (FR-057, ADR-013). `jobs.json` holds the job RECORDS and
+// nothing else; each run's trajectory is its own file,
+// `.jobs/trajectories/<id>.json`. They used to be one file, every record
+// carrying its run's full trajectory, and that is what took the worker down
+// on production (2026-10-14): 40 runs made a 13 MB store that was held in the
+// heap whole and re-serialised — twice, once for the store and once for the
+// /api/fs request body — on every event of every live run, until a single
+// ingest exhausted the service's 256 MB heap. Split, a write costs what it
+// changes: an event rewrites its own run's trajectory, a status change
+// rewrites the records, and no write ever carries another run's history.
+//
+// A completed run's trajectory is not kept in memory either. `liveTrajectories`
+// holds a run's events only while they can still grow; once the run is
+// terminal and its file is written, the array is dropped and GET /jobs/<id>
+// reads the file.
+
+let jobsState = null; // { jobs: [record, ...], seq: n } — the records, mirrored to jobs.json
+let jobsLoading = null; // the cold load in flight, shared by every caller that arrives during it
+let jobsGeneration = 0; // bumped by resetJobStore so a load that straddles a reset cannot install itself
+const liveTrajectories = new Map(); // job id -> events, while the run may still append
+const trajectoryTimers = new Map(); // job id -> the pending coalesced flush
 
 function jobsPath(bundleRoot) {
   return safeJoin(bundleRoot, JOBS_DIR, JOBS_FILE);
 }
 
+function trajectoryPath(bundleRoot, id) {
+  return safeJoin(bundleRoot, JOBS_DIR, TRAJECTORIES_DIR, `${id}.json`);
+}
+
 /**
- * Drop the hot map so the next `loadJobs` reads from disk again.
+ * Drop the in-memory store so the next `loadJobs` reads from disk again.
  *
  * The cache is module-level and NOT keyed by bundleRoot, so it has to be
  * dropped whenever the root it was loaded for stops being the current one —
@@ -3652,81 +3677,236 @@ function jobsPath(bundleRoot) {
  * every mutation persists through `persistJobs` before this can matter.
  */
 function resetJobStore() {
+  jobsGeneration++;
   jobsState = null;
+  jobsLoading = null;
+  liveTrajectories.clear();
+  for (const timer of trajectoryTimers.values()) clearTimeout(timer.handle);
+  trajectoryTimers.clear();
+  fileWriters.clear();
 }
 
-async function loadJobs(bundleRoot) {
-  if (jobsState) return jobsState;
-  const raw = await vfs.readText(jobsPath(bundleRoot)).catch(() => null);
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.jobs)) {
-        // `trajectory` round-trips as a plain JSON array (FR-057). A record
-        // written before the field existed — or by a service that failed
-        // mid-write — comes back without it, and every reader downstream
-        // (GET /jobs/<id>, the app) is entitled to an array, not undefined.
-        for (const job of parsed.jobs) {
-          if (!Array.isArray(job.trajectory)) job.trajectory = [];
-          // A store written before reasoning was merged holds one event per
-          // token (8.4 MB on production); compact it on the way in.
-          else if (job.trajectory.some((e) => e && e.type === "reasoning_delta")) {
-            const compacted = [];
-            for (const e of job.trajectory) pushTrajectoryEvent(compacted, e);
-            job.trajectory = compacted;
-          }
-          // The reaper's inactivity clock (FR-059) must survive a restart —
-          // it is persisted with the rest of the record, but a record
-          // written before the field existed comes back without it. Null,
-          // not undefined: the reaper falls back to startedAt/queuedAt.
-          if (job.lastEventAt === undefined) job.lastEventAt = null;
+/**
+ * The records, loaded once. Every caller that arrives while the cold load is
+ * in flight waits for THAT load — before, each started its own read of the
+ * whole store, and the last one to finish replaced the state the others had
+ * already handed out.
+ */
+function loadJobs(bundleRoot) {
+  if (jobsState) return Promise.resolve(jobsState);
+  if (!jobsLoading) {
+    const generation = jobsGeneration;
+    const loading = readJobStore(bundleRoot).then(
+      (state) => {
+        if (generation === jobsGeneration) {
+          jobsState = state;
+          jobsLoading = null;
         }
-        jobsState = { jobs: parsed.jobs, seq: Number(parsed.seq) || parsed.jobs.length };
-        return jobsState;
-      }
-    } catch {
-      /* corrupt file: start clean rather than refusing to run ingests */
+        return state;
+      },
+      (err) => {
+        if (generation === jobsGeneration) jobsLoading = null;
+        throw err;
+      },
+    );
+    jobsLoading = loading;
+  }
+  return jobsLoading;
+}
+
+/**
+ * Read `jobs.json`. A store that does not exist yet is an empty one; a store
+ * that cannot be read or parsed is an ERROR, never an empty store — the next
+ * write would replace the whole run history with it.
+ *
+ * A store written by an earlier service carries each run's trajectory inline.
+ * Those are moved to their own files here, and the records rewritten without
+ * them, before the store is used — so a production store converges the first
+ * time a new service loads it. An EMPTY inline trajectory is dropped without
+ * touching the file: that is what an older service writes back after reading
+ * a new store, and the file already holds the real one.
+ */
+async function readJobStore(bundleRoot) {
+  const file = jobsPath(bundleRoot);
+  let raw;
+  try {
+    raw = await vfs.readText(file);
+  } catch (err) {
+    if (isMissing(err)) return { jobs: [], seq: 1000 };
+    throw new Error(`the ingest job store ${file} could not be read: ${err.message}`, { cause: err });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `the ingest job store ${file} is not valid JSON (${err.message}). It is left as it is — replacing it would erase the run history it holds; repair or remove it.`,
+      { cause: err },
+    );
+  }
+  if (!parsed || !Array.isArray(parsed.jobs)) {
+    throw new Error(`the ingest job store ${file} has no "jobs" array. It is left as it is; repair or remove it.`);
+  }
+
+  let migrated = false;
+  for (const job of parsed.jobs) {
+    if (Array.isArray(job.trajectory) && job.trajectory.length) {
+      // A store written before reasoning was merged holds one event per
+      // token (8.4 MB on production); compact it on the way out.
+      const events = [];
+      for (const e of job.trajectory) pushTrajectoryEvent(events, e);
+      await vfs.writeText(trajectoryPath(bundleRoot, job.id), JSON.stringify(events));
+      job.trajectoryEvents = events.length;
     }
+    if ("trajectory" in job) {
+      delete job.trajectory;
+      migrated = true;
+    }
+    if (!Number.isInteger(job.trajectoryEvents)) job.trajectoryEvents = 0;
+    // The reaper's inactivity clock (FR-059) must survive a restart — it is
+    // persisted with the rest of the record, but a record written before the
+    // field existed comes back without it. Null, not undefined: the reaper
+    // falls back to startedAt/queuedAt.
+    if (job.lastEventAt === undefined) job.lastEventAt = null;
   }
-  jobsState = { jobs: [], seq: 1000 };
-  return jobsState;
+  const state = { jobs: parsed.jobs, seq: Number(parsed.seq) || parsed.jobs.length };
+  if (migrated) await vfs.writeText(file, renderJobs(state));
+  return state;
 }
 
+function renderJobs(state) {
+  return `${JSON.stringify(state, null, 2)}\n`;
+}
+
+// ── ONE WRITER PER FILE ──────────────────────────────────────────────────
+//
+// A file has at most one write in flight and at most one waiting behind it.
+// The waiting write renders its content when it STARTS, so it carries every
+// change made up to that moment, and any number of changes arriving while it
+// waits ride on it. Writes of one file therefore land in the order they
+// started, and the last to land is the newest — before, writes were started
+// whenever 250 ms had passed since the previous one STARTED, so a slow one
+// was overlapped by the next, and whichever finished last won even when it
+// was the older snapshot.
+
+const fileWriters = new Map(); // vfs path -> { tail, waiting, render }
+
+function writeLatest(vfsPath, render) {
+  let writer = fileWriters.get(vfsPath);
+  if (!writer) {
+    writer = { tail: Promise.resolve(), waiting: null, render };
+    fileWriters.set(vfsPath, writer);
+  }
+  writer.render = render;
+  if (writer.waiting) return writer.waiting;
+  const current = writer;
+  const write = current.tail.then(() => {
+    current.waiting = null; // from here on, a change needs the NEXT write
+    return vfs.writeText(vfsPath, current.render());
+  });
+  current.waiting = write;
+  // The tail only ORDERS the next write after this one. This write's outcome,
+  // failure included, belongs to the callers awaiting `write`.
+  current.tail = write.then(
+    () => undefined,
+    () => undefined,
+  );
+  return write;
+}
+
+/**
+ * Persist the job records. Containment, deliberately: a job record is
+ * operational state, and an ingest must not fail because the record that
+ * describes it could not be saved — the in-memory record still answers every
+ * reader. The failure is logged with its cause, never dropped.
+ */
 async function persistJobs(bundleRoot) {
-  if (!jobsState) return;
-  if (jobsState.jobs.length > JOB_HISTORY_LIMIT) jobsState.jobs = jobsState.jobs.slice(0, JOB_HISTORY_LIMIT);
-  await vfs.writeText(jobsPath(bundleRoot), JSON.stringify(jobsState, null, 2) + "\n").catch(() => {
-    /* best effort — a job record must never fail the ingest it describes */
-  });
+  const state = jobsState;
+  if (!state) return;
+  try {
+    await writeLatest(jobsPath(bundleRoot), () => renderJobs(state));
+  } catch (err) {
+    console.error(`[okf] could not persist the ingest job store ${jobsPath(bundleRoot)}: ${err && err.stack ? err.stack : err}`);
+  }
 }
 
-// Trajectory events arrive one per NDJSON line and `persistJobs` rewrites the
-// whole store, so the two together would mean a full-file write per line of a
-// live run. These coalesce instead: write immediately when the store has been
-// quiet, otherwise schedule ONE trailing write for the end of the window. A
-// restart can therefore lose at most the last quarter-second of a trajectory,
-// which is the point of persisting incrementally in the first place — the
-// terminal transition always persists synchronously through updateJob.
-const TRAJECTORY_PERSIST_MS = 250;
-let persistPending = null;
-let lastPersistAt = 0;
-
-function schedulePersistJobs(bundleRoot) {
-  const now = Date.now();
-  const waited = now - lastPersistAt;
-  if (waited >= TRAJECTORY_PERSIST_MS) {
-    lastPersistAt = now;
-    return persistJobs(bundleRoot);
+/** Persist one run's trajectory — the same containment as `persistJobs`. */
+async function persistTrajectory(bundleRoot, id) {
+  const events = liveTrajectories.get(id);
+  if (!events) return;
+  try {
+    await writeLatest(trajectoryPath(bundleRoot, id), () => JSON.stringify(events));
+  } catch (err) {
+    console.error(`[okf] could not persist the trajectory of ${id}: ${err && err.stack ? err.stack : err}`);
   }
-  if (persistPending) return persistPending;
-  persistPending = new Promise((resolve) => {
-    setTimeout(() => {
-      persistPending = null;
-      lastPersistAt = Date.now();
-      void persistJobs(bundleRoot).then(resolve, resolve);
-    }, TRAJECTORY_PERSIST_MS - waited);
+}
+
+/** A trajectory on disk, or [] for a run that never produced an event. */
+async function readTrajectory(bundleRoot, id) {
+  const text = await readTextIfExists(trajectoryPath(bundleRoot, id));
+  if (text === null) return [];
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(`the trajectory of ${id} (${trajectoryPath(bundleRoot, id)}) is not valid JSON: ${err.message}`, { cause: err });
+  }
+}
+
+/** Remove a run's trajectory file; a run that never produced one has none. */
+async function removeTrajectory(bundleRoot, id) {
+  liveTrajectories.delete(id);
+  const timer = trajectoryTimers.get(id);
+  if (timer) clearTimeout(timer.handle);
+  trajectoryTimers.delete(id);
+  fileWriters.delete(trajectoryPath(bundleRoot, id));
+  try {
+    await vfs.remove(trajectoryPath(bundleRoot, id));
+  } catch (err) {
+    if (!isMissing(err)) throw err;
+  }
+}
+
+/**
+ * Write a run's trajectory and the records, then — if the run is over and
+ * nothing new arrived meanwhile — let go of the events: the file holds them.
+ */
+async function flushTrajectory(bundleRoot, id) {
+  await Promise.all([persistTrajectory(bundleRoot, id), persistJobs(bundleRoot)]);
+  const job = jobsState && jobsState.jobs.find((j) => j.id === id);
+  if (job && TERMINAL.has(job.status) && !trajectoryTimers.has(id)) liveTrajectories.delete(id);
+}
+
+// Trajectory events arrive one per NDJSON line. These coalesce instead of
+// writing per line: the first event of a quiet run flushes at once, later ones
+// share ONE trailing flush per run at the end of the window. A restart can
+// therefore lose at most the last quarter-second of a trajectory — the
+// terminal transition always flushes through updateJob.
+const TRAJECTORY_PERSIST_MS = 250;
+
+function scheduleTrajectoryFlush(bundleRoot, id) {
+  const pending = trajectoryTimers.get(id);
+  if (pending) return pending.done;
+  let handle;
+  const done = new Promise((resolve) => {
+    handle = setTimeout(() => {
+      trajectoryTimers.delete(id);
+      resolve(flushTrajectory(bundleRoot, id));
+    }, TRAJECTORY_PERSIST_MS);
   });
-  return persistPending;
+  trajectoryTimers.set(id, { handle, done });
+  return done;
+}
+
+/** A run's events, in memory — loaded from its file if the run had gone quiet. */
+async function liveTrajectory(bundleRoot, job) {
+  let events = liveTrajectories.get(job.id);
+  if (!events) {
+    events = job.trajectoryEvents > 0 ? await readTrajectory(bundleRoot, job.id) : [];
+    // a concurrent append may have loaded it while this one was reading
+    if (!liveTrajectories.has(job.id)) liveTrajectories.set(job.id, events);
+    events = liveTrajectories.get(job.id);
+  }
+  return events;
 }
 
 async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers, parentJobId, reingestDocId }) {
@@ -3763,19 +3943,28 @@ async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers, p
     // fires the abort the moment it learns the id (ADR-010 S4).
     runId: null,
     cancelRequested: false,
-    // The run's NDJSON stream, captured verbatim and in order by the launcher
-    // (FR-057, ADR-013). Empty for a run that produced no events at all —
-    // which is the ONLY case the app's "No trajectory captured" note covers.
-    trajectory: [],
+    // How many events the run's trajectory holds (FR-057, ADR-013). The
+    // events themselves are in `.jobs/trajectories/<id>.json`; zero for a run
+    // that produced none — the ONLY case the app's "No trajectory captured"
+    // note covers.
+    trajectoryEvents: 0,
   };
   state.jobs.unshift(job);
+  // The history cap: the oldest records past it go, and their trajectories
+  // with them.
+  for (const dropped of state.jobs.splice(JOB_HISTORY_LIMIT)) {
+    try {
+      await removeTrajectory(bundleRoot, dropped.id);
+    } catch (err) {
+      console.error(`[okf] could not remove the trajectory of ${dropped.id}, dropped from the job history: ${err && err.stack ? err.stack : err}`);
+    }
+  }
   await persistJobs(bundleRoot);
   return job;
 }
 
 /**
- * A job as a LIST row: the whole record except the trajectory, which is
- * replaced by its length.
+ * A job as a LIST row: the record and its event count, never the events.
  *
  * The trajectory is per-run debug detail measured in tens of kilobytes. The
  * list is polled by the app every few seconds and returned wholesale by
@@ -3786,21 +3975,31 @@ async function createJob(bundleRoot, { bundleId, source, maxDepth, maxWorkers, p
  */
 function jobListView(job) {
   const { trajectory, ...rest } = job;
-  return { ...rest, trajectoryEvents: Array.isArray(trajectory) ? trajectory.length : 0 };
+  return { ...rest, trajectoryEvents: Array.isArray(trajectory) ? trajectory.length : rest.trajectoryEvents || 0 };
 }
 
-async function listJobs(bundleRoot, { bundleId, status, limit, includeTrajectory = false } = {}) {
+async function listJobs(bundleRoot, { bundleId, status, limit } = {}) {
   const state = await loadJobs(bundleRoot);
   let jobs = state.jobs;
   if (bundleId) jobs = jobs.filter((j) => j.bundleId === bundleId);
   if (status) jobs = jobs.filter((j) => j.status === status);
   if (Number.isFinite(limit) && limit > 0) jobs = jobs.slice(0, limit);
-  return includeTrajectory ? jobs : jobs.map(jobListView);
+  return jobs.map(jobListView);
 }
 
-async function getJob(bundleRoot, id) {
+/** The record alone — what every internal caller needs. */
+async function findJob(bundleRoot, id) {
   const state = await loadJobs(bundleRoot);
   return state.jobs.find((j) => j.id === id) || null;
+}
+
+/** One job IN FULL, its trajectory included — the detail read (GET /jobs/<id>). */
+async function getJob(bundleRoot, id) {
+  const job = await findJob(bundleRoot, id);
+  if (!job) return null;
+  const live = liveTrajectories.get(id);
+  const trajectory = live ? [...live] : job.trajectoryEvents > 0 ? await readTrajectory(bundleRoot, id) : [];
+  return { ...job, trajectory };
 }
 
 /**
@@ -3818,7 +4017,7 @@ async function getJob(bundleRoot, id) {
 /**
  * Append one stream event to a trajectory — THE rule for what a trajectory
  * holds, shared by the live launcher (appendJobTrajectory) and the cold load
- * (loadJobs), so a store written by an older service converges on it.
+ * (readJobStore), so a store written by an older service converges on it.
  *
  * Reasoning arrives one TOKEN per line. Stored as-is the trajectory became a
  * token log — 33,089 of one run's 33,186 events — and the job store grew until
@@ -3841,20 +4040,18 @@ function pushTrajectoryEvent(trajectory, event) {
 
 async function appendJobTrajectory(bundleRoot, id, event) {
   if (!event || typeof event !== "object") return null;
-  const state = await loadJobs(bundleRoot);
-  const job = state.jobs.find((j) => j.id === id);
+  const job = await findJob(bundleRoot, id);
   if (!job) return null;
-  if (!Array.isArray(job.trajectory)) job.trajectory = [];
-  pushTrajectoryEvent(job.trajectory, event);
+  const events = await liveTrajectory(bundleRoot, job);
+  pushTrajectoryEvent(events, event);
+  job.trajectoryEvents = events.length;
   // THE LIVENESS STAMP the stale reaper reads (FR-049). An event is the only
   // honest evidence that the run is still alive, so it is recorded here, at
   // the one place every event passes through. It rides the SAME coalesced
-  // write as the trajectory it belongs to — `schedulePersistJobs` already
-  // caps the store at one write per TRAJECTORY_PERSIST_MS, so stamping each
-  // event costs no additional I/O, and the terminal transition flushes it
-  // synchronously through `updateJob`'s own `persistJobs`.
+  // flush as the trajectory it belongs to, and the terminal transition
+  // flushes it through `updateJob`.
   job.lastEventAt = nowIso();
-  await schedulePersistJobs(bundleRoot);
+  await scheduleTrajectoryFlush(bundleRoot, id);
   return job;
 }
 
@@ -3889,8 +4086,6 @@ async function updateJob(bundleRoot, id, patch = {}) {
   if (patch.error !== undefined) job.error = patch.error;
   if (patch.runId !== undefined) job.runId = patch.runId;
   if (patch.cancelRequested !== undefined) job.cancelRequested = !!patch.cancelRequested;
-  if (patch.trajectory !== undefined) job.trajectory = Array.isArray(patch.trajectory) ? patch.trajectory : [];
-  if (!Array.isArray(job.trajectory)) job.trajectory = [];
   // A cancellation is not an error — whatever a late stream signal would have
   // written, a cancelled job's `error` stays null (FR-050).
   if (patch.status === "cancelled") job.error = null;
@@ -3909,7 +4104,16 @@ async function updateJob(bundleRoot, id, patch = {}) {
     job.status = patch.status;
   }
 
-  await persistJobs(bundleRoot);
+  if (TERMINAL.has(job.status) && liveTrajectories.has(id)) {
+    // The run is over: its trajectory is written now rather than at the end
+    // of the coalescing window, and then released from memory.
+    const pending = trajectoryTimers.get(id);
+    if (pending) clearTimeout(pending.handle);
+    trajectoryTimers.delete(id);
+    await flushTrajectory(bundleRoot, id);
+  } else {
+    await persistJobs(bundleRoot);
+  }
   return job;
 }
 
@@ -4014,9 +4218,12 @@ async function deleteJob(bundleRoot, id) {
     throw jobError(`job ${id} is still ${job.status} — cancel it first, then delete it`, 409);
   }
 
-  // Out of the hot map AND out of the file it is mirrored to: persistJobs
-  // rewrites jobs.json from this array, so one splice covers both.
-  state.jobs.splice(index, 1);
+  // The trajectory first: if it cannot be removed the record stays, rather
+  // than leaving a file no record points at. Then out of the records AND out
+  // of the file they are mirrored to — persistJobs rewrites jobs.json from
+  // this array, so one splice covers both.
+  await removeTrajectory(bundleRoot, id);
+  state.jobs.splice(state.jobs.indexOf(job), 1);
   await persistJobs(bundleRoot);
 
   return {
@@ -4589,26 +4796,33 @@ async function driveRun(bundleRoot, jobId, task) {
     const run = await delegate.runIngestAgent({
       task,
       onTool: ({ tool, index }) => {
-        void updateJob(bundleRoot, jobId, { progress: progressFor(tool, index) }).catch(() => {});
+        void updateJob(bundleRoot, jobId, { progress: progressFor(tool, index) }).catch((err) => {
+          console.error(`[okf] could not record progress on ${jobId}: ${err && err.stack ? err.stack : err}`);
+        });
       },
       // FR-057 / ADR-013: every line of the stream, verbatim and in order, on
       // the job record. The launcher is the only thing that ever sees this
       // stream, so if it does not capture it here nothing can.
       onEvent: (event) => {
-        void appendJobTrajectory(bundleRoot, jobId, event).catch(() => {});
+        void appendJobTrajectory(bundleRoot, jobId, event).catch((err) => {
+          console.error(`[okf] could not capture a trajectory event of ${jobId}: ${err && err.stack ? err.stack : err}`);
+        });
       },
       // FR-052: the run's own `run_started` line is the ONLY place the runId
       // exists — the delegate POST returns a stream, not an id. Storing it on
       // the job is what makes `okf_cancel_job` able to abort anything at all.
+      // A failure here propagates to the launcher, which logs it with its
+      // cause: losing the runId costs the cancel path its handle, so it must
+      // be visible, but it must not stop the run it belongs to.
       onRunStarted: async ({ runId }) => {
-        await updateJob(bundleRoot, jobId, { runId }).catch(() => {});
+        await updateJob(bundleRoot, jobId, { runId });
         // ADR-010 S4 — the queued window: a cancel that arrived before this
         // id existed only recorded the intent. Now that the handle is here,
         // honour it immediately rather than leaving a "cancelled" job with a
         // run still burning tokens behind it.
-        const job = await getJob(bundleRoot, jobId).catch(() => null);
+        const job = await findJob(bundleRoot, jobId);
         if (job && (job.cancelRequested || job.status === "cancelled")) {
-          await delegate.abortRun(runId).catch(() => {});
+          await delegate.abortRun(runId);
         }
       },
     });
@@ -4863,6 +5077,7 @@ module.exports = {
   deleteJob,
   reapStaleJobs,
   resetJobStore,
+  JOB_HISTORY_LIMIT,
   DEFAULT_INACTIVITY_MS,
   DEFAULT_MAX_TOTAL_MS,
   // the auto-trigger (THE single ingest path)

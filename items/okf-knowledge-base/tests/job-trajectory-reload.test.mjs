@@ -111,8 +111,9 @@ test("appendJobTrajectory grows a live job's array and persists it", async () =>
 
   // the coalescing window is 250ms; give the trailing write room to land
   await new Promise((r) => setTimeout(r, 400));
-  const persisted = JSON.parse(fs.read(`${ROOT}/.jobs/jobs.json`));
-  assert.deepEqual(persisted.jobs.find((j) => j.id === "run-1041").trajectory, [event]);
+  // in the run's own trajectory file — jobs.json holds records only (AP2)
+  assert.deepEqual(JSON.parse(fs.read(`${ROOT}/.jobs/trajectories/run-1041.json`)), [event]);
+  assert.equal(JSON.parse(fs.read(`${ROOT}/.jobs/jobs.json`)).jobs.find((j) => j.id === "run-1041").trajectoryEvents, 1);
 
   // an unknown job is a no-op, not a throw — capture must never break a run
   assert.equal(await core.appendJobTrajectory(ROOT, "run-nope", event), null);

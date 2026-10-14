@@ -38,6 +38,19 @@ export async function startMemFs() {
     byPath.set(p, (byPath.get(p) || 0) + 1);
   };
   const failures = [];
+  // Concurrency per op+path: how many requests are being served at once, and
+  // the most ever seen. `delayWrites(ms)` holds every write open that long, the
+  // way a real /api/fs write of a large file is not instantaneous — which is
+  // the only condition under which two writes of the same file can overlap.
+  const inFlight = new Map();
+  const peakInFlight = new Map();
+  let writeDelayMs = 0;
+  const enter = (key) => {
+    const n = (inFlight.get(key) || 0) + 1;
+    inFlight.set(key, n);
+    peakInFlight.set(key, Math.max(peakInFlight.get(key) || 0, n));
+  };
+  const leave = (key) => inFlight.set(key, inFlight.get(key) - 1);
   const takeFailure = (op, p) => {
     const i = failures.findIndex((f) => f.op === op && f.match(p));
     if (i === -1) return false;
@@ -115,10 +128,18 @@ export async function startMemFs() {
         count(body.op, p);
         if (takeFailure(body.op, p)) return send(500, { error: `injected failure: ${body.op} ${p}` });
         if (body.op === "write") {
-          mkdirp(p.slice(0, p.lastIndexOf("/")) || "/");
-          files.set(p, String(body.content ?? ""));
-          touch(p);
-          return send(200, { ok: true });
+          const key = `write ${p}`;
+          enter(key);
+          const commit = () => {
+            leave(key);
+            mkdirp(p.slice(0, p.lastIndexOf("/")) || "/");
+            files.set(p, String(body.content ?? ""));
+            touch(p);
+            send(200, { ok: true });
+          };
+          if (writeDelayMs) setTimeout(commit, writeDelayMs);
+          else commit();
+          return;
         }
         if (body.op === "mkdir") {
           mkdirp(p);
@@ -167,6 +188,12 @@ export async function startMemFs() {
     /** Fail the next `op` request whose path satisfies `match` with a 500. */
     failNext: (op, match) => failures.push({ op, match: typeof match === "function" ? match : (p) => p === norm(match) }),
     paths: () => [...files.keys()].sort(),
+    /** Hold every write open for `ms` before it lands (0 = immediate). */
+    delayWrites: (ms) => {
+      writeDelayMs = ms;
+    },
+    /** The most writes to `p` that were ever being served at the same time. */
+    peakWritesInFlight: (p) => peakInFlight.get(`write ${norm(p)}`) || 0,
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
 }

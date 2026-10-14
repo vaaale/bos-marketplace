@@ -181,11 +181,14 @@ async function runIngestAgent({ task, agent, onTool, onRunStarted, onEvent }) {
       const id = line.runId || (line.run && line.run.id) || (line.result && line.result.runId);
       if (id) {
         runId = String(id);
+        // Capturing the id must never break the stream that carried it, so
+        // a failure is logged with its cause rather than thrown into the loop.
         if (onRunStarted) {
+          const logFailure = (err) => console.error(`[okf] could not record run ${runId}: ${err && err.stack ? err.stack : err}`);
           try {
-            void Promise.resolve(onRunStarted({ runId })).catch(() => {});
-          } catch {
-            /* capturing the id must never break the stream that carried it */
+            void Promise.resolve(onRunStarted({ runId })).catch(logFailure);
+          } catch (err) {
+            logFailure(err);
           }
         }
       }

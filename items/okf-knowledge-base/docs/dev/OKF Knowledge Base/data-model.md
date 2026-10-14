@@ -6,8 +6,9 @@ Everything is a Markdown file with YAML frontmatter in the BOS VFS. No database,
 
 ```
 <bundleRoot>/                       # default /KnowledgeBase
-├── .jobs/
-│   └── jobs.json                   # service-level job store (NOT exported)
+├── .jobs/                          # service-level job store (NOT exported)
+│   ├── jobs.json                   # the job RECORDS — never a trajectory
+│   └── trajectories/<jobId>.json   # one run's captured NDJSON events
 └── <bundle>/
     ├── index.md                    # entry point: every document, newest first, + the term count (derived)
     ├── log.md                      # append-only event log (init/ingest/lint/merge/delete)
@@ -233,7 +234,7 @@ A node's `id` is what edges reference (a term's lowercased name); `key` is `"<ty
 
 ## Job record
 
-In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json`. Service-level, newest first, capped at 200.
+In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json`. Service-level, newest first, capped at 200. The run's trajectory is **not** part of the record: it lives in `.jobs/trajectories/<id>.json`, and the record carries only its length (`trajectoryEvents`) — see [The job store](architecture.md#the-job-store).
 
 ```jsonc
 {
@@ -258,7 +259,9 @@ In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json`. Service-level, ne
   },
   "error": null,
   "runId": "sub-8f2c…",      // captured from the run's run_started event (FR-052)
-  "cancelRequested": false  // a cancel that landed before the runId existed
+  "cancelRequested": false,  // a cancel that landed before the runId existed
+  "lastEventAt": "2026-10-09T12:03:10.000Z", // the reaper's inactivity clock (FR-059)
+  "trajectoryEvents": 41     // events in .jobs/trajectories/run-1042.json (FR-057)
 }
 ```
 
@@ -268,6 +271,7 @@ In-memory hot map, mirrored to `<bundleRoot>/.jobs/jobs.json`. Service-level, ne
 - `runId` is the handle `okf_cancel_job` aborts by. It is null until the run emits `run_started`; a cancel arriving in that window sets `cancelRequested`, and the launcher fires the abort the moment the id arrives.
 - `cancelled` is terminal, so the reaper never touches it and `okf_delete_job` accepts it.
 - **Terminal states are final.** A late transition against a terminal job is a recorded no-op, never a resurrection.
+- `trajectoryEvents` is what the Jobs list and `okf_list_jobs` show. The events themselves are returned only by the detail read, `GET /jobs/<id>`, as `trajectory`.
 - `.jobs/` is operational state, not OKF content: it is excluded from `okf_export_bundle`.
 
 ## Export shape

@@ -412,3 +412,16 @@ Reuse the existing mock/fixture harness. Add the person coverage **and** the bac
 - [ ] **AO2.** All `tests/*.test.mjs` green; e2e green on a preview.
 - [ ] **AO3.** On the deployment: time one `/api/fs` `list` and `read`, a refresh of the largest real bundle, and p95 of 20 searches; record them in `design.md` §12.6 against ADR-015/016's numbers. Above the thresholds → stop and revise the design (§10 risk 12), don't tune around it.
 - [ ] **AO4.** Merge `okf-retrieval-at-scale` into the marketplace's `main`; restart the OKF service; `GET /tools` = 21; open the app: Documents paged, Concept Index filtered, a search shows hits with excerpts, the graph spreads, fits and focuses.
+
+## Job store fix (FR-057, ADR-023) — appended 2026-10-14
+
+The production OOM (design.md §13). TDD: AP1 reproduced the crash in a worker with ServiceManager's limits before any code changed.
+
+### Phase AP — the job store
+
+- [x] **AP1.** `tests/job-store-memory.test.mjs` — the reproduction (AP1: a launcher run on a production-sized history survives 256 MB) and the contract (AP2 records-only `jobs.json` + trajectory file across a restart; AP3 one write per file in flight, newest lands last; AP4 migration of inline trajectories; AP5 an unreadable store is an error and is not overwritten; AP6 delete and the history cap remove the trajectory file). `tests/memfs-server.mjs` gains `delayWrites` and `peakWritesInFlight`.
+- [x] **AP2.** `services/lib/okf-core.js` — `readJobStore` (absence vs failure, migration), shared cold load, `writeLatest`, per-run coalesced `flushTrajectory`, `trajectoryEvents`, `findJob` for internal callers, `getJob` adds the trajectory; the launcher's progress/trajectory/runId failures are logged with their cause instead of swallowed (`delegate-bridge.js` too).
+- [x] **AP3.** Existing tests moved to the new location (`job-trajectory`, `job-trajectory-reload`, `reap-stale-jobs`); full suite green (148).
+- [x] **AP4.** Docs: `docs/dev/OKF Knowledge Base/architecture.md` (the job store), `data-model.md` (layout, record); spec FR-057; design ADR-013 notes + §13 ADR-023.
+- [ ] **AP5.** On the deployment: merge, restart the OKF service (the first load migrates the 13 MB store — check `.jobs/trajectories/` and that `jobs.json` shrank), rerun the full e2e suite.
+

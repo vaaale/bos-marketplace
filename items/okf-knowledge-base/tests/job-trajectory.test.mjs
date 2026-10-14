@@ -112,9 +112,8 @@ test("the launcher records every stream event, in order and verbatim, on the job
   assert.ok(!("callId" in job.trajectory[1]));
   assert.ok(!("callId" in job.trajectory[2]));
 
-  // and it is on DISK, in the persisted store, so a restart does not lose it
-  const persisted = JSON.parse(fs.read(`${ROOT}/.jobs/jobs.json`));
-  assert.deepEqual(persisted.jobs.find((j) => j.id === id).trajectory, RUN);
+  // and it is on DISK, in the run's own trajectory file, so a restart does not lose it
+  assert.deepEqual(JSON.parse(fs.read(`${ROOT}/.jobs/trajectories/${id}.json`)), RUN);
 });
 
 test("a crashed run captures the terminal `error` event alongside whatever preceded it", async () => {
@@ -182,7 +181,6 @@ test("consecutive reasoning tokens are stored as ONE event per thought, not one 
   ]);
   assert.equal(job.trajectory[1].delta, "Let me look at the heading structure first.");
   assert.equal(job.trajectory[4].delta, "Two sections, so two chapters.");
-  // and on disk the same — the persisted store is what a restart reloads
-  const persisted = JSON.parse(fs.read(`${ROOT}/.jobs/jobs.json`)).jobs.find((j) => j.id === job.id);
-  assert.equal(persisted.trajectory.length, 6);
+  // and on disk the same — the persisted trajectory is what a restart reloads
+  assert.equal(JSON.parse(fs.read(`${ROOT}/.jobs/trajectories/${job.id}.json`)).length, 6);
 });

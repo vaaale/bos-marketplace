@@ -215,7 +215,8 @@ test("every captured trajectory event refreshes lastEventAt, and it is persisted
   // reaper sweeping after a reload sees the same liveness it would have.
   const onDisk = JSON.parse(fs.read(`${root}/.jobs/jobs.json`)).jobs.find((j) => j.id === "run-stamp");
   assert.equal(onDisk.lastEventAt, job.lastEventAt);
-  assert.equal(onDisk.trajectory.length, 1);
+  assert.equal(onDisk.trajectoryEvents, 1);
+  assert.equal(JSON.parse(fs.read(`${root}/.jobs/trajectories/run-stamp.json`)).length, 1);
 
   assert.deepEqual((await reap(root)).reaped, [], "a run that just spoke is not stale");
 });
