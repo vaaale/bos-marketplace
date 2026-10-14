@@ -47,6 +47,8 @@ scope-add is untouched).
 
 **Note on this revision's scope-adds (FR-055/FR-056/FR-057/FR-058, US11/US12, SC-017/SC-018).** This increment adds two capabilities: **ingest chunking** (large sources are pre-split into bounded chunks when the agent registers them as a raw source — inside the run, after acquisition — so the agent's per-chunk context stays bounded — ADR-012) and **job trajectory** (the launcher captures the full NDJSON stream and stores it on the job record; the app renders it as a collapsible tool-call timeline — ADR-013). Both are **pure `marketplace-item`** — no new `src/` file, no new tools (21 stays 21).
 
+**Note on the retrieval-at-scale revision (2026-10-14; US14, FR-001/002/004/006 amended, FR-068–FR-072, SC-020–SC-023).** Two ways in for an agent on a bundle of hundreds of documents: **browse** a paged bundle TOC (`okf_read_toc({bundle})`, newest first) and **search** the full text of every chapter (`okf_search`, ranked chapter hits with a match kind and an excerpt). The design is in **§12** and **ADR-015 – ADR-020**. Its load-bearing finding is not search at all: **every write rebuilds the whole bundle** today (§12.1), which is what actually stops this item scaling — so the revision makes the derived model **incremental** (ADR-016) before it adds anything to it. Still **pure `marketplace-item`**: no `src/` change, no new dependency, no new tool (21 stays 21).
+
 ---
 
 ## 1. Classification
@@ -470,6 +472,10 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
   first escalation, and embeddings only after the pre-filter is insufficient. That threshold
   and its justification must be written into this design (or the item's `docs/dev`) *before*
   adoption. Until then the deterministic pass is the whole of search.
+- **Superseded in part (2026-10-14) by ADR-015.** The escalation was adopted — on correctness
+  grounds before speed ones: the concept index cannot find what ingest did not make a term
+  (spec NFR-002 as amended). The two-level derived index stays exactly as decided here; a
+  full-text pass is added beside it, and it is still not a database (ADR-015).
 
 ### ADR-002 — Two-level derived index vs. one flat concept file per document
 
@@ -987,6 +993,132 @@ is a separate `bos-core` file committed alongside (it is not part of the item).
 
 ---
 
+### ADR-015 — Full-text search is a linear scan over an in-memory corpus, not SQLite FTS5 and not an inverted index (FR-068, NFR-002 as amended)
+
+- **Context.** `okf_search` must match the full text of every chapter (FR-002), at "hundreds
+  of documents" — call it 3,000 chapters, ~10 MB of chapter text. The service is a worker
+  thread with **no npm dependencies** (`okf-core.js` header), a **256 MB old-generation heap**
+  (`src/core/service/ServiceManager.ts` `RESOURCE_LIMITS`; the trajectory store already blew
+  through it once, FR-057), and **no sanctioned host-filesystem access** — every byte goes
+  through BOS's `/api/fs` loopback (`services/lib/vfs-bridge.js`). Whatever it stores must
+  also survive DataFS: previews share `data/` files by **hardlink**, safe only because BOS
+  never mutates a file in place (`docs/dev/self-modification/data-isolation-datafs.md`, "Clone").
+- **Options.**
+  - **(a) `node:sqlite` FTS5, on disk.** Real ranking (bm25()), but SQLite writes its file
+    **in place**: under a hardlinked preview clone the preview's writes would land in
+    production's inode — exactly what FR-072 forbids. It also needs a host path the worker
+    is not supposed to have, and FTS5 being compiled into Node's bundled SQLite is an
+    assumption we would be the first to rely on.
+  - **(b) `node:sqlite` FTS5, `:memory:`.** Fixes DataFS and the path; keeps the FTS5
+    assumption, adds a SQL layer to a JS module, and rebuilds per process anyway.
+  - **(c) A pure-JS inverted index** (postings per token). Sub-millisecond queries, but
+    memory is the problem: as JS objects, ~1.5 M (token, chapter) pairs at 3,000 chapters
+    is easily 100 MB+ against a 256 MB heap; packing it into typed arrays is a project.
+  - **(d) A linear scan over an in-memory, normalized copy of every chapter's text.**
+    ~10 MB of text, ~20–40 MB as JS strings (original + folded); a scan with one compiled
+    regex per query token is tens of milliseconds at that size. Exact, deterministic,
+    no tokenizer index to keep consistent.
+- **Decision. (d)**, held in the per-bundle derived model (ADR-016). Matching: the text is
+  lowercased and **diacritic-folded** (NFKD, combining marks removed — "Cordoba" finds
+  "Córdoba"); a query token matches at the **start of a word** (so `api` does not match
+  "rapid"); a chapter matches when **every** token matches somewhere in it (AND across
+  fields). Fields and weights: concept/person terms 4, title 3, summary 2, body (with
+  inline-asset interpretations) 1. Rank: best field tier first (term > title > summary >
+  body), then a BM25-style score over the matched fields computed in the same pass (tf per
+  field, df over the corpus), then document **added** date newest first, then chapter id —
+  fully deterministic (FR-002). The **excerpt** is cut from the chapter's original text at
+  query time (§12.3).
+- **Escalation threshold (written before it is needed, as ADR-001 required).** Move to (c)
+  with typed-array postings when a bundle's corpus passes **~40 MB of chapter text** or
+  p95 search passes **300 ms** on the deployment. Embeddings remain deferred (spec NFR-002).
+- **Consequences.** Nothing is written to disk for search, so FR-072 holds by construction
+  and there is nothing to exclude from export (FR-068). The cost is a full read of the bundle
+  per worker start (§12.2) — which the derived index already pays today.
+
+### ADR-016 — The derived model becomes incremental, and its freshness is checked on read (FR-068; the scaling prerequisite)
+
+- **Context.** `rebuildDerived()` is called from `upsertConcept`, `deleteConcept`,
+  `mergeConcepts`, `addLink`, import, lint and re-ingest; each call re-reads **every**
+  concept file **sequentially** (`classifyBundle` → `readConceptRaw` per id, one `/api/fs`
+  request each) and rewrites **every** document's TOC. Production: `okf_upsert_concept` p50
+  **257 ms**, p90 367 ms over 128 calls on 2026-10-13, on a bundle of ~60 files — ~4 ms per
+  file. At 3,000 chapters that is ~12 s per chapter write, minutes per ingest, and it grows
+  with every document added. The in-memory `derivedCache` is meanwhile **never checked**
+  for outside edits (a git pull, an editor) until the worker restarts.
+- **Decision.**
+  1. **One in-memory model per bundle** (classified documents and chapters, terms, the bundle
+     TOC entries, the search corpus), each concept carrying the **signature** `(size, mtime)`
+     its content was read at.
+  2. **Writes patch it.** `upsertConcept`/`deleteConcept`/`addLink` re-read only the
+     concept(s) they wrote, patch the model, recompute the term table in memory (CPU, O(chapters)),
+     and write only what changed: `concept-index.md`, **that document's** `toc/<docId>.md`,
+     and `index.md`. `mergeConcepts`, import and lint keep the full rebuild — they touch many
+     files by nature.
+  3. **Reads check freshness.** Before answering, `search`/`readToc`/`listConcepts` list
+     `concepts/` (recursively, **bounded parallelism 16**) plus `raw/sources.json`'s stat, and
+     re-read only concepts whose signature changed, appeared or vanished. That is what makes an
+     outside edit visible to the next search (US14 AS7, SC-022) without re-reading the bundle.
+  4. **Full reads are parallel.** `classifyBundle` reads with the same bounded parallelism,
+     not one request at a time.
+  5. **Writers serialize per bundle.** Two ingest runs write concurrently
+     (`maxConcurrentRuns` 2, FR-063); a per-bundle async lock around patch-and-write keeps the
+     model and the derived files consistent. Today's full rebuild hides this race; patching
+     would expose it.
+- **Consequences.** A chapter write costs O(1) file reads plus three derived writes,
+  independent of bundle size. A read costs one listing pass (~N/16 round trips for N concept
+  directories — at 300 documents ~20 rounds, well under 200 ms, to be measured, §12.6) plus
+  re-reads of what actually changed. The signature is per process: a restarted worker does
+  one full parallel read on first use.
+
+### ADR-017 — Bundle TOC: derived from the model, ordered by first-added from the provenance ledger (FR-069, Clarifications 2026-10-14)
+
+- **Context.** "Newest first" must not reshuffle on re-ingest. The document stub's
+  `created_at` is reset when a re-ingest clears and rewrites it (FR-064, `clearDocument`),
+  so it is the wrong key.
+- **Decision.** A document's **addedAt** is the earliest `ingestedAt` among its entries in
+  `raw/sources.json` (the append-only provenance ledger — re-ingest adds entries, never
+  removes the first); else the stub's `created_at`; else its `updated_at`; else none
+  (sorted last). Order: addedAt descending, ties by id. Entry:
+  `{id, title, chapters, summary, addedAt}`. `okf_read_toc({bundle, offset?, limit?})` returns
+  `{bundle, total, offset, limit, documents[], clamped?}` (default 50, max 200).
+  `bundleIndexMarkdown()` lists documents in the **same order from the same function**, so
+  the stored `index.md` and the tool never disagree. The concept vocabulary is not part of
+  either response.
+
+### ADR-018 — `okf_search` response: additive fields, a smaller default, and grouping (FR-001, Clarifications 2026-10-14)
+
+- **Decision.** Every row keeps today's fields (`docId, docTitle, chId, chTitle, description,
+  matchedConcept, kind, status, stale`) and gains `matchKind`
+  (`"term"|"person"|"title"|"summary"|"text"`) and `excerpt` (body matches only; ≤ 3
+  sentences, ≤ 400 chars). `matchedConcept` is null unless a term matched. Defaults change:
+  `limit` 10 (was 25), max 50, clamped with `clamped: true, maxLimit` in the response.
+  `groupBy: "document"` returns `{groups: [{docId, docTitle, total, hits: [≤5 rows]}]}`, ≤ 10
+  groups by default. The response gains `searched: ["terms","titles","summaries","full text"]`
+  so an empty result says what was searched (spec Edge Cases).
+- **Consequences.** The app's Query tab, which asked for 200 rows to light up the graph, now
+  gets at most 50 (§12.5). Callers reading the old fields are unaffected.
+
+### ADR-019 — `okf_list_concepts` is filtered and paged, and stops returning every document and chapter (FR-006)
+
+- **Context.** Today it returns the whole vocabulary **plus** `documents[]` and `chapters[]`
+  for the whole bundle — at scale the largest response the item can produce.
+- **Decision.** `{bundle, query?, kind?, status?, offset?, limit?}` →
+  `{terms: [page], total, offset, limit, clamped?}`; `query` is a diacritic-folded substring
+  match on the term name; default 100, max 500. Documents come from `okf_read_toc({bundle})`
+  and chapters from `okf_read_toc({bundle, docId})`; the `type` parameter is accepted and
+  answers with a pointer to those instead of a list. The app's REST routes that need the
+  full lists for the graph keep using `core.graph()` (unchanged).
+
+### ADR-020 — The lookup process ships as an item skill, and moves out of `okf-bundle-schema` (FR-071)
+
+- **Decision.** `skills/okf-lookup/SKILL.md` in the item — installed with it, so any agent
+  with `skill_load` can load it. `okf-bundle-schema` today carries a retrieval section that
+  says "an empty result is a real answer"; that contradicts FR-071, and two copies of a
+  procedure is the drift this repo keeps paying for. The section is replaced by a one-line
+  pointer to `okf-lookup`. FR-070's summary cap is enforced in `upsertConcept` for a
+  **document** stub whose write sets `summary` (> 2 sentences or > 320 characters → an error
+  telling the agent the limit); stored summaries are never touched.
+
 ## 5. Data model & storage layout
 
 ### 5.1 Bundle directory structure (the full layout)
@@ -1278,6 +1410,10 @@ skill (§7.4); the service only stores and derives.
 ## 6. Retrieval: `okf_search` and the derived views
 
 ### 6.1 `okf_search` — the deterministic core primitive (FR-001/FR-002, §5)
+
+> **Revised 2026-10-14:** the algorithm below is the *term* pass; it is kept as the
+> term/description tier of the search in **§12.3**, which adds titles, summaries and full
+> text and changes the defaults (ADR-015, ADR-018).
 
 **Input** `{bundle, query}` (optionally `limit`). **No LLM in the match** — it is a
 lookup, not a reasoning pass. The LLM does *routing* (deciding which concepts/queries to
@@ -1878,10 +2014,32 @@ with `okf_delete_bundle`.
     required**), the job-store introduction, and the cancel/delete capability. **Biggest
     data-model open question:** decide whether pre-redesign bundles get a best-effort
     derived index or require re-ingest to gain the full two-level index.
+12. **Retrieval at scale (2026-10-14) — the /api/fs round trip is the unknown.** ADR-016's
+    costs are extrapolated from one production figure (~4 ms per sequential file read). The
+    fresh-check lists every concept directory on every read; if parallel listing is slower
+    on the deployment than estimated, the fallback is a time-boxed fresh-check (re-list at
+    most every N seconds), which would weaken SC-022's "the next search" for outside edits —
+    a spec change, not a silent one. Measure before relying on it (§12.6).
+13. **Memory.** ADR-015 holds ~20–40 MB of text per 3,000-chapter bundle in a 256 MB worker,
+    per bundle that has been searched. Several large bundles searched in one worker lifetime
+    add up; the model of a bundle untouched for a while may need evicting. Not designed now —
+    flagged against the escalation threshold.
+14. **The Query graph does not scale.** The Graph view renders every document, chapter and
+    term of a bundle; at hundreds of documents it is thousands of nodes. US14 does not cover
+    it and this revision does not change it. Candidate follow-up: render the graph of the
+    current search hits (or of one document) rather than of the whole bundle.
 
 ---
 
 ## 11. UI mockup reference
+
+- **Retrieval at scale (2026-10-14).** The mockup's **Large bundle** mode (312 documents,
+  2,437 terms) maps onto §12.5: the **Documents** tab is `DocumentsView` over
+  `GET /bundles/<b>/toc` (paged 50, newest first, summary + "added" date); the **Concept
+  Index** tab is `ConceptIndexView` over `GET /bundles/<b>/concepts?query=` (paged 100); in
+  the Query tab, a query in the **Table** view renders the new `SearchHits` (ranked rows,
+  match-kind badge, highlighted excerpt, **Chapters / By document**), and the **Graph** lights
+  up the same hits.
 
 - **Path:** `item-okf-knowledge-base/mockup.html` (this spec directory) — the **binding
   visual + interaction contract**, already implementing the full app shell:
@@ -1929,3 +2087,109 @@ with `okf_delete_bundle`.
   (shell, Jobs incl. cancel/delete, Query/Graph/Search, resizable pane) are concerned,
   **the mockup contains them (updated for this scope-add)** and this design's §8.3 supplies the data routes that
   drive them.
+
+---
+
+## 12. Retrieval at scale (revision 2026-10-14)
+
+### 12.1 What the code does today (measured, not assumed)
+
+| | Today | Source |
+|---|---|---|
+| Search | term names + one-line descriptions only | `searchIndex()` |
+| A chapter write | full re-read of every concept file, one `/api/fs` request at a time, then every TOC rewritten | `rebuildDerived()`, `classifyBundle()` |
+| Its cost | `okf_upsert_concept` p50 257 ms / p90 367 ms on ~60 files (prod, 128 calls, 2026-10-13) | `logs/timeline-2026-10-13.jsonl` |
+| Outside edits | not seen until the worker restarts — the in-memory model is never re-checked | `getModel()` |
+| `okf_list_concepts` | whole vocabulary + every document + every chapter | `listConcepts()` |
+| `index.md` | already lists every document with chapter count and summary, unordered | `bundleIndexMarkdown()` |
+
+### 12.2 The model (ADR-016)
+
+```
+model(bundle) = {
+  docs:      Map<docId, {title, summary, addedAt, sig}>      # sig = (size, mtime) of the stub
+  chapters:  Map<id,    {docId, title, summary, concepts, personTerms, status, sig,
+                         text, folded}>                       # text = body incl. interpretations
+  terms:     [...]                                            # buildConceptIndex(), as today
+  ledgerSig: (size, mtime) of raw/sources.json
+}
+```
+
+- **Build:** list `concepts/` and read every file with bounded parallelism (16); read
+  `raw/sources.json` once for `addedAt`.
+- **Fresh-check on read:** list again (parallel), diff signatures, re-read the changed ones,
+  drop the vanished ones, re-read the ledger if its signature moved; recompute `terms` only if
+  something changed.
+- **Write path:** take the bundle lock → write the concept → `stat` it for the new signature
+  → patch the model → write `concept-index.md`, `toc/<docId>.md`, `index.md` → release.
+
+### 12.3 Search (ADR-015, ADR-018)
+
+```
+search(bundle, query, {limit=10, groupBy}):
+  model = fresh(bundle)
+  toks  = fold(query).split(/[^\p{L}\p{N}]+/u).filter(Boolean)       # fold = lowercase + NFKD − marks
+  res   = toks.map(t => new RegExp("(^|[^\\p{L}\\p{N}])" + escape(t), "u"))
+  for each chapter c:
+    fields = {term: fold(c.concepts + c.personTerms), title: fold(c.title),
+              summary: fold(c.summary), text: c.folded}
+    if not every token matches some field: continue
+    tier  = first of [term, title, summary, text] whose field matches EVERY token
+            (else "text")                                           # matchKind
+    score = Σ_tokens Σ_fields weight[f] · tf(t,f)·(k+1)/(tf+k) · idf(t)   # weights 4/3/2/1
+  sort by tier, score desc, doc.addedAt desc, chapter id
+  page = first limit (≤ 50)
+  for each row with matchKind "text": excerpt(c.text, toks)         # sentence + 1 either side, ≤ 400
+```
+
+A person term match reports `matchKind: "person"`. The term-tier rows also carry today's
+`matchedConcept` and `description`, so the person path of ADR-011 is unchanged in effect.
+
+### 12.4 Tool and route changes (no new tool)
+
+| Tool / route | Change |
+|---|---|
+| `okf_search` | `groupBy`, new defaults, `matchKind`, `excerpt`, `searched`, `clamped` (ADR-018) |
+| `okf_read_toc` | `docId` optional; without it the paged bundle TOC (ADR-017) |
+| `okf_list_concepts` | `query`, `offset`, `limit`; terms only (ADR-019) |
+| `okf_upsert_concept` | rejects an over-long **document** summary (ADR-020) |
+| `GET /bundles/<b>/toc?offset=&limit=` | new — the bundle TOC for the app's Documents tab |
+| `GET /bundles/<b>/concepts?query=&offset=&limit=` | new — the app's Concept Index tab |
+| `GET/POST /bundles/<b>/search` | passes `groupBy`; returns the same object as the tool |
+
+### 12.5 Files
+
+| File | Change |
+|---|---|
+| `services/lib/okf-core.js` | the model + fresh-check + per-bundle lock (ADR-016); parallel `classifyBundle`; `searchFullText` beside `searchIndex`; `bundleToc`, `addedAt` from the ledger; paged `listConcepts`; summary cap; `index.md` ordered by `bundleToc` |
+| `services/lib/tools.js` | schemas/handlers for the three changed tools |
+| `services/lib/http-bridge.js` | the two new GET routes; `groupBy` on search |
+| `services/service.json` | tool descriptions (search covers full text; read_toc has two levels) |
+| `skills/okf-lookup/SKILL.md` | new (ADR-020) |
+| `skills/okf-bundle-schema/SKILL.md` | retrieval section → pointer; "extend before you create" uses `okf_list_concepts({query})` |
+| `agents/okf-ingest/AGENT.md` | vocabulary checks via `okf_list_concepts({query})` / `okf_search`; summary cap |
+| `app/src/lib/serviceClient.ts`, `types.ts` | `fetchBundleToc`, `fetchConcepts`, search `groupBy`, new row fields |
+| `app/src/overview/DocumentsView.tsx` | the paged bundle TOC (mockup: Documents) |
+| `app/src/overview/ConceptIndexView.tsx` | server-side filter + paging (mockup: Concept Index) |
+| `app/src/query/SearchHits.tsx` | new — ranked hits, match-kind badge, highlighted excerpt, Chapters/By document |
+| `app/src/query/QueryTab.tsx`, `TableView.tsx` | a query shows `SearchHits` in Table; the graph lights up the hits (≤ 50) |
+| `app/dist/**` | rebuilt |
+| `tests/*.test.mjs` | §12.6 |
+| `docs/dev/OKF Knowledge Base/*`, `docs/usage/OKF Knowledge Base/*` | search, browse, lookup skill |
+
+### 12.6 How it is proven
+
+- **SC-020** — a name only in a chapter body is found as `matchKind: "text"` with the name in
+  the excerpt; diacritic folding both ways ("Cordoba" ↔ "Córdoba").
+- **SC-021** — a generated 500-document bundle pages completely through `okf_read_toc({bundle})`,
+  newest first, stable across a re-ingest of the oldest document.
+- **SC-022** — after each write path, and after a file changed behind the service's back
+  (written straight into the memfs), the next search reflects it; dropping the model
+  changes no result.
+- **SC-023** — structural: no search state is written to disk (asserted: the bundle's file
+  listing is identical before and after a search).
+- **Scaling** — a test bundle of 3,000 generated chapters on the memfs server: a chapter write
+  issues O(1) reads (counted at the memfs), and a search over it stays under the ADR-015
+  threshold. The real `/api/fs` round-trip cost is checked once on the deployment before the
+  numbers in ADR-016 are trusted.
+
