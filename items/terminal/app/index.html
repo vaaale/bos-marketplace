@@ -41,18 +41,19 @@
 // dependency-free and simple, since its purpose is exercising the service
 // daemon lifecycle end to end, not being a production terminal emulator.
 //
-// KNOWN LIMITATION: connects directly to ws(s)://<this page's hostname>:<bound
-// port>, i.e. it assumes the terminal service's OWN port is reachable at that
-// host — true for plain single-host local dev, but NOT generally true behind
-// a reverse proxy (Traefik/nginx/etc., e.g. Dokploy): the proxy usually only
-// exposes BOS's main app port, not a service's internal port, and even if it
-// did, that port has no TLS of its own for a wss:// connection to terminate
-// against. If Terminal (or any service using this same direct-connect
-// pattern) can't connect once deployed behind a reverse proxy, the port
-// likely just isn't reachable/TLS-terminated from the browser at all — the
-// real fix is proxying the WebSocket through BOS's own already-exposed,
-// already-TLS-terminated port rather than connecting to the service's port
-// directly (not yet implemented; see docs/dev/apps/services.md).
+// Two ways this page runs, and they connect differently:
+//   - As an installed app (a desktop window): BOS injects window.__bos, and the
+//     shell socket is opened through it — window.__bos.services.connect().
+//     The socket then lives in the trusted BOS page, which sends the user's
+//     session cookie with it. Opening it from in here instead does NOT: an app
+//     installed from a marketplace runs in an opaque-origin sandbox, so its own
+//     socket is cross-site and the session cookie is left off — behind an
+//     authenticating front door (Bastion) that is a 401, reported by Chrome as
+//     "HTTP Authentication failed; no valid credentials available".
+//   - Opened directly in a tab (Settings → Services → Open App): no
+//     window.__bos, but the page is same-origin, so it reads its own service
+//     config and opens the socket itself.
+// See BOS docs/dev/apps/services.md §11–§12.
 
 const outputEl = document.getElementById("output");
 const inputEl = document.getElementById("input");
@@ -72,75 +73,65 @@ function setStatus(text, cls) {
   dotEl.className = cls || "";
 }
 
-// When installed as a real BOS app (Settings → Apps), this page loads inside
-// an opaque-origin sandboxed iframe (028 marketplace security model) — a
-// direct fetch("/api/services/...") from there fails as a cross-origin
-// request (that API has no CORS headers, on purpose: see
-// docs/dev/apps/services.md). The BOS SDK broker (window.__bos, injected by
-// the app-serving route) is the only channel available then, gated by the
-// "services:read" capability grant. When opened via the ServiceCard "Open
-// App" button instead (a plain new tab, not sandboxed), window.__bos doesn't
-// exist and a direct fetch works fine — this connect() supports both paths.
-async function fetchServiceConfig() {
-  if (window.__bos && window.__bos.services) {
-    try {
-      return await window.__bos.services.getConfig("terminal");
-    } catch (err) {
-      throw new Error(
-        `${err.message} — grant it in Settings → Apps → Terminal Service → Manage capabilities → "Read services".`,
-      );
-    }
-  }
-  const res = await fetch("/api/services/terminal/config");
-  if (!res.ok) throw new Error(`config fetch failed: HTTP ${res.status}`);
-  return res.json();
+function attach(socket, label) {
+  ws = socket;
+  setStatus(`Connecting to ${label}…`);
+  ws.onopen = () => {
+    setStatus(`Connected — ${label}`, "connected");
+    inputEl.focus();
+  };
+  ws.onmessage = (event) => appendOutput(event.data);
+  ws.onclose = () => {
+    if (!statusEl.textContent.startsWith("Connection error")) setStatus("Disconnected", "");
+  };
+  // A broker-refused open carries the reason (e.g. capability not granted,
+  // service not running); a browser WebSocket error never does.
+  ws.onerror = (event) => setStatus("Connection error" + (event && event.message ? ": " + event.message : ""), "error");
 }
 
-async function connect() {
+// Installed app: the BOS page opens the socket (see the header comment).
+function connectViaBos() {
+  if (!window.__bos.services || typeof window.__bos.services.connect !== "function") {
+    setStatus("This BOS is too old for the Terminal app — it has no window.__bos.services.connect. Update BOS.", "error");
+    return;
+  }
+  attach(window.__bos.services.connect("terminal"), "terminal service");
+}
+
+// Opened directly in a same-origin tab: read the config and connect ourselves.
+async function connectDirect() {
   setStatus("Looking up service…");
-  let runtime, wsPath;
+  let data;
   try {
-    const data = await fetchServiceConfig();
-    runtime = data.runtime;
-    wsPath = data.wsPath;
+    const res = await fetch("/api/services/terminal/config");
+    if (!res.ok) throw new Error(`config fetch failed: HTTP ${res.status}`);
+    data = await res.json();
   } catch (err) {
     setStatus("Could not reach BOS API: " + err.message, "error");
     return;
   }
-
-  if (!runtime || typeof runtime.port !== "number") {
-    setStatus("Terminal Service is not running — start it in Settings → Plugins → Services first.", "error");
+  if (!data.runtime || typeof data.runtime.port !== "number") {
+    setStatus("Terminal Service is not running — start it in Settings → Services first.", "error");
     return;
   }
-
-  // A page loaded over https:// is a secure context — the browser refuses
-  // (mixed-content block, "the operation is insecure") a plain ws:// socket
-  // from it. Match the page's own protocol.
+  // https:// pages must use wss:// (mixed content is refused). Through the
+  // Supervisor (any Docker deployment) the service is reached at wsPath on
+  // BOS's own host; under plain `npm run dev` wsPath is null and the service's
+  // own port is reachable directly.
   const wsScheme = location.protocol === "https:" ? "wss:" : "ws:";
-  // Under the Supervisor (any Docker deployment), the service's own port
-  // isn't reachable directly once behind a reverse proxy — connect through
-  // the Supervisor's own already-exposed, already-TLS-terminated port
-  // instead (see tools/supervisor/supervisor.mjs's proxyServiceUpgrade).
-  // Plain `npm run dev` has no Supervisor in front, so wsPath is absent
-  // there and direct host:port access (which already works) is used.
-  const wsUrl = wsPath
-    ? `${wsScheme}//${location.host}${wsPath}`
-    : `${wsScheme}//${location.hostname}:${runtime.port}`;
-  setStatus(`Connecting to ${wsUrl}…`);
+  const wsUrl = data.wsPath
+    ? `${wsScheme}//${location.host}${data.wsPath}`
+    : `${wsScheme}//${location.hostname}:${data.runtime.port}`;
   try {
-    ws = new WebSocket(wsUrl);
+    attach(new WebSocket(wsUrl), wsUrl);
   } catch (err) {
     setStatus("Failed to open WebSocket: " + err.message, "error");
-    return;
   }
+}
 
-  ws.onopen = () => {
-    setStatus(`Connected — ${wsUrl}`, "connected");
-    inputEl.focus();
-  };
-  ws.onmessage = (event) => appendOutput(event.data);
-  ws.onclose = () => setStatus("Disconnected", "");
-  ws.onerror = () => setStatus("Connection error", "error");
+function connect() {
+  if (window.__bos) connectViaBos();
+  else void connectDirect();
 }
 
 inputEl.addEventListener("keydown", (e) => {
